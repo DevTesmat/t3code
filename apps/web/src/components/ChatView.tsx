@@ -73,6 +73,7 @@ import {
   type PendingUserInputDraftAnswer,
 } from "../pendingUserInput";
 import {
+  selectSidebarThreadSummaryByRef,
   selectProjectsAcrossEnvironments,
   selectThreadsAcrossEnvironments,
   useStore,
@@ -609,6 +610,15 @@ export default function ChatView(props: ChatViewProps) {
       [routeKind, routeThreadRef],
     ),
   );
+  const sidebarThreadSummary = useStore(
+    useMemo(
+      () =>
+        routeKind === "server"
+          ? (state) => selectSidebarThreadSummaryByRef(state, routeThreadRef)
+          : () => undefined,
+      [routeKind, routeThreadRef],
+    ),
+  );
   const setStoreThreadError = useStore((store) => store.setError);
   const markThreadVisited = useUiStateStore((store) => store.markThreadVisited);
   const activeThreadLastVisitedAt = useUiStateStore((store) =>
@@ -1042,12 +1052,7 @@ export default function ChatView(props: ChatViewProps) {
 
   useEffect(() => {
     if (!serverThread?.id) return;
-    if (!latestTurnSettled) return;
-    if (!activeLatestTurn?.completedAt) return;
-    const turnCompletedAt = Date.parse(activeLatestTurn.completedAt);
-    if (Number.isNaN(turnCompletedAt)) return;
-    const lastVisitedAt = activeThreadLastVisitedAt ? Date.parse(activeThreadLastVisitedAt) : NaN;
-    if (!Number.isNaN(lastVisitedAt) && lastVisitedAt >= turnCompletedAt) return;
+    if (!latestTurnSettled || !activeLatestTurn?.completedAt) return;
 
     markThreadVisited(
       scopedThreadKey(scopeThreadRef(serverThread.environmentId, serverThread.id)),
@@ -1060,6 +1065,23 @@ export default function ChatView(props: ChatViewProps) {
     markThreadVisited,
     serverThread?.environmentId,
     serverThread?.id,
+  ]);
+
+  useEffect(() => {
+    if (!serverThread?.id) return;
+    if (!sidebarThreadSummary?.hasPendingUserInput) return;
+    if (!sidebarThreadSummary.latestPendingUserInputAt) return;
+
+    markThreadVisited(
+      scopedThreadKey(scopeThreadRef(serverThread.environmentId, serverThread.id)),
+      sidebarThreadSummary.latestPendingUserInputAt,
+    );
+  }, [
+    markThreadVisited,
+    serverThread?.environmentId,
+    serverThread?.id,
+    sidebarThreadSummary?.hasPendingUserInput,
+    sidebarThreadSummary?.latestPendingUserInputAt,
   ]);
 
   const selectedProviderByThreadId = composerActiveProvider ?? null;

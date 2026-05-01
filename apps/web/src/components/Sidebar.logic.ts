@@ -26,13 +26,7 @@ type SidebarProject = {
 export type ThreadTraversalDirection = "previous" | "next";
 
 export interface ThreadStatusPill {
-  label:
-    | "Working"
-    | "Connecting"
-    | "Completed"
-    | "Pending Approval"
-    | "Awaiting Input"
-    | "Plan Ready";
+  label: "Working" | "Connecting" | "Done" | "Pending Approval" | "Awaiting Input" | "Plan Ready";
   colorClass: string;
   dotClass: string;
   pulse: boolean;
@@ -44,7 +38,7 @@ const THREAD_STATUS_PRIORITY: Record<ThreadStatusPill["label"], number> = {
   Working: 3,
   Connecting: 3,
   "Plan Ready": 2,
-  Completed: 1,
+  Done: 1,
 };
 
 type ThreadStatusInput = Pick<
@@ -53,6 +47,7 @@ type ThreadStatusInput = Pick<
   | "hasPendingApprovals"
   | "hasPendingUserInput"
   | "interactionMode"
+  | "latestPendingUserInputAt"
   | "latestTurn"
   | "session"
 > & {
@@ -144,15 +139,22 @@ export function useThreadJumpHintVisibility(): {
   };
 }
 
-export function hasUnseenCompletion(thread: ThreadStatusInput): boolean {
-  if (!thread.latestTurn?.completedAt) return false;
-  const completedAt = Date.parse(thread.latestTurn.completedAt);
-  if (Number.isNaN(completedAt)) return false;
-  if (!thread.lastVisitedAt) return true;
+export function hasUnseenTimestamp(
+  eventAt: string | null | undefined,
+  lastVisitedAt: string | null | undefined,
+): boolean {
+  if (!eventAt) return false;
+  const eventAtMs = Date.parse(eventAt);
+  if (Number.isNaN(eventAtMs)) return false;
+  if (!lastVisitedAt) return true;
 
-  const lastVisitedAt = Date.parse(thread.lastVisitedAt);
-  if (Number.isNaN(lastVisitedAt)) return true;
-  return completedAt > lastVisitedAt;
+  const lastVisitedAtMs = Date.parse(lastVisitedAt);
+  if (Number.isNaN(lastVisitedAtMs)) return true;
+  return eventAtMs > lastVisitedAtMs;
+}
+
+export function hasUnseenCompletion(thread: ThreadStatusInput): boolean {
+  return hasUnseenTimestamp(thread.latestTurn?.completedAt, thread.lastVisitedAt);
 }
 
 export function shouldClearThreadSelectionOnMouseDown(target: HTMLElement | null): boolean {
@@ -340,7 +342,10 @@ export function resolveThreadStatusPill(input: {
     };
   }
 
-  if (thread.hasPendingUserInput) {
+  if (
+    thread.hasPendingUserInput &&
+    hasUnseenTimestamp(thread.latestPendingUserInputAt, thread.lastVisitedAt)
+  ) {
     return {
       label: "Awaiting Input",
       colorClass: "text-indigo-600 dark:text-indigo-300/90",
@@ -383,7 +388,7 @@ export function resolveThreadStatusPill(input: {
 
   if (hasUnseenCompletion(thread)) {
     return {
-      label: "Completed",
+      label: "Done",
       colorClass: "text-emerald-600 dark:text-emerald-300/90",
       dotClass: "bg-emerald-500 dark:bg-emerald-300/90",
       pulse: false,

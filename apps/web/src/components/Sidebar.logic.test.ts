@@ -59,6 +59,7 @@ describe("hasUnseenCompletion", () => {
         hasPendingApprovals: false,
         hasPendingUserInput: false,
         interactionMode: "default",
+        latestPendingUserInputAt: null,
         latestTurn: makeLatestTurn(),
         lastVisitedAt: "2026-03-09T10:04:00.000Z",
         session: null,
@@ -477,6 +478,7 @@ describe("resolveThreadStatusPill", () => {
     hasActionableProposedPlan: false,
     hasPendingApprovals: false,
     hasPendingUserInput: false,
+    latestPendingUserInputAt: null,
     interactionMode: "plan" as const,
     latestTurn: null,
     lastVisitedAt: undefined,
@@ -501,12 +503,14 @@ describe("resolveThreadStatusPill", () => {
     ).toMatchObject({ label: "Pending Approval", pulse: false });
   });
 
-  it("shows awaiting input when plan mode is blocked on user answers", () => {
+  it("shows awaiting input when plan mode is blocked on unseen user answers", () => {
     expect(
       resolveThreadStatusPill({
         thread: {
           ...baseThread,
           hasPendingUserInput: true,
+          latestPendingUserInputAt: "2026-03-09T10:06:00.000Z",
+          lastVisitedAt: "2026-03-09T10:05:00.000Z",
         },
       }),
     ).toMatchObject({ label: "Awaiting Input", pulse: false });
@@ -550,7 +554,7 @@ describe("resolveThreadStatusPill", () => {
           },
         },
       }),
-    ).toMatchObject({ label: "Completed", pulse: false });
+    ).toMatchObject({ label: "Done", pulse: false });
   });
 
   it("shows completed when there is an unseen completion and no active blocker", () => {
@@ -568,7 +572,7 @@ describe("resolveThreadStatusPill", () => {
           },
         },
       }),
-    ).toMatchObject({ label: "Completed", pulse: false });
+    ).toMatchObject({ label: "Done", pulse: false });
   });
 });
 
@@ -605,7 +609,7 @@ describe("resolveProjectStatusIndicator", () => {
     expect(
       resolveProjectStatusIndicator([
         {
-          label: "Completed",
+          label: "Done",
           colorClass: "text-emerald-600",
           dotClass: "bg-emerald-500",
           pulse: false,
@@ -630,7 +634,7 @@ describe("resolveProjectStatusIndicator", () => {
     expect(
       resolveProjectStatusIndicator([
         {
-          label: "Completed",
+          label: "Done",
           colorClass: "text-emerald-600",
           dotClass: "bg-emerald-500",
           pulse: false,

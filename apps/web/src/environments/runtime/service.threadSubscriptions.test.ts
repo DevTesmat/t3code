@@ -134,6 +134,7 @@ function makeThreadShellSnapshot(params: {
         latestUserMessageAt: null,
         hasPendingApprovals: params.hasPendingApprovals ?? false,
         hasPendingUserInput: params.hasPendingUserInput ?? false,
+        latestPendingUserInputAt: params.hasPendingUserInput ? "2026-04-13T00:00:00.000Z" : null,
         hasActionableProposedPlan: params.hasActionableProposedPlan ?? false,
       },
     ],

@@ -427,6 +427,7 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
           latestUserMessageAt: "2026-02-24T00:00:04.000Z",
           hasPendingApprovals: true,
           hasPendingUserInput: false,
+          latestPendingUserInputAt: null,
           hasActionableProposedPlan: false,
         },
       ]);

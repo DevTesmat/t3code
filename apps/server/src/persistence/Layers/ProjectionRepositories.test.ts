@@ -91,6 +91,7 @@ projectionRepositoriesLayer("Projection repositories", (it) => {
         latestUserMessageAt: null,
         pendingApprovalCount: 0,
         pendingUserInputCount: 0,
+        latestPendingUserInputAt: null,
         hasActionableProposedPlan: 0,
         deletedAt: null,
       });

@@ -301,6 +301,7 @@ function mapThreadShell(
     latestUserMessageAt: thread.latestUserMessageAt,
     hasPendingApprovals: thread.hasPendingApprovals,
     hasPendingUserInput: thread.hasPendingUserInput,
+    latestPendingUserInputAt: thread.latestPendingUserInputAt,
     hasActionableProposedPlan: thread.hasActionableProposedPlan,
   };
   return {
@@ -402,6 +403,7 @@ function sidebarThreadSummariesEqual(
     left.latestUserMessageAt === right.latestUserMessageAt &&
     left.hasPendingApprovals === right.hasPendingApprovals &&
     left.hasPendingUserInput === right.hasPendingUserInput &&
+    left.latestPendingUserInputAt === right.latestPendingUserInputAt &&
     left.hasActionableProposedPlan === right.hasActionableProposedPlan
   );
 }

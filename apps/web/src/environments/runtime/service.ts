@@ -26,6 +26,10 @@ import {
 import { ensureLocalApi } from "~/localApi";
 import { collectActiveTerminalThreadIds } from "~/lib/terminalStateCleanup";
 import { deriveOrchestrationBatchEffects } from "~/orchestrationEventEffects";
+import {
+  clearThreadNotificationEffects,
+  reconcileThreadNotificationEffects,
+} from "~/threadNotificationEffects";
 import { projectQueryKeys } from "~/lib/projectReactQuery";
 import { providerQueryKeys } from "~/lib/providerReactQuery";
 import { getPrimaryKnownEnvironment } from "../primary";
@@ -726,6 +730,10 @@ function applyShellEvent(event: OrchestrationShellStreamEvent, environmentId: En
       syncProjectUiFromStore();
       return;
     case "thread-upserted":
+      reconcileThreadNotificationEffects({
+        environmentId,
+        threads: [event.thread],
+      });
       syncThreadUiFromStore();
       if (!previousThread && threadRef) {
         markPromotedDraftThreadByRef(threadRef);
@@ -738,9 +746,11 @@ function applyShellEvent(event: OrchestrationShellStreamEvent, environmentId: En
       return;
     case "thread-removed":
       if (threadRef) {
-        disposeThreadDetailSubscriptionByKey(scopedThreadKey(threadRef));
+        const threadKey = scopedThreadKey(threadRef);
+        disposeThreadDetailSubscriptionByKey(threadKey);
+        clearThreadNotificationEffects(threadKey);
         useComposerDraftStore.getState().clearDraftThread(threadRef);
-        useUiStateStore.getState().clearThreadUi(scopedThreadKey(threadRef));
+        useUiStateStore.getState().clearThreadUi(threadKey);
         useTerminalStateStore.getState().removeTerminalState(threadRef);
       }
       syncThreadUiFromStore();
@@ -752,9 +762,10 @@ function createEnvironmentConnectionHandlers() {
   return {
     applyShellEvent,
     syncShellSnapshot: (snapshot: OrchestrationShellSnapshot, environmentId: EnvironmentId) => {
+      const previousProjectionVersion = readLastAppliedProjectionVersion(environmentId);
       if (
         !shouldApplyProjectionSnapshot({
-          current: readLastAppliedProjectionVersion(environmentId),
+          current: previousProjectionVersion,
           next: snapshot,
         })
       ) {
@@ -763,6 +774,11 @@ function createEnvironmentConnectionHandlers() {
 
       useStore.getState().syncServerShellSnapshot(snapshot, environmentId);
       markAppliedProjectionSnapshot(environmentId, snapshot);
+      reconcileThreadNotificationEffects({
+        environmentId,
+        threads: snapshot.threads,
+        suppressInitialChime: previousProjectionVersion === null,
+      });
       reconcileThreadDetailSubscriptionsForEnvironment(
         environmentId,
         snapshot.threads.map((thread) => thread.id),

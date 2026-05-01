@@ -271,6 +271,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           latest_user_message_at AS "latestUserMessageAt",
           pending_approval_count AS "pendingApprovalCount",
           pending_user_input_count AS "pendingUserInputCount",
+          latest_pending_user_input_at AS "latestPendingUserInputAt",
           has_actionable_proposed_plan AS "hasActionableProposedPlan",
           deleted_at AS "deletedAt"
         FROM projection_threads
@@ -526,6 +527,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           latest_user_message_at AS "latestUserMessageAt",
           pending_approval_count AS "pendingApprovalCount",
           pending_user_input_count AS "pendingUserInputCount",
+          latest_pending_user_input_at AS "latestPendingUserInputAt",
           has_actionable_proposed_plan AS "hasActionableProposedPlan",
           deleted_at AS "deletedAt"
         FROM projection_threads
@@ -1074,6 +1076,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
                     latestUserMessageAt: row.latestUserMessageAt,
                     hasPendingApprovals: row.pendingApprovalCount > 0,
                     hasPendingUserInput: row.pendingUserInputCount > 0,
+                    latestPendingUserInputAt: row.latestPendingUserInputAt,
                     hasActionableProposedPlan: row.hasActionableProposedPlan > 0,
                   }),
                 ),
@@ -1270,6 +1273,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
         latestUserMessageAt: threadRow.value.latestUserMessageAt,
         hasPendingApprovals: threadRow.value.pendingApprovalCount > 0,
         hasPendingUserInput: threadRow.value.pendingUserInputCount > 0,
+        latestPendingUserInputAt: threadRow.value.latestPendingUserInputAt,
         hasActionableProposedPlan: threadRow.value.hasActionableProposedPlan > 0,
       } satisfies OrchestrationThreadShell);
     });

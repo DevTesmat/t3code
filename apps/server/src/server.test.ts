@@ -190,6 +190,7 @@ const makeDefaultOrchestrationThreadShell = (
     latestUserMessageAt: null,
     hasPendingApprovals: false,
     hasPendingUserInput: false,
+    latestPendingUserInputAt: null,
     hasActionableProposedPlan: false,
     ...overrides,
   };

@@ -226,6 +226,7 @@ function toShellSnapshot(snapshot: OrchestrationReadModel) {
         thread.messages.findLast((message) => message.role === "user")?.createdAt ?? null,
       hasPendingApprovals: false,
       hasPendingUserInput: false,
+      latestPendingUserInputAt: null,
       hasActionableProposedPlan: false,
     })),
     updatedAt: snapshot.updatedAt,

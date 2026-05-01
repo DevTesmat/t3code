@@ -101,10 +101,13 @@ function isStalePendingApprovalFailureDetail(detail: string | null): boolean {
   );
 }
 
-function derivePendingUserInputCountFromActivities(
+function derivePendingUserInputStateFromActivities(
   activities: ReadonlyArray<ProjectionThreadActivity>,
-): number {
-  const openRequestIds = new Set<string>();
+): {
+  readonly pendingUserInputCount: number;
+  readonly latestPendingUserInputAt: string | null;
+} {
+  const openRequests = new Map<string, string>();
   const ordered = [...activities].toSorted(
     (left, right) =>
       left.createdAt.localeCompare(right.createdAt) ||
@@ -123,12 +126,12 @@ function derivePendingUserInputCountFromActivities(
     const detail = typeof payload?.detail === "string" ? payload.detail.toLowerCase() : null;
 
     if (activity.kind === "user-input.requested") {
-      openRequestIds.add(requestId);
+      openRequests.set(requestId, activity.createdAt);
       continue;
     }
 
     if (activity.kind === "user-input.resolved") {
-      openRequestIds.delete(requestId);
+      openRequests.delete(requestId);
       continue;
     }
 
@@ -138,11 +141,15 @@ function derivePendingUserInputCountFromActivities(
       (detail.includes("stale pending user-input request") ||
         detail.includes("unknown pending user-input request"))
     ) {
-      openRequestIds.delete(requestId);
+      openRequests.delete(requestId);
     }
   }
 
-  return openRequestIds.size;
+  return {
+    pendingUserInputCount: openRequests.size,
+    latestPendingUserInputAt:
+      openRequests.size === 0 ? null : ([...openRequests.values()].toSorted().at(-1) ?? null),
+  };
 }
 
 function deriveHasActionableProposedPlan(input: {
@@ -542,7 +549,7 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
       const pendingApprovalCount = pendingApprovals.filter(
         (approval) => approval.status === "pending",
       ).length;
-      const pendingUserInputCount = derivePendingUserInputCountFromActivities(activities);
+      const pendingUserInputState = derivePendingUserInputStateFromActivities(activities);
       const hasActionableProposedPlan = deriveHasActionableProposedPlan({
         latestTurnId: existingRow.value.latestTurnId,
         proposedPlans,
@@ -552,7 +559,8 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
         ...existingRow.value,
         latestUserMessageAt,
         pendingApprovalCount,
-        pendingUserInputCount,
+        pendingUserInputCount: pendingUserInputState.pendingUserInputCount,
+        latestPendingUserInputAt: pendingUserInputState.latestPendingUserInputAt,
         hasActionableProposedPlan: hasActionableProposedPlan ? 1 : 0,
       });
     });
@@ -578,6 +586,7 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
             latestUserMessageAt: null,
             pendingApprovalCount: 0,
             pendingUserInputCount: 0,
+            latestPendingUserInputAt: null,
             hasActionableProposedPlan: 0,
             deletedAt: null,
           });

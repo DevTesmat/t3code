@@ -37,6 +37,7 @@ export const ProjectionThread = Schema.Struct({
   latestUserMessageAt: Schema.NullOr(IsoDateTime),
   pendingApprovalCount: NonNegativeInt,
   pendingUserInputCount: NonNegativeInt,
+  latestPendingUserInputAt: Schema.NullOr(IsoDateTime),
   hasActionableProposedPlan: NonNegativeInt,
   deletedAt: Schema.NullOr(IsoDateTime),
 });
