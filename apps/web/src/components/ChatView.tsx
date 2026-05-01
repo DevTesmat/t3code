@@ -139,6 +139,7 @@ import {
 } from "../lib/terminalContext";
 import { selectThreadTerminalState, useTerminalStateStore } from "../terminalStateStore";
 import { ChatComposer, type ChatComposerHandle } from "./chat/ChatComposer";
+import { ComposerChangedFilesBar } from "./chat/ComposerChangedFilesBar";
 import { ExpandedImageDialog } from "./chat/ExpandedImageDialog";
 import { PullRequestThreadDialog } from "./PullRequestThreadDialog";
 import { MessagesTimeline } from "./chat/MessagesTimeline";
@@ -1363,6 +1364,15 @@ export default function ChatView(props: ChatViewProps) {
   );
   const { turnDiffSummaries, inferredCheckpointTurnCountByTurnId } =
     useTurnDiffSummaries(activeThread);
+  const latestChangedFilesSummary = useMemo(() => {
+    for (let index = turnDiffSummaries.length - 1; index >= 0; index -= 1) {
+      const summary = turnDiffSummaries[index];
+      if (summary && summary.files.length > 0) {
+        return summary;
+      }
+    }
+    return null;
+  }, [turnDiffSummaries]);
   const turnDiffSummaryByAssistantMessageId = useMemo(() => {
     const byMessageId = new Map<MessageId, TurnDiffSummary>();
     for (const summary of turnDiffSummaries) {
@@ -3345,14 +3355,11 @@ export default function ChatView(props: ChatViewProps) {
               completionSummary={completionSummary}
               turnDiffSummaryByAssistantMessageId={turnDiffSummaryByAssistantMessageId}
               activeThreadEnvironmentId={activeThread.environmentId}
-              routeThreadKey={routeThreadKey}
-              onOpenTurnDiff={onOpenTurnDiff}
               revertTurnCountByUserMessageId={revertTurnCountByUserMessageId}
               onRevertUserMessage={onRevertUserMessage}
               isRevertingCheckpoint={isRevertingCheckpoint}
               onImageExpand={onExpandTimelineImage}
               markdownCwd={gitCwd ?? undefined}
-              resolvedTheme={resolvedTheme}
               timestampFormat={timestampFormat}
               workspaceRoot={activeWorkspaceRoot}
               onIsAtEndChange={onIsAtEndChange}
@@ -3382,6 +3389,11 @@ export default function ChatView(props: ChatViewProps) {
                 : "pb-[calc(env(safe-area-inset-bottom)+0.75rem)] sm:pb-[calc(env(safe-area-inset-bottom)+1rem)]",
             )}
           >
+            <ComposerChangedFilesBar
+              turnSummary={latestChangedFilesSummary}
+              resolvedTheme={resolvedTheme}
+              onOpenTurnDiff={onOpenTurnDiff}
+            />
             <ChatComposer
               ref={composerRef}
               composerDraftTarget={composerDraftTarget}

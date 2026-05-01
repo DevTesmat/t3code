@@ -1,4 +1,4 @@
-import { EnvironmentId, MessageId } from "@t3tools/contracts";
+import { EnvironmentId, MessageId, TurnId } from "@t3tools/contracts";
 import { createRef } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { beforeAll, describe, expect, it, vi } from "vitest";
@@ -84,15 +84,12 @@ function buildProps() {
     completionDividerBeforeEntryId: null,
     completionSummary: null,
     turnDiffSummaryByAssistantMessageId: new Map(),
-    routeThreadKey: "environment-local:thread-1",
-    onOpenTurnDiff: () => {},
     revertTurnCountByUserMessageId: new Map(),
     onRevertUserMessage: () => {},
     isRevertingCheckpoint: false,
     onImageExpand: () => {},
     activeThreadEnvironmentId: ACTIVE_THREAD_ENVIRONMENT_ID,
     markdownCwd: undefined,
-    resolvedTheme: "light" as const,
     timestampFormat: "locale" as const,
     workspaceRoot: undefined,
     onIsAtEndChange: () => {},
@@ -185,5 +182,46 @@ describe("MessagesTimeline", () => {
 
     expect(markup).toContain("t3code/apps/web/src/session-logic.ts");
     expect(markup).not.toContain("C:/Users/mike/dev-stuff/t3code/apps/web/src/session-logic.ts");
+  });
+
+  it("does not render assistant changed files inside message content", async () => {
+    const { MessagesTimeline } = await import("./MessagesTimeline");
+    const assistantMessageId = MessageId.make("message-assistant-1");
+    const markup = renderToStaticMarkup(
+      <MessagesTimeline
+        {...buildProps()}
+        timelineEntries={[
+          {
+            id: "entry-1",
+            kind: "message",
+            createdAt: "2026-03-17T19:12:28.000Z",
+            message: {
+              id: assistantMessageId,
+              role: "assistant",
+              text: "Done.",
+              createdAt: "2026-03-17T19:12:28.000Z",
+              streaming: false,
+            },
+          },
+        ]}
+        turnDiffSummaryByAssistantMessageId={
+          new Map([
+            [
+              assistantMessageId,
+              {
+                turnId: TurnId.make("turn-1"),
+                completedAt: "2026-03-17T19:12:29.000Z",
+                assistantMessageId,
+                files: [{ path: "apps/web/src/ChatView.tsx", additions: 3, deletions: 1 }],
+              },
+            ],
+          ])
+        }
+      />,
+    );
+
+    expect(markup).toContain("Done.");
+    expect(markup).not.toContain("Changed files");
+    expect(markup).not.toContain("ChatView.tsx");
   });
 });

@@ -13,7 +13,6 @@ import {
 import { LegendList, type LegendListRef } from "@legendapp/list/react";
 import { deriveTimelineEntries, formatElapsed } from "../../session-logic";
 import { type TurnDiffSummary } from "../../types";
-import { summarizeTurnDiffStats } from "../../lib/turnDiffTree";
 import ChatMarkdown from "../ChatMarkdown";
 import {
   BotIcon,
@@ -32,8 +31,6 @@ import {
 import { Button } from "../ui/button";
 import { buildExpandedImagePreview, ExpandedImagePreview } from "./ExpandedImagePreview";
 import { ProposedPlanCard } from "./ProposedPlanCard";
-import { ChangedFilesTree } from "./ChangedFilesTree";
-import { DiffStatLabel, hasNonZeroStat } from "./DiffStatLabel";
 import { MessageCopyButton } from "./MessageCopyButton";
 import {
   computeStableMessagesTimelineRows,
@@ -51,7 +48,6 @@ import {
   type ParsedTerminalContextEntry,
 } from "~/lib/terminalContext";
 import { cn } from "~/lib/utils";
-import { useUiStateStore } from "~/uiStateStore";
 import { type TimestampFormat } from "@t3tools/contracts/settings";
 import { formatTimestamp } from "../../timestampFormat";
 
@@ -76,14 +72,11 @@ interface TimelineRowSharedState {
   isRevertingCheckpoint: boolean;
   completionSummary: string | null;
   timestampFormat: TimestampFormat;
-  routeThreadKey: string;
   markdownCwd: string | undefined;
-  resolvedTheme: "light" | "dark";
   workspaceRoot: string | undefined;
   activeThreadEnvironmentId: EnvironmentId;
   onRevertUserMessage: (messageId: MessageId) => void;
   onImageExpand: (preview: ExpandedImagePreview) => void;
-  onOpenTurnDiff: (turnId: TurnId, filePath?: string) => void;
 }
 
 const TimelineRowCtx = createContext<TimelineRowSharedState>(null!);
@@ -102,15 +95,12 @@ interface MessagesTimelineProps {
   completionDividerBeforeEntryId: string | null;
   completionSummary: string | null;
   turnDiffSummaryByAssistantMessageId: Map<MessageId, TurnDiffSummary>;
-  routeThreadKey: string;
-  onOpenTurnDiff: (turnId: TurnId, filePath?: string) => void;
   revertTurnCountByUserMessageId: Map<MessageId, number>;
   onRevertUserMessage: (messageId: MessageId) => void;
   isRevertingCheckpoint: boolean;
   onImageExpand: (preview: ExpandedImagePreview) => void;
   activeThreadEnvironmentId: EnvironmentId;
   markdownCwd: string | undefined;
-  resolvedTheme: "light" | "dark";
   timestampFormat: TimestampFormat;
   workspaceRoot: string | undefined;
   onIsAtEndChange: (isAtEnd: boolean) => void;
@@ -130,15 +120,12 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   completionDividerBeforeEntryId,
   completionSummary,
   turnDiffSummaryByAssistantMessageId,
-  routeThreadKey,
-  onOpenTurnDiff,
   revertTurnCountByUserMessageId,
   onRevertUserMessage,
   isRevertingCheckpoint,
   onImageExpand,
   activeThreadEnvironmentId,
   markdownCwd,
-  resolvedTheme,
   timestampFormat,
   workspaceRoot,
   onIsAtEndChange,
@@ -199,14 +186,11 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       isRevertingCheckpoint,
       completionSummary,
       timestampFormat,
-      routeThreadKey,
       markdownCwd,
-      resolvedTheme,
       workspaceRoot,
       activeThreadEnvironmentId,
       onRevertUserMessage,
       onImageExpand,
-      onOpenTurnDiff,
     }),
     [
       activeTurnInProgress,
@@ -215,14 +199,11 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       isRevertingCheckpoint,
       completionSummary,
       timestampFormat,
-      routeThreadKey,
       markdownCwd,
-      resolvedTheme,
       workspaceRoot,
       activeThreadEnvironmentId,
       onRevertUserMessage,
       onImageExpand,
-      onOpenTurnDiff,
     ],
   );
 
@@ -407,12 +388,6 @@ function TimelineRowContent({ row }: { row: TimelineRow }) {
                   cwd={ctx.markdownCwd}
                   isStreaming={Boolean(row.message.streaming)}
                 />
-                <AssistantChangedFilesSection
-                  turnSummary={row.assistantTurnDiffSummary}
-                  routeThreadKey={ctx.routeThreadKey}
-                  resolvedTheme={ctx.resolvedTheme}
-                  onOpenTurnDiff={ctx.onOpenTurnDiff}
-                />
                 <div className="mt-1.5 flex items-center gap-2">
                   <p className="text-[10px] text-muted-foreground/30">
                     {row.message.streaming ? (
@@ -571,100 +546,6 @@ const WorkGroupSection = memo(function WorkGroupSection({
     </div>
   );
 });
-
-/** Subscribes directly to the UI state store for expand/collapse state,
- *  so toggling re-renders only this component — not the entire list. */
-const AssistantChangedFilesSection = memo(function AssistantChangedFilesSection({
-  turnSummary,
-  routeThreadKey,
-  resolvedTheme,
-  onOpenTurnDiff,
-}: {
-  turnSummary: TurnDiffSummary | undefined;
-  routeThreadKey: string;
-  resolvedTheme: "light" | "dark";
-  onOpenTurnDiff: (turnId: TurnId, filePath?: string) => void;
-}) {
-  if (!turnSummary) return null;
-  const checkpointFiles = turnSummary.files;
-  if (checkpointFiles.length === 0) return null;
-
-  return (
-    <AssistantChangedFilesSectionInner
-      turnSummary={turnSummary}
-      checkpointFiles={checkpointFiles}
-      routeThreadKey={routeThreadKey}
-      resolvedTheme={resolvedTheme}
-      onOpenTurnDiff={onOpenTurnDiff}
-    />
-  );
-});
-
-/** Inner component that only mounts when there are actual changed files,
- *  so the store subscription is unconditional (no hooks after early return). */
-function AssistantChangedFilesSectionInner({
-  turnSummary,
-  checkpointFiles,
-  routeThreadKey,
-  resolvedTheme,
-  onOpenTurnDiff,
-}: {
-  turnSummary: TurnDiffSummary;
-  checkpointFiles: TurnDiffSummary["files"];
-  routeThreadKey: string;
-  resolvedTheme: "light" | "dark";
-  onOpenTurnDiff: (turnId: TurnId, filePath?: string) => void;
-}) {
-  const allDirectoriesExpanded = useUiStateStore(
-    (store) => store.threadChangedFilesExpandedById[routeThreadKey]?.[turnSummary.turnId] ?? true,
-  );
-  const setExpanded = useUiStateStore((store) => store.setThreadChangedFilesExpanded);
-  const summaryStat = summarizeTurnDiffStats(checkpointFiles);
-  const changedFileCountLabel = String(checkpointFiles.length);
-
-  return (
-    <div className="mt-2 rounded-lg border border-border/80 bg-card/45 p-2.5">
-      <div className="mb-1.5 flex items-center justify-between gap-2">
-        <p className="text-[10px] uppercase tracking-[0.12em] text-muted-foreground/65">
-          <span>Changed files ({changedFileCountLabel})</span>
-          {hasNonZeroStat(summaryStat) && (
-            <>
-              <span className="mx-1">•</span>
-              <DiffStatLabel additions={summaryStat.additions} deletions={summaryStat.deletions} />
-            </>
-          )}
-        </p>
-        <div className="flex items-center gap-1.5">
-          <Button
-            type="button"
-            size="xs"
-            variant="outline"
-            data-scroll-anchor-ignore
-            onClick={() => setExpanded(routeThreadKey, turnSummary.turnId, !allDirectoriesExpanded)}
-          >
-            {allDirectoriesExpanded ? "Collapse all" : "Expand all"}
-          </Button>
-          <Button
-            type="button"
-            size="xs"
-            variant="outline"
-            onClick={() => onOpenTurnDiff(turnSummary.turnId, checkpointFiles[0]?.path)}
-          >
-            View diff
-          </Button>
-        </div>
-      </div>
-      <ChangedFilesTree
-        key={`changed-files-tree:${turnSummary.turnId}`}
-        turnId={turnSummary.turnId}
-        files={checkpointFiles}
-        allDirectoriesExpanded={allDirectoriesExpanded}
-        resolvedTheme={resolvedTheme}
-        onOpenTurnDiff={onOpenTurnDiff}
-      />
-    </div>
-  );
-}
 
 // ---------------------------------------------------------------------------
 // Leaf components

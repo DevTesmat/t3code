@@ -5,6 +5,11 @@
 - All of `bun fmt`, `bun lint`, and `bun typecheck` must pass before considering tasks completed.
 - NEVER run `bun test`. Always use `bun run test` (runs Vitest).
 
+## Planning Style
+
+- Keep plans relatively short. Include the core concept behind the approach, then provide only enough detail in critical sections for the next steps to be clear and reviewable.
+- Avoid over-specifying routine work. Expand only where correctness, reliability, data flow, failure handling, or cross-package behavior could be affected.
+
 ## Project Snapshot
 
 T3 Code is a minimal web GUI for using coding agents like Codex and Claude.
