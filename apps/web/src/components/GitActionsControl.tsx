@@ -660,11 +660,16 @@ export default function GitActionsControl({
         };
 
         const toastCta = result.toast.cta;
+        const shouldSuppressCreatePrCta =
+          toastCta.kind === "run_action" &&
+          toastCta.action.kind === "create_pr" &&
+          (result.action === "push" || result.action === "commit_push") &&
+          gitQuickActionPreference === "commit_push";
         let toastActionProps: {
           children: string;
           onClick: () => void;
         } | null = null;
-        if (toastCta.kind === "run_action") {
+        if (toastCta.kind === "run_action" && !shouldSuppressCreatePrCta) {
           toastActionProps = {
             children: toastCta.label,
             onClick: () => {

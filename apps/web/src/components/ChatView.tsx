@@ -667,6 +667,9 @@ export default function ChatView(props: ChatViewProps) {
   const composerTerminalContextsRef = useRef<TerminalContextDraft[]>([]);
   const localComposerRef = useRef<ChatComposerHandle | null>(null);
   const composerRef = useComposerHandleContext() ?? localComposerRef;
+  const chatColumnRef = useRef<HTMLDivElement | null>(null);
+  const composerAreaRef = useRef<HTMLDivElement | null>(null);
+  const [changedFilesMaxHeight, setChangedFilesMaxHeight] = useState<number | null>(null);
   const [showScrollToBottom, setShowScrollToBottom] = useState(false);
   const [expandedImage, setExpandedImage] = useState<ExpandedImagePreview | null>(null);
   const [optimisticUserMessages, setOptimisticUserMessages] = useState<ChatMessage[]>([]);
@@ -716,6 +719,30 @@ export default function ChatView(props: ChatViewProps) {
   const attachmentPreviewPromotionInFlightByMessageIdRef = useRef<Record<string, true>>({});
   const sendInFlightRef = useRef(false);
   const terminalOpenByThreadRef = useRef<Record<string, boolean>>({});
+
+  useEffect(() => {
+    const fallbackHeight = Math.max(160, Math.min(240, Math.floor(window.innerHeight * 0.25)));
+
+    const measureChangedFilesHeight = () => {
+      const chatColumnHeight = chatColumnRef.current?.getBoundingClientRect().height ?? 0;
+      const nextHeight =
+        chatColumnHeight > 0 ? Math.max(160, Math.floor(chatColumnHeight * 0.25)) : fallbackHeight;
+      setChangedFilesMaxHeight((current) => (current === nextHeight ? current : nextHeight));
+    };
+
+    measureChangedFilesHeight();
+
+    const observer =
+      typeof ResizeObserver === "undefined" ? null : new ResizeObserver(measureChangedFilesHeight);
+    if (chatColumnRef.current) observer?.observe(chatColumnRef.current);
+    if (composerAreaRef.current) observer?.observe(composerAreaRef.current);
+    window.addEventListener("resize", measureChangedFilesHeight);
+
+    return () => {
+      observer?.disconnect();
+      window.removeEventListener("resize", measureChangedFilesHeight);
+    };
+  }, []);
 
   const terminalState = useTerminalStateStore((state) =>
     selectThreadTerminalState(state.terminalStateByThreadKey, routeThreadRef),
@@ -3287,18 +3314,18 @@ export default function ChatView(props: ChatViewProps) {
   }
 
   return (
-    <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-x-hidden bg-background">
+    <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-x-hidden bg-background pt-[52px] wco:pt-[env(titlebar-area-height)]">
       {/* Top bar */}
       <header
         className={cn(
           "border-b border-border",
           isElectron
             ? cn(
-                "drag-region flex h-[52px] items-center px-3 sm:px-5 wco:h-[env(titlebar-area-height)]",
+                "app-topbar-main drag-region fixed top-0 right-0 left-0 z-30 flex h-[52px] items-center bg-background px-3 pl-[104px] sm:px-5 sm:pl-[104px] wco:h-[env(titlebar-area-height)] wco:pl-[calc(env(titlebar-area-x)+env(titlebar-area-width)+1em)]",
                 reserveTitleBarControlInset &&
                   "wco:pr-[calc(100vw-env(titlebar-area-width)-env(titlebar-area-x)+1em)]",
               )
-            : "pb-2 pl-[calc(env(safe-area-inset-left)+0.75rem)] pr-[calc(env(safe-area-inset-right)+0.75rem)] pt-2 sm:pb-3 sm:pl-[calc(env(safe-area-inset-left)+1.25rem)] sm:pr-[calc(env(safe-area-inset-right)+1.25rem)] sm:pt-3",
+            : "app-topbar-main fixed top-0 right-0 left-0 z-30 bg-background pb-2 pl-[calc(env(safe-area-inset-left)+0.75rem)] pr-[calc(env(safe-area-inset-right)+0.75rem)] pt-2 sm:pb-3 sm:pl-[calc(env(safe-area-inset-left)+1.25rem)] sm:pr-[calc(env(safe-area-inset-right)+1.25rem)] sm:pt-3",
         )}
       >
         <ChatHeader
@@ -3339,7 +3366,7 @@ export default function ChatView(props: ChatViewProps) {
       {/* Main content area with optional plan sidebar */}
       <div className="flex min-h-0 min-w-0 flex-1">
         {/* Chat column */}
-        <div className="flex min-h-0 min-w-0 flex-1 flex-col">
+        <div ref={chatColumnRef} className="flex min-h-0 min-w-0 flex-1 flex-col">
           {/* Messages Wrapper */}
           <div className="relative flex min-h-0 flex-1 flex-col">
             {/* Messages — LegendList handles virtualization and scrolling internally */}
@@ -3382,6 +3409,7 @@ export default function ChatView(props: ChatViewProps) {
 
           {/* Input bar */}
           <div
+            ref={composerAreaRef}
             className={cn(
               "pl-[calc(env(safe-area-inset-left)+0.75rem)] pr-[calc(env(safe-area-inset-right)+0.75rem)] pt-1.5 sm:pl-[calc(env(safe-area-inset-left)+1.25rem)] sm:pr-[calc(env(safe-area-inset-right)+1.25rem)] sm:pt-2",
               isGitRepo
@@ -3389,105 +3417,108 @@ export default function ChatView(props: ChatViewProps) {
                 : "pb-[calc(env(safe-area-inset-bottom)+0.75rem)] sm:pb-[calc(env(safe-area-inset-bottom)+1rem)]",
             )}
           >
-            <ComposerChangedFilesBar
-              turnSummary={latestChangedFilesSummary}
-              resolvedTheme={resolvedTheme}
-              onOpenTurnDiff={onOpenTurnDiff}
-            />
-            <ChatComposer
-              ref={composerRef}
-              composerDraftTarget={composerDraftTarget}
-              environmentId={environmentId}
-              routeKind={routeKind}
-              routeThreadRef={routeThreadRef}
-              draftId={draftId}
-              activeThreadId={activeThreadId}
-              activeThreadEnvironmentId={activeThread?.environmentId}
-              activeThread={activeThread}
-              isServerThread={isServerThread}
-              isLocalDraftThread={isLocalDraftThread}
-              phase={phase}
-              isConnecting={isConnecting}
-              isSendBusy={isSendBusy}
-              isPreparingWorktree={isPreparingWorktree}
-              activePendingApproval={activePendingApproval}
-              pendingApprovals={pendingApprovals}
-              pendingUserInputs={pendingUserInputs}
-              activePendingProgress={activePendingProgress}
-              activePendingResolvedAnswers={activePendingResolvedAnswers}
-              activePendingIsResponding={activePendingIsResponding}
-              activePendingDraftAnswers={activePendingDraftAnswers}
-              activePendingQuestionIndex={activePendingQuestionIndex}
-              respondingRequestIds={respondingRequestIds}
-              showPlanFollowUpPrompt={showPlanFollowUpPrompt}
-              activeProposedPlan={activeProposedPlan}
-              activePlan={activePlan as { turnId?: TurnId } | null}
-              sidebarProposedPlan={sidebarProposedPlan as { turnId?: TurnId } | null}
-              planSidebarLabel={planSidebarLabel}
-              planSidebarOpen={planSidebarOpen}
-              runtimeMode={runtimeMode}
-              interactionMode={interactionMode}
-              lockedProvider={lockedProvider}
-              providerStatuses={providerStatuses as ServerProvider[]}
-              activeProjectDefaultModelSelection={activeProject?.defaultModelSelection}
-              activeThreadModelSelection={activeThread?.modelSelection}
-              activeThreadActivities={activeThread?.activities}
-              resolvedTheme={resolvedTheme}
-              settings={settings}
-              keybindings={keybindings}
-              terminalOpen={Boolean(terminalState.terminalOpen)}
-              gitCwd={gitCwd}
-              promptRef={promptRef}
-              composerImagesRef={composerImagesRef}
-              composerTerminalContextsRef={composerTerminalContextsRef}
-              shouldAutoScrollRef={isAtEndRef}
-              scheduleStickToBottom={scrollToEnd}
-              onSend={onSend}
-              onInterrupt={onInterrupt}
-              onImplementPlanInNewThread={onImplementPlanInNewThread}
-              onRespondToApproval={onRespondToApproval}
-              onSelectActivePendingUserInputOption={onSelectActivePendingUserInputOption}
-              onAdvanceActivePendingUserInput={onAdvanceActivePendingUserInput}
-              onPreviousActivePendingUserInputQuestion={onPreviousActivePendingUserInputQuestion}
-              onChangeActivePendingUserInputCustomAnswer={
-                onChangeActivePendingUserInputCustomAnswer
-              }
-              onProviderModelSelect={onProviderModelSelect}
-              toggleInteractionMode={toggleInteractionMode}
-              handleRuntimeModeChange={handleRuntimeModeChange}
-              handleInteractionModeChange={handleInteractionModeChange}
-              togglePlanSidebar={togglePlanSidebar}
-              focusComposer={focusComposer}
-              scheduleComposerFocus={scheduleComposerFocus}
-              setThreadError={setThreadError}
-              onExpandImage={onExpandTimelineImage}
-            />
-            {isGitRepo && (
-              <BranchToolbar
-                environmentId={activeThread.environmentId}
-                threadId={activeThread.id}
-                {...(routeKind === "draft" && draftId ? { draftId } : {})}
-                onEnvModeChange={onEnvModeChange}
-                {...(canOverrideServerThreadEnvMode ? { effectiveEnvModeOverride: envMode } : {})}
-                {...(canOverrideServerThreadEnvMode
-                  ? {
-                      activeThreadBranchOverride: activeThreadBranch,
-                      onActiveThreadBranchOverrideChange: setPendingServerThreadBranch,
-                    }
-                  : {})}
-                envLocked={envLocked}
-                onComposerFocusRequest={scheduleComposerFocus}
-                {...(canCheckoutPullRequestIntoThread
-                  ? { onCheckoutPullRequestRequest: openPullRequestDialog }
-                  : {})}
-                {...(hasMultipleEnvironments
-                  ? {
-                      availableEnvironments: logicalProjectEnvironments,
-                      onEnvironmentChange,
-                    }
-                  : {})}
+            <div className="mx-auto flex w-full min-w-0 max-w-208 flex-col">
+              <ComposerChangedFilesBar
+                turnSummary={latestChangedFilesSummary}
+                resolvedTheme={resolvedTheme}
+                onOpenTurnDiff={onOpenTurnDiff}
+                maxExpandedHeightPx={changedFilesMaxHeight}
               />
-            )}
+              <ChatComposer
+                ref={composerRef}
+                composerDraftTarget={composerDraftTarget}
+                environmentId={environmentId}
+                routeKind={routeKind}
+                routeThreadRef={routeThreadRef}
+                draftId={draftId}
+                activeThreadId={activeThreadId}
+                activeThreadEnvironmentId={activeThread?.environmentId}
+                activeThread={activeThread}
+                isServerThread={isServerThread}
+                isLocalDraftThread={isLocalDraftThread}
+                phase={phase}
+                isConnecting={isConnecting}
+                isSendBusy={isSendBusy}
+                isPreparingWorktree={isPreparingWorktree}
+                activePendingApproval={activePendingApproval}
+                pendingApprovals={pendingApprovals}
+                pendingUserInputs={pendingUserInputs}
+                activePendingProgress={activePendingProgress}
+                activePendingResolvedAnswers={activePendingResolvedAnswers}
+                activePendingIsResponding={activePendingIsResponding}
+                activePendingDraftAnswers={activePendingDraftAnswers}
+                activePendingQuestionIndex={activePendingQuestionIndex}
+                respondingRequestIds={respondingRequestIds}
+                showPlanFollowUpPrompt={showPlanFollowUpPrompt}
+                activeProposedPlan={activeProposedPlan}
+                activePlan={activePlan as { turnId?: TurnId } | null}
+                sidebarProposedPlan={sidebarProposedPlan as { turnId?: TurnId } | null}
+                planSidebarLabel={planSidebarLabel}
+                planSidebarOpen={planSidebarOpen}
+                runtimeMode={runtimeMode}
+                interactionMode={interactionMode}
+                lockedProvider={lockedProvider}
+                providerStatuses={providerStatuses as ServerProvider[]}
+                activeProjectDefaultModelSelection={activeProject?.defaultModelSelection}
+                activeThreadModelSelection={activeThread?.modelSelection}
+                activeThreadActivities={activeThread?.activities}
+                resolvedTheme={resolvedTheme}
+                settings={settings}
+                keybindings={keybindings}
+                terminalOpen={Boolean(terminalState.terminalOpen)}
+                gitCwd={gitCwd}
+                promptRef={promptRef}
+                composerImagesRef={composerImagesRef}
+                composerTerminalContextsRef={composerTerminalContextsRef}
+                shouldAutoScrollRef={isAtEndRef}
+                scheduleStickToBottom={scrollToEnd}
+                onSend={onSend}
+                onInterrupt={onInterrupt}
+                onImplementPlanInNewThread={onImplementPlanInNewThread}
+                onRespondToApproval={onRespondToApproval}
+                onSelectActivePendingUserInputOption={onSelectActivePendingUserInputOption}
+                onAdvanceActivePendingUserInput={onAdvanceActivePendingUserInput}
+                onPreviousActivePendingUserInputQuestion={onPreviousActivePendingUserInputQuestion}
+                onChangeActivePendingUserInputCustomAnswer={
+                  onChangeActivePendingUserInputCustomAnswer
+                }
+                onProviderModelSelect={onProviderModelSelect}
+                toggleInteractionMode={toggleInteractionMode}
+                handleRuntimeModeChange={handleRuntimeModeChange}
+                handleInteractionModeChange={handleInteractionModeChange}
+                togglePlanSidebar={togglePlanSidebar}
+                focusComposer={focusComposer}
+                scheduleComposerFocus={scheduleComposerFocus}
+                setThreadError={setThreadError}
+                onExpandImage={onExpandTimelineImage}
+              />
+              {isGitRepo && (
+                <BranchToolbar
+                  environmentId={activeThread.environmentId}
+                  threadId={activeThread.id}
+                  {...(routeKind === "draft" && draftId ? { draftId } : {})}
+                  onEnvModeChange={onEnvModeChange}
+                  {...(canOverrideServerThreadEnvMode ? { effectiveEnvModeOverride: envMode } : {})}
+                  {...(canOverrideServerThreadEnvMode
+                    ? {
+                        activeThreadBranchOverride: activeThreadBranch,
+                        onActiveThreadBranchOverrideChange: setPendingServerThreadBranch,
+                      }
+                    : {})}
+                  envLocked={envLocked}
+                  onComposerFocusRequest={scheduleComposerFocus}
+                  {...(canCheckoutPullRequestIntoThread
+                    ? { onCheckoutPullRequestRequest: openPullRequestDialog }
+                    : {})}
+                  {...(hasMultipleEnvironments
+                    ? {
+                        availableEnvironments: logicalProjectEnvironments,
+                        onEnvironmentChange,
+                      }
+                    : {})}
+                />
+              )}
+            </div>
           </div>
 
           {pullRequestDialogState ? (

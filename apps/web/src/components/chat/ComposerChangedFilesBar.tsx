@@ -13,12 +13,14 @@ export interface ComposerChangedFilesBarProps {
   turnSummary: TurnDiffSummary | null;
   resolvedTheme: "light" | "dark";
   onOpenTurnDiff: (turnId: TurnId, filePath?: string) => void;
+  maxExpandedHeightPx?: number | null;
 }
 
 export const ComposerChangedFilesBar = memo(function ComposerChangedFilesBar({
   turnSummary,
   resolvedTheme,
   onOpenTurnDiff,
+  maxExpandedHeightPx = null,
 }: ComposerChangedFilesBarProps) {
   const [expanded, setExpanded] = useState(false);
 
@@ -70,15 +72,21 @@ export const ComposerChangedFilesBar = memo(function ComposerChangedFilesBar({
         </Button>
       </div>
       {expanded && (
-        <div className="border-border/55 border-t px-1.5 py-1.5">
-          <ChangedFilesTree
-            key={`composer-changed-files-tree:${turnSummary.turnId}`}
-            turnId={turnSummary.turnId}
-            files={turnSummary.files}
-            allDirectoriesExpanded
-            resolvedTheme={resolvedTheme}
-            onOpenTurnDiff={onOpenTurnDiff}
-          />
+        <div className="border-border/55 border-t">
+          <div
+            className="overflow-y-auto px-1.5 py-1.5"
+            data-composer-changed-files-scroll="true"
+            style={maxExpandedHeightPx ? { maxHeight: maxExpandedHeightPx } : undefined}
+          >
+            <ChangedFilesTree
+              key={`composer-changed-files-tree:${turnSummary.turnId}`}
+              turnId={turnSummary.turnId}
+              files={turnSummary.files}
+              allDirectoriesExpanded
+              resolvedTheme={resolvedTheme}
+              onOpenTurnDiff={onOpenTurnDiff}
+            />
+          </div>
         </div>
       )}
     </div>

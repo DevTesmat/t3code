@@ -75,6 +75,7 @@ interface BuildCliInput {
   readonly verbose: Option.Option<boolean>;
   readonly mockUpdates: Option.Option<boolean>;
   readonly mockUpdateServerPort: Option.Option<number>;
+  readonly localVariant: Option.Option<boolean>;
 }
 
 function detectHostBuildPlatform(hostPlatform: string): typeof BuildPlatform.Type | undefined {
@@ -206,6 +207,7 @@ interface ResolvedBuildOptions {
   readonly verbose: boolean;
   readonly mockUpdates: boolean;
   readonly mockUpdateServerPort: number | undefined;
+  readonly localVariant: boolean;
 }
 
 interface StagePackageJson {
@@ -251,6 +253,7 @@ const BuildEnvConfig = Config.all({
   verbose: Config.boolean("T3CODE_DESKTOP_VERBOSE").pipe(Config.withDefault(false)),
   mockUpdates: Config.boolean("T3CODE_DESKTOP_MOCK_UPDATES").pipe(Config.withDefault(false)),
   mockUpdateServerPort: Config.string("T3CODE_DESKTOP_MOCK_UPDATE_SERVER_PORT").pipe(Config.option),
+  localVariant: Config.boolean("T3CODE_DESKTOP_LOCAL").pipe(Config.withDefault(false)),
 });
 
 const MockUpdateServerPortSchema = Schema.NumberFromString.check(
@@ -311,6 +314,7 @@ export const resolveBuildOptions = Effect.fn("resolveBuildOptions")(function* (
   const verbose = resolveBooleanFlag(input.verbose, env.verbose);
 
   const mockUpdates = resolveBooleanFlag(input.mockUpdates, env.mockUpdates);
+  const localVariant = resolveBooleanFlag(input.localVariant, env.localVariant);
   const mockUpdateServerPort =
     Option.getOrUndefined(input.mockUpdateServerPort) ??
     (yield* resolveMockUpdateServerPort(Option.getOrUndefined(env.mockUpdateServerPort)).pipe(
@@ -335,6 +339,7 @@ export const resolveBuildOptions = Effect.fn("resolveBuildOptions")(function* (
     verbose,
     mockUpdates,
     mockUpdateServerPort,
+    localVariant,
   } satisfies ResolvedBuildOptions;
 });
 
@@ -565,18 +570,24 @@ const createBuildConfig = Effect.fn("createBuildConfig")(function* (
   signed: boolean,
   mockUpdates: boolean,
   mockUpdateServerPort: number | undefined,
+  localVariant: boolean,
 ) {
   const buildConfig: Record<string, unknown> = {
-    appId: "com.t3tools.t3code",
-    productName: resolveDesktopProductName(version),
-    artifactName: "T3-Code-${version}-${arch}.${ext}",
+    appId: localVariant ? "com.t3tools.t3code.local" : "com.t3tools.t3code",
+    productName: localVariant ? "T3 Code (Local)" : resolveDesktopProductName(version),
+    artifactName: localVariant
+      ? "T3-Code-Local-${version}-${arch}.${ext}"
+      : "T3-Code-${version}-${arch}.${ext}",
     directories: {
       buildResources: "apps/desktop/resources",
     },
   };
   const updateChannel = resolveDesktopUpdateChannel(version);
   const publishConfig = resolveGitHubPublishConfig(updateChannel);
-  if (publishConfig) {
+  if (localVariant) {
+    // Local builds intentionally have no update feed. They should not auto-update
+    // into official releases while installed side-by-side.
+  } else if (publishConfig) {
     buildConfig.publish = [publishConfig];
   } else if (mockUpdates) {
     buildConfig.publish = [
@@ -598,12 +609,12 @@ const createBuildConfig = Effect.fn("createBuildConfig")(function* (
   if (platform === "linux") {
     buildConfig.linux = {
       target: [target],
-      executableName: "t3code",
+      executableName: localVariant ? "t3code-local" : "t3code",
       icon: "icon.png",
       category: "Development",
       desktop: {
         entry: {
-          StartupWMClass: "t3code",
+          StartupWMClass: localVariant ? "t3code-local" : "t3code",
         },
       },
     };
@@ -732,6 +743,10 @@ const buildDesktopArtifact = Effect.fn("buildDesktopArtifact")(function* (
     yield* runCommand(
       ChildProcess.make({
         cwd: repoRoot,
+        env: {
+          ...process.env,
+          ...(options.localVariant ? { T3CODE_DESKTOP_APP_VARIANT: "local" } : {}),
+        },
         ...commandOutputOptions(options.verbose),
         // Windows needs shell mode to resolve .cmd shims (e.g. bun.cmd).
         shell: process.platform === "win32",
@@ -778,7 +793,7 @@ const buildDesktopArtifact = Effect.fn("buildDesktopArtifact")(function* (
   yield* fs.copy(stageResourcesDir, path.join(stageAppDir, "apps/desktop/prod-resources"));
 
   const stagePackageJson: StagePackageJson = {
-    name: "t3code",
+    name: options.localVariant ? "t3code-local" : "t3code",
     version: appVersion,
     buildVersion: appVersion,
     t3codeCommitHash: commitHash,
@@ -793,6 +808,7 @@ const buildDesktopArtifact = Effect.fn("buildDesktopArtifact")(function* (
       options.signed,
       options.mockUpdates,
       options.mockUpdateServerPort,
+      options.localVariant,
     ),
     dependencies: {
       ...resolvedServerDependencies,
@@ -939,6 +955,12 @@ const buildDesktopArtifactCli = Command.make("build-desktop-artifact", {
   mockUpdateServerPort: Flag.integer("mock-update-server-port").pipe(
     Flag.withSchema(Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 65535 }))),
     Flag.withDescription("Mock update server port (env: T3CODE_DESKTOP_MOCK_UPDATE_SERVER_PORT)."),
+    Flag.optional,
+  ),
+  localVariant: Flag.boolean("local").pipe(
+    Flag.withDescription(
+      "Build a side-by-side local variant with its own app id and data directories (env: T3CODE_DESKTOP_LOCAL).",
+    ),
     Flag.optional,
   ),
 }).pipe(

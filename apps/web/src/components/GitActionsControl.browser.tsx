@@ -25,6 +25,7 @@ function createDeferredPromise<T>() {
 const {
   activeRunStackedActionDeferredRef,
   activeDraftThreadRef,
+  gitQuickActionPreferenceRef,
   hasServerThreadRef,
   invalidateGitQueriesSpy,
   refreshGitStatusSpy,
@@ -36,8 +37,9 @@ const {
   toastPromiseSpy,
   toastUpdateSpy,
 } = vi.hoisted(() => ({
-  activeRunStackedActionDeferredRef: { current: createDeferredPromise<never>() },
+  activeRunStackedActionDeferredRef: { current: createDeferredPromise<unknown>() },
   activeDraftThreadRef: { current: null as unknown },
+  gitQuickActionPreferenceRef: { current: "commit_push_pr" as "commit_push" | "commit_push_pr" },
   hasServerThreadRef: { current: true },
   invalidateGitQueriesSpy: vi.fn(() => Promise.resolve()),
   refreshGitStatusSpy: vi.fn(() => Promise.resolve(null)),
@@ -244,6 +246,12 @@ vi.mock("~/terminal-links", () => ({
   resolvePathLinkTarget: vi.fn(),
 }));
 
+vi.mock("~/hooks/useSettings", () => ({
+  useSettings: (
+    selector: (settings: { gitQuickActionPreference: "commit_push" | "commit_push_pr" }) => unknown,
+  ) => selector({ gitQuickActionPreference: gitQuickActionPreferenceRef.current }),
+}));
+
 import GitActionsControl from "./GitActionsControl";
 
 function findButtonByText(text: string): HTMLButtonElement | null {
@@ -274,8 +282,9 @@ describe("GitActionsControl thread-scoped progress toast", () => {
   afterEach(() => {
     vi.useRealTimers();
     vi.clearAllMocks();
-    activeRunStackedActionDeferredRef.current = createDeferredPromise<never>();
+    activeRunStackedActionDeferredRef.current = createDeferredPromise<unknown>();
     activeDraftThreadRef.current = null;
+    gitQuickActionPreferenceRef.current = "commit_push_pr";
     hasServerThreadRef.current = true;
     document.body.innerHTML = "";
   });
@@ -385,6 +394,134 @@ describe("GitActionsControl thread-scoped progress toast", () => {
         Object.defineProperty(document, "visibilityState", originalVisibilityState);
       }
       vi.useRealTimers();
+      await screen.unmount();
+      host.remove();
+    }
+  });
+
+  it("suppresses the post-push create-pr CTA when the persisted preference excludes PR creation", async () => {
+    gitQuickActionPreferenceRef.current = "commit_push";
+    activeRunStackedActionDeferredRef.current = createDeferredPromise<unknown>();
+    const resolvedPushResult = {
+      action: "push",
+      branch: { status: "skipped_not_requested" },
+      commit: { status: "skipped_not_requested" },
+      push: {
+        status: "pushed",
+        remoteName: "origin",
+        remoteBranch: BRANCH_NAME,
+        remoteRef: `origin/${BRANCH_NAME}`,
+      },
+      pr: { status: "skipped_not_requested" },
+      toast: {
+        title: "Pushed",
+        description: "Remote updated",
+        cta: {
+          kind: "run_action",
+          label: "Create PR",
+          action: { kind: "create_pr" },
+        },
+      },
+    } as const;
+
+    const host = document.createElement("div");
+    document.body.append(host);
+    const screen = await render(
+      <GitActionsControl
+        gitCwd={GIT_CWD}
+        activeThreadRef={scopeThreadRef(ENVIRONMENT_A, SHARED_THREAD_ID)}
+      />,
+      {
+        container: host,
+      },
+    );
+
+    try {
+      const quickActionButton = findButtonByText("Push");
+      expect(quickActionButton, 'Unable to find button containing "Push"').toBeTruthy();
+      if (!(quickActionButton instanceof HTMLButtonElement)) {
+        throw new Error('Unable to find button containing "Push"');
+      }
+
+      quickActionButton.click();
+      activeRunStackedActionDeferredRef.current.resolve(resolvedPushResult);
+      await Promise.resolve();
+
+      expect(toastUpdateSpy).toHaveBeenLastCalledWith(
+        "toast-1",
+        expect.objectContaining({
+          type: "success",
+          title: "Pushed",
+          description: "Remote updated",
+        }),
+      );
+      expect(toastUpdateSpy.mock.lastCall?.[1]).not.toHaveProperty("actionProps");
+    } finally {
+      await screen.unmount();
+      host.remove();
+    }
+  });
+
+  it("keeps the post-push create-pr CTA when the persisted preference includes PR creation", async () => {
+    gitQuickActionPreferenceRef.current = "commit_push_pr";
+    activeRunStackedActionDeferredRef.current = createDeferredPromise<unknown>();
+    const resolvedPushResult = {
+      action: "push",
+      branch: { status: "skipped_not_requested" },
+      commit: { status: "skipped_not_requested" },
+      push: {
+        status: "pushed",
+        remoteName: "origin",
+        remoteBranch: BRANCH_NAME,
+        remoteRef: `origin/${BRANCH_NAME}`,
+      },
+      pr: { status: "skipped_not_requested" },
+      toast: {
+        title: "Pushed",
+        description: "Remote updated",
+        cta: {
+          kind: "run_action",
+          label: "Create PR",
+          action: { kind: "create_pr" },
+        },
+      },
+    } as const;
+
+    const host = document.createElement("div");
+    document.body.append(host);
+    const screen = await render(
+      <GitActionsControl
+        gitCwd={GIT_CWD}
+        activeThreadRef={scopeThreadRef(ENVIRONMENT_A, SHARED_THREAD_ID)}
+      />,
+      {
+        container: host,
+      },
+    );
+
+    try {
+      const quickActionButton = findButtonByText("Push & create PR");
+      expect(quickActionButton, 'Unable to find button containing "Push & create PR"').toBeTruthy();
+      if (!(quickActionButton instanceof HTMLButtonElement)) {
+        throw new Error('Unable to find button containing "Push & create PR"');
+      }
+
+      quickActionButton.click();
+      activeRunStackedActionDeferredRef.current.resolve(resolvedPushResult);
+      await Promise.resolve();
+
+      expect(toastUpdateSpy).toHaveBeenLastCalledWith(
+        "toast-1",
+        expect.objectContaining({
+          type: "success",
+          title: "Pushed",
+          description: "Remote updated",
+          actionProps: expect.objectContaining({
+            children: "Create PR",
+          }),
+        }),
+      );
+    } finally {
       await screen.unmount();
       host.remove();
     }

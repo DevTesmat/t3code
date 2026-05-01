@@ -9,6 +9,7 @@ import {
 } from "@tanstack/react-router";
 import { useCallback, useEffect, useState } from "react";
 
+import { AppTopbarBrand } from "../components/AppTopbarBrand";
 import { useSettingsRestore } from "../components/settings/SettingsPanels";
 import { Button } from "../components/ui/button";
 import { SidebarInset, SidebarTrigger } from "../components/ui/sidebar";
@@ -62,11 +63,13 @@ function SettingsContentLayout() {
 
   return (
     <SidebarInset className="h-dvh min-h-0 overflow-hidden overscroll-y-none bg-background text-foreground isolate">
-      <div className="flex min-h-0 min-w-0 flex-1 flex-col bg-background text-foreground">
+      <div className="flex min-h-0 min-w-0 flex-1 flex-col bg-background pt-[52px] text-foreground wco:pt-[env(titlebar-area-height)]">
         {!isElectron && (
-          <header className="border-b border-border px-3 py-2 sm:px-5">
+          <header className="app-topbar-main fixed top-0 right-0 left-0 z-30 border-b border-border bg-background px-3 py-2 sm:px-5">
             <div className="flex min-h-7 items-center gap-2 sm:min-h-6">
               <SidebarTrigger className="size-7 shrink-0 md:hidden" />
+              <AppTopbarBrand />
+              <div className="h-4 w-px shrink-0 bg-border" />
               <span className="text-sm font-medium text-foreground">Settings</span>
               {showRestoreDefaults ? (
                 <div className="ms-auto flex items-center gap-2">
@@ -78,7 +81,9 @@ function SettingsContentLayout() {
         )}
 
         {isElectron && (
-          <div className="drag-region flex h-[52px] shrink-0 items-center border-b border-border px-5 wco:h-[env(titlebar-area-height)] wco:pr-[calc(100vw-env(titlebar-area-width)-env(titlebar-area-x)+1em)]">
+          <div className="app-topbar-main drag-region fixed top-0 right-0 left-0 z-30 flex h-[52px] shrink-0 items-center border-b border-border bg-background px-5 pl-[104px] wco:h-[env(titlebar-area-height)] wco:pl-[calc(env(titlebar-area-x)+env(titlebar-area-width)+1em)] wco:pr-[calc(100vw-env(titlebar-area-width)-env(titlebar-area-x)+1em)]">
+            <AppTopbarBrand />
+            <div className="mx-2 h-4 w-px shrink-0 bg-border" />
             <span className="text-xs font-medium tracking-wide text-muted-foreground/70">
               Settings
             </span>

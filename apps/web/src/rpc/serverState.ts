@@ -97,6 +97,7 @@ export function applyServerConfigEvent(event: ServerConfigStreamEvent): void {
       }
       const nextConfig = {
         ...latestServerConfig,
+        keybindings: event.payload.keybindings,
         issues: event.payload.issues,
       } satisfies ServerConfig;
       resolveServerConfig(nextConfig);

@@ -13,7 +13,7 @@ import {
   type ServerConfig,
 } from "@t3tools/contracts";
 import { DateTime } from "effect";
-import { page } from "vitest/browser";
+import { page, userEvent } from "vitest/browser";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { render } from "vitest-browser-react";
 
@@ -700,6 +700,43 @@ describe("GeneralSettingsPanel observability", () => {
     await openLogsButton.click();
 
     expect(openInEditor).toHaveBeenCalledWith("/repo/project/.t3/logs", "cursor");
+  });
+
+  it("records the left sidebar toggle keybinding", async () => {
+    const upsertKeybinding = vi
+      .fn<LocalApi["server"]["upsertKeybinding"]>()
+      .mockResolvedValue({ keybindings: [], issues: [] });
+    window.nativeApi = {
+      server: {
+        upsertKeybinding,
+      },
+      shell: {
+        openInEditor: vi.fn(),
+      },
+    } as unknown as LocalApi;
+
+    setServerConfigSnapshot(createBaseServerConfig());
+
+    mounted = await render(
+      <AppAtomRegistryProvider>
+        <GeneralSettingsPanel />
+      </AppAtomRegistryProvider>,
+    );
+
+    await expect.element(page.getByText("Open/close left sidebar")).toBeInTheDocument();
+    const shortcutButton = page.getByRole("button", { name: /\u2318B|Ctrl\+B/ });
+    await expect.element(shortcutButton).toBeInTheDocument();
+
+    await shortcutButton.click();
+    await expect.element(page.getByRole("button", { name: "Press keys" })).toBeInTheDocument();
+    await userEvent.keyboard("{Meta>}{Shift>}L{/Shift}{/Meta}");
+
+    await vi.waitFor(() => {
+      expect(upsertKeybinding).toHaveBeenCalledWith({
+        key: "mod+shift+l",
+        command: "sidebar.toggle",
+      });
+    });
   });
 
   it("shows an OpenCode server URL field in provider settings", async () => {

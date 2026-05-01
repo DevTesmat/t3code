@@ -5,6 +5,11 @@ const shared = {
   outDir: "dist-electron",
   sourcemap: true,
   outExtensions: () => ({ js: ".cjs" }),
+  define: {
+    "process.env.T3CODE_DESKTOP_APP_VARIANT": JSON.stringify(
+      process.env.T3CODE_DESKTOP_APP_VARIANT ?? "",
+    ),
+  },
 };
 
 export default defineConfig([

@@ -1,6 +1,6 @@
 import { ArchiveIcon, ArchiveX, LoaderIcon, PlusIcon, RefreshCwIcon } from "lucide-react";
 import { useQueryClient } from "@tanstack/react-query";
-import { type ReactNode, useCallback, useMemo, useRef, useState } from "react";
+import { type KeyboardEvent, type ReactNode, useCallback, useMemo, useRef, useState } from "react";
 import {
   defaultInstanceIdForDriver,
   type DesktopUpdateChannel,
@@ -41,6 +41,8 @@ import {
   sortProviderInstanceEntries,
 } from "../../providerInstances";
 import { ensureLocalApi, readLocalApi } from "../../localApi";
+import { shortcutLabelForCommand } from "../../keybindings";
+import { buildKeybindingRule, keybindingValueForCommand } from "../../lib/projectScriptKeybindings";
 import { useShallow } from "zustand/react/shallow";
 import {
   selectProjectsAcrossEnvironments,
@@ -69,6 +71,8 @@ import {
 import { ProjectFavicon } from "../ProjectFavicon";
 import {
   useServerAvailableEditors,
+  useServerConfig,
+  useServerKeybindings,
   useServerKeybindingsConfigPath,
   useServerObservability,
   useServerProviders,
@@ -386,6 +390,118 @@ function AboutVersionSection() {
         }
       />
     </>
+  );
+}
+
+function keybindingStringFromKeyboardEvent(event: KeyboardEvent<HTMLButtonElement>): string | null {
+  const key = event.key.toLowerCase();
+  if (key === "escape" || key === "backspace") return null;
+  if (["meta", "control", "shift", "alt"].includes(key)) return null;
+
+  const parts: string[] = [];
+  const platform = typeof navigator === "undefined" ? "" : navigator.platform;
+  const isMac = platform.toLowerCase().includes("mac");
+  if ((isMac && event.metaKey) || (!isMac && event.ctrlKey)) parts.push("mod");
+  if (event.ctrlKey && (isMac || event.metaKey)) parts.push("ctrl");
+  if (event.metaKey && !isMac) parts.push("meta");
+  if (event.altKey) parts.push("alt");
+  if (event.shiftKey) parts.push("shift");
+
+  const keyToken = key === " " ? "space" : key.startsWith("arrow") ? key.replace("arrow", "") : key;
+  parts.push(keyToken);
+  return parts.join("+");
+}
+
+function SidebarToggleKeybindingControl() {
+  const serverConfig = useServerConfig();
+  const keybindings = useServerKeybindings();
+  const [recording, setRecording] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const localApi = readLocalApi();
+  const hasMalformedKeybindings = Boolean(
+    serverConfig?.issues.some((issue) => issue.kind === "keybindings.malformed-config"),
+  );
+  const configuredValue = keybindingValueForCommand(keybindings, "sidebar.toggle") ?? "mod+b";
+  const platform = typeof navigator === "undefined" ? "" : navigator.platform;
+  const shortcutLabel =
+    shortcutLabelForCommand(keybindings, "sidebar.toggle", {
+      context: { terminalFocus: false, terminalOpen: false },
+    }) ?? (platform.toLowerCase().includes("mac") ? "\u2318B" : "Ctrl+B");
+  const disabled = !localApi || hasMalformedKeybindings || saving;
+
+  const persistKeybinding = useCallback(async (nextKey: string) => {
+    const rule = buildKeybindingRule({
+      keybinding: nextKey,
+      command: "sidebar.toggle",
+    });
+    if (!rule) return;
+
+    setSaving(true);
+    try {
+      await ensureLocalApi().server.upsertKeybinding(rule);
+    } catch {
+      toastManager.add(
+        stackedThreadToast({
+          type: "error",
+          title: "Unable to save keybinding",
+        }),
+      );
+    } finally {
+      setSaving(false);
+      setRecording(false);
+    }
+  }, []);
+
+  const handleKeyDown = useCallback(
+    (event: KeyboardEvent<HTMLButtonElement>) => {
+      if (!recording) return;
+      event.preventDefault();
+      event.stopPropagation();
+
+      if (event.key === "Escape") {
+        setRecording(false);
+        return;
+      }
+      if (event.key === "Backspace") {
+        void persistKeybinding("mod+b");
+        return;
+      }
+
+      const nextKey = keybindingStringFromKeyboardEvent(event);
+      if (!nextKey) return;
+      void persistKeybinding(nextKey);
+    },
+    [persistKeybinding, recording],
+  );
+
+  return (
+    <div className="flex flex-col items-end gap-1">
+      <div className="flex items-center gap-2">
+        <Button
+          type="button"
+          size="xs"
+          variant={recording ? "default" : "outline"}
+          className="min-w-20 font-mono"
+          disabled={disabled}
+          onClick={() => setRecording(true)}
+          onKeyDown={handleKeyDown}
+        >
+          {recording ? "Press keys" : saving ? "Saving..." : shortcutLabel}
+        </Button>
+        <Button
+          type="button"
+          size="xs"
+          variant="ghost"
+          disabled={disabled || configuredValue === "mod+b"}
+          onClick={() => void persistKeybinding("mod+b")}
+        >
+          Reset
+        </Button>
+      </div>
+      {hasMalformedKeybindings ? (
+        <span className="text-[11px] text-destructive">Fix keybindings.json to edit.</span>
+      ) : null}
+    </div>
   );
 }
 
@@ -1347,9 +1463,19 @@ export function GeneralSettingsPanel() {
         onOpenChange={setIsAddInstanceDialogOpen}
       />
 
-      <SettingsSection title="Advanced">
+      <SettingsSection title="Keybindings">
         <SettingsRow
-          title="Keybindings"
+          title="Open/close left sidebar"
+          description="Toggle the main thread sidebar from anywhere outside terminal focus."
+          status={
+            readLocalApi()
+              ? "Click the shortcut, then press a new key combination."
+              : "Keybinding edits are unavailable in this environment."
+          }
+          control={<SidebarToggleKeybindingControl />}
+        />
+        <SettingsRow
+          title="Advanced keybindings file"
           description="Open the persisted `keybindings.json` file to edit advanced bindings directly."
           status={
             <>

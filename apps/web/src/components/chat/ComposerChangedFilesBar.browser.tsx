@@ -125,4 +125,37 @@ describe("ComposerChangedFilesBar", () => {
       await screen.unmount();
     }
   });
+
+  it("caps the expanded tree and scrolls it independently", async () => {
+    const files = Array.from({ length: 40 }, (_, index) => ({
+      path: `apps/web/src/generated/file-${String(index).padStart(2, "0")}.tsx`,
+      additions: 1,
+      deletions: 0,
+    }));
+    const screen = await render(
+      <ComposerChangedFilesBar
+        turnSummary={buildSummary({ turnId: "turn-1", files })}
+        resolvedTheme="light"
+        onOpenTurnDiff={vi.fn()}
+        maxExpandedHeightPx={160}
+      />,
+    );
+
+    try {
+      await page.getByRole("button", { name: /Changed files \(40\)/ }).click();
+      await expect.element(page.getByText("file-00.tsx")).toBeVisible();
+
+      const scrollContainer = document.querySelector<HTMLElement>(
+        "[data-composer-changed-files-scroll='true']",
+      );
+      expect(scrollContainer).not.toBeNull();
+      expect(scrollContainer!.clientHeight).toBeLessThanOrEqual(160);
+      expect(scrollContainer!.scrollHeight).toBeGreaterThan(scrollContainer!.clientHeight);
+
+      scrollContainer!.scrollTop = scrollContainer!.scrollHeight;
+      expect(scrollContainer!.scrollTop).toBeGreaterThan(0);
+    } finally {
+      await screen.unmount();
+    }
+  });
 });

@@ -1909,7 +1909,7 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
       assert.deepEqual(second, {
         version: 1,
         type: "keybindingsUpdated",
-        payload: { issues: [] },
+        payload: { keybindings: [], issues: [] },
       });
     }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );
