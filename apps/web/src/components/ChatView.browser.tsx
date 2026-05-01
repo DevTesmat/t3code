@@ -351,6 +351,7 @@ function createSnapshotForTargetUser(options: {
         latestTurn: null,
         createdAt: NOW_ISO,
         updatedAt: NOW_ISO,
+        pinnedAt: null,
         archivedAt: null,
         deletedAt: null,
         messages,
@@ -416,6 +417,7 @@ function addThreadToSnapshot(
         latestTurn: null,
         createdAt: NOW_ISO,
         updatedAt: NOW_ISO,
+        pinnedAt: null,
         archivedAt: null,
         deletedAt: null,
         messages: [],
@@ -449,6 +451,7 @@ function toShellThread(thread: OrchestrationReadModel["threads"][number]) {
     latestTurn: thread.latestTurn,
     createdAt: thread.createdAt,
     updatedAt: thread.updatedAt,
+    pinnedAt: thread.pinnedAt,
     archivedAt: thread.archivedAt,
     session: thread.session,
     latestUserMessageAt:

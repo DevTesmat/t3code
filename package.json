@@ -54,6 +54,7 @@
     "dist:desktop:win": "node scripts/build-desktop-artifact.ts --platform win --target nsis",
     "dist:desktop:win:arm64": "node scripts/build-desktop-artifact.ts --platform win --target nsis --arch arm64",
     "dist:desktop:win:x64": "node scripts/build-desktop-artifact.ts --platform win --target nsis --arch x64",
+    "deploy:desktop:local": "node scripts/build-desktop-artifact.ts --platform mac --target dmg --arch arm64 --local --output-dir release-local && MOUNT_DIR=\"$(mktemp -d)\" && hdiutil attach \"release-local/T3-Code-Local-0.0.21-arm64.dmg\" -mountpoint \"$MOUNT_DIR\" -nobrowse -quiet && rm -rf \"/Applications/T3 Code (Local).app\" && ditto \"$MOUNT_DIR/T3 Code (Local).app\" \"/Applications/T3 Code (Local).app\" && hdiutil detach \"$MOUNT_DIR\" -quiet && rmdir \"$MOUNT_DIR\"",
     "release:smoke": "node scripts/release-smoke.ts",
     "clean": "rm -rf node_modules apps/*/node_modules packages/*/node_modules apps/*/dist apps/*/dist-electron packages/*/dist .turbo apps/*/.turbo packages/*/.turbo",
     "sync:desktop-history": "node scripts/sync-desktop-history.ts",

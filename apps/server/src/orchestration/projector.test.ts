@@ -88,6 +88,7 @@ describe("orchestration projector", () => {
         latestTurn: null,
         createdAt: now,
         updatedAt: now,
+        pinnedAt: null,
         archivedAt: null,
         deletedAt: null,
         messages: [],
@@ -203,6 +204,78 @@ describe("orchestration projector", () => {
       ),
     );
     expect(unarchived.threads[0]?.archivedAt).toBeNull();
+  });
+
+  it("applies thread.pinned and thread.unpinned events without changing updatedAt", async () => {
+    const now = new Date().toISOString();
+    const pinnedAt = new Date(Date.parse(now) + 1_000).toISOString();
+    const created = await Effect.runPromise(
+      projectEvent(
+        createEmptyReadModel(now),
+        makeEvent({
+          sequence: 1,
+          type: "thread.created",
+          aggregateKind: "thread",
+          aggregateId: "thread-1",
+          occurredAt: now,
+          commandId: "cmd-thread-create",
+          payload: {
+            threadId: "thread-1",
+            projectId: "project-1",
+            title: "demo",
+            modelSelection: {
+              provider: ProviderDriverKind.make("codex"),
+              model: "gpt-5-codex",
+            },
+            runtimeMode: "full-access",
+            interactionMode: "default",
+            branch: null,
+            worktreePath: null,
+            createdAt: now,
+            updatedAt: now,
+          },
+        }),
+      ),
+    );
+
+    const pinned = await Effect.runPromise(
+      projectEvent(
+        created,
+        makeEvent({
+          sequence: 2,
+          type: "thread.pinned",
+          aggregateKind: "thread",
+          aggregateId: "thread-1",
+          occurredAt: pinnedAt,
+          commandId: "cmd-thread-pin",
+          payload: {
+            threadId: "thread-1",
+            pinnedAt,
+          },
+        }),
+      ),
+    );
+    expect(pinned.threads[0]?.pinnedAt).toBe(pinnedAt);
+    expect(pinned.threads[0]?.updatedAt).toBe(now);
+
+    const unpinned = await Effect.runPromise(
+      projectEvent(
+        pinned,
+        makeEvent({
+          sequence: 3,
+          type: "thread.unpinned",
+          aggregateKind: "thread",
+          aggregateId: "thread-1",
+          occurredAt: pinnedAt,
+          commandId: "cmd-thread-unpin",
+          payload: {
+            threadId: "thread-1",
+          },
+        }),
+      ),
+    );
+    expect(unpinned.threads[0]?.pinnedAt).toBeNull();
+    expect(unpinned.threads[0]?.updatedAt).toBe(now);
   });
 
   it("keeps projector forward-compatible for unhandled event types", async () => {

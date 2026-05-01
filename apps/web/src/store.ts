@@ -244,6 +244,7 @@ function mapThread(thread: OrchestrationThread, environmentId: EnvironmentId): T
     proposedPlans: thread.proposedPlans.map(mapProposedPlan),
     error: sanitizeThreadErrorMessage(thread.session?.lastError),
     createdAt: thread.createdAt,
+    pinnedAt: thread.pinnedAt ?? null,
     archivedAt: thread.archivedAt,
     updatedAt: thread.updatedAt,
     latestTurn: thread.latestTurn,
@@ -275,6 +276,7 @@ function mapThreadShell(
     interactionMode: thread.interactionMode,
     error: sanitizeThreadErrorMessage(thread.session?.lastError),
     createdAt: thread.createdAt,
+    pinnedAt: thread.pinnedAt ?? null,
     archivedAt: thread.archivedAt,
     updatedAt: thread.updatedAt,
     branch: thread.branch,
@@ -293,6 +295,7 @@ function mapThreadShell(
     interactionMode: thread.interactionMode,
     session,
     createdAt: thread.createdAt,
+    pinnedAt: thread.pinnedAt ?? null,
     archivedAt: thread.archivedAt,
     updatedAt: thread.updatedAt,
     latestTurn: thread.latestTurn,
@@ -324,6 +327,7 @@ function toThreadShell(thread: Thread): ThreadShell {
     interactionMode: thread.interactionMode,
     error: thread.error,
     createdAt: thread.createdAt,
+    pinnedAt: thread.pinnedAt ?? null,
     archivedAt: thread.archivedAt,
     updatedAt: thread.updatedAt,
     branch: thread.branch,
@@ -395,6 +399,7 @@ function sidebarThreadSummariesEqual(
     left.interactionMode === right.interactionMode &&
     threadSessionsEqual(left.session, right.session) &&
     left.createdAt === right.createdAt &&
+    left.pinnedAt === right.pinnedAt &&
     left.archivedAt === right.archivedAt &&
     left.updatedAt === right.updatedAt &&
     latestTurnsEqual(left.latestTurn, right.latestTurn) &&
@@ -421,6 +426,7 @@ function threadShellsEqual(left: ThreadShell | undefined, right: ThreadShell): b
     left.interactionMode === right.interactionMode &&
     left.error === right.error &&
     left.createdAt === right.createdAt &&
+    left.pinnedAt === right.pinnedAt &&
     left.archivedAt === right.archivedAt &&
     left.updatedAt === right.updatedAt &&
     left.branch === right.branch &&
@@ -1263,6 +1269,7 @@ function applyEnvironmentOrchestrationEvent(
           latestTurn: null,
           createdAt: event.payload.createdAt,
           updatedAt: event.payload.updatedAt,
+          pinnedAt: event.payload.pinnedAt,
           archivedAt: null,
           deletedAt: null,
           messages: [],
@@ -1291,6 +1298,18 @@ function applyEnvironmentOrchestrationEvent(
         ...thread,
         archivedAt: null,
         updatedAt: event.payload.updatedAt,
+      }));
+
+    case "thread.pinned":
+      return updateThreadState(state, event.payload.threadId, (thread) => ({
+        ...thread,
+        pinnedAt: event.payload.pinnedAt,
+      }));
+
+    case "thread.unpinned":
+      return updateThreadState(state, event.payload.threadId, (thread) => ({
+        ...thread,
+        pinnedAt: null,
       }));
 
     case "thread.meta-updated":

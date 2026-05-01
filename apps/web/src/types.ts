@@ -107,6 +107,7 @@ export interface Thread {
   proposedPlans: ProposedPlan[];
   error: string | null;
   createdAt: string;
+  pinnedAt?: string | null;
   archivedAt: string | null;
   updatedAt?: string | undefined;
   latestTurn: OrchestrationLatestTurn | null;
@@ -128,6 +129,7 @@ export interface ThreadShell {
   interactionMode: ProviderInteractionMode;
   error: string | null;
   createdAt: string;
+  pinnedAt?: string | null;
   archivedAt: string | null;
   updatedAt?: string | undefined;
   branch: string | null;
@@ -147,6 +149,7 @@ export interface SidebarThreadSummary {
   interactionMode: ProviderInteractionMode;
   session: ThreadSession | null;
   createdAt: string;
+  pinnedAt?: string | null;
   archivedAt: string | null;
   updatedAt?: string | undefined;
   latestTurn: OrchestrationLatestTurn | null;

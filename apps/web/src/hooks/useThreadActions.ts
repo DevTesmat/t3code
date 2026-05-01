@@ -95,6 +95,28 @@ export function useThreadActions() {
     });
   }, []);
 
+  const pinThread = useCallback(async (target: ScopedThreadRef) => {
+    const api = readEnvironmentApi(target.environmentId);
+    if (!api) return;
+    await api.orchestration.dispatchCommand({
+      type: "thread.pin",
+      commandId: newCommandId(),
+      threadId: target.threadId,
+      createdAt: new Date().toISOString(),
+    });
+  }, []);
+
+  const unpinThread = useCallback(async (target: ScopedThreadRef) => {
+    const api = readEnvironmentApi(target.environmentId);
+    if (!api) return;
+    await api.orchestration.dispatchCommand({
+      type: "thread.unpin",
+      commandId: newCommandId(),
+      threadId: target.threadId,
+      createdAt: new Date().toISOString(),
+    });
+  }, []);
+
   const deleteThread = useCallback(
     async (target: ScopedThreadRef, opts: { deletedThreadKeys?: ReadonlySet<string> } = {}) => {
       const api = readEnvironmentApi(target.environmentId);
@@ -275,6 +297,8 @@ export function useThreadActions() {
   return {
     archiveThread,
     unarchiveThread,
+    pinThread,
+    unpinThread,
     deleteThread,
     confirmAndDeleteThread,
   };
