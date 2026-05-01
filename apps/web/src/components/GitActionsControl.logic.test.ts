@@ -222,6 +222,21 @@ describe("when: branch is clean, ahead, and has no open PR", () => {
     });
   });
 
+  it("resolveQuickAction only pushes when the quick action preference excludes PR creation", () => {
+    const quick = resolveQuickAction(
+      status({ aheadCount: 2, pr: null }),
+      false,
+      false,
+      true,
+      "commit_push",
+    );
+    assert.deepInclude(quick, {
+      kind: "run_action",
+      action: "push",
+      label: "Push",
+    });
+  });
+
   it("buildMenuItems enables push and create PR, with commit disabled", () => {
     const items = buildMenuItems(status({ aheadCount: 2, pr: null }), false);
     assert.deepEqual(items, [
@@ -349,6 +364,21 @@ describe("when: working tree has local changes", () => {
       kind: "run_action",
       action: "commit_push_pr",
       label: "Commit, push & PR",
+    });
+  });
+
+  it("resolveQuickAction returns commit and push when the quick action preference excludes PR creation", () => {
+    const quick = resolveQuickAction(
+      status({ hasWorkingTreeChanges: true }),
+      false,
+      false,
+      true,
+      "commit_push",
+    );
+    assert.deepInclude(quick, {
+      kind: "run_action",
+      action: "commit_push",
+      label: "Commit & push",
     });
   });
 

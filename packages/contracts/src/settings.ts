@@ -28,11 +28,18 @@ export const SidebarProjectGroupingMode = Schema.Literals([
 export type SidebarProjectGroupingMode = typeof SidebarProjectGroupingMode.Type;
 export const DEFAULT_SIDEBAR_PROJECT_GROUPING_MODE: SidebarProjectGroupingMode = "repository";
 
+export const GitQuickActionPreference = Schema.Literals(["commit_push", "commit_push_pr"]);
+export type GitQuickActionPreference = typeof GitQuickActionPreference.Type;
+export const DEFAULT_GIT_QUICK_ACTION_PREFERENCE: GitQuickActionPreference = "commit_push_pr";
+
 export const ClientSettingsSchema = Schema.Struct({
   autoOpenPlanSidebar: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(true))),
   confirmThreadArchive: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
   confirmThreadDelete: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(true))),
   diffWordWrap: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
+  gitQuickActionPreference: GitQuickActionPreference.pipe(
+    Schema.withDecodingDefault(Effect.succeed(DEFAULT_GIT_QUICK_ACTION_PREFERENCE)),
+  ),
   // Model favorites. Historically keyed by provider kind, now
   // widened to `ProviderInstanceId` so users can favorite a specific model
   // on a custom provider instance (e.g. "Codex Personal · gpt-5") without
@@ -270,6 +277,7 @@ export const ClientSettingsPatch = Schema.Struct({
   confirmThreadArchive: Schema.optionalKey(Schema.Boolean),
   confirmThreadDelete: Schema.optionalKey(Schema.Boolean),
   diffWordWrap: Schema.optionalKey(Schema.Boolean),
+  gitQuickActionPreference: Schema.optionalKey(GitQuickActionPreference),
   favorites: Schema.optionalKey(
     Schema.Array(
       Schema.Struct({

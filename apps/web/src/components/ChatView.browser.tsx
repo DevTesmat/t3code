@@ -1362,6 +1362,22 @@ async function waitForInteractionModeButton(
   );
 }
 
+function expectInteractionModePill(button: HTMLButtonElement, mode: "Build" | "Plan"): void {
+  expect(button.classList.contains("rounded-full")).toBe(true);
+  expect(button.classList.contains("border")).toBe(true);
+
+  if (mode === "Plan") {
+    expect(button.classList.contains("bg-orange-500/12")).toBe(true);
+    expect(button.classList.contains("text-orange-700")).toBe(true);
+    expect(button.classList.contains("border-orange-500/25")).toBe(true);
+    return;
+  }
+
+  expect(button.classList.contains("bg-violet-500/12")).toBe(true);
+  expect(button.classList.contains("text-violet-700")).toBe(true);
+  expect(button.classList.contains("border-violet-500/25")).toBe(true);
+}
+
 async function waitForServerConfigToApply(): Promise<void> {
   await vi.waitFor(
     () => {
@@ -2926,6 +2942,7 @@ describe("ChatView timeline estimator parity (full app)", () => {
     try {
       const initialModeButton = await waitForInteractionModeButton("Build");
       expect(initialModeButton.title).toContain("enter plan mode");
+      expectInteractionModePill(initialModeButton, "Build");
 
       window.dispatchEvent(
         new KeyboardEvent("keydown", {
@@ -2952,9 +2969,9 @@ describe("ChatView timeline estimator parity (full app)", () => {
 
       await vi.waitFor(
         async () => {
-          expect((await waitForInteractionModeButton("Plan")).title).toContain(
-            "return to normal build mode",
-          );
+          const planModeButton = await waitForInteractionModeButton("Plan");
+          expect(planModeButton.title).toContain("return to normal build mode");
+          expectInteractionModePill(planModeButton, "Plan");
         },
         { timeout: 8_000, interval: 16 },
       );
@@ -2970,7 +2987,9 @@ describe("ChatView timeline estimator parity (full app)", () => {
 
       await vi.waitFor(
         async () => {
-          expect((await waitForInteractionModeButton("Build")).title).toContain("enter plan mode");
+          const buildModeButton = await waitForInteractionModeButton("Build");
+          expect(buildModeButton.title).toContain("enter plan mode");
+          expectInteractionModePill(buildModeButton, "Build");
         },
         { timeout: 8_000, interval: 16 },
       );

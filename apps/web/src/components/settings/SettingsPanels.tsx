@@ -451,6 +451,9 @@ export function useSettingsRestore(onRestored?: () => void) {
       ...(settings.confirmThreadDelete !== DEFAULT_UNIFIED_SETTINGS.confirmThreadDelete
         ? ["Delete confirmation"]
         : []),
+      ...(settings.gitQuickActionPreference !== DEFAULT_UNIFIED_SETTINGS.gitQuickActionPreference
+        ? ["Git quick action"]
+        : []),
       ...(isGitWritingModelDirty ? ["Git writing model"] : []),
       ...(areProviderSettingsDirty ? ["Providers"] : []),
     ],
@@ -464,6 +467,7 @@ export function useSettingsRestore(onRestored?: () => void) {
       settings.defaultThreadEnvMode,
       settings.diffWordWrap,
       settings.enableAssistantStreaming,
+      settings.gitQuickActionPreference,
       settings.timestampFormat,
       theme,
     ],
@@ -1106,6 +1110,35 @@ export function GeneralSettingsPanel() {
                 updateSettings({ confirmThreadDelete: Boolean(checked) })
               }
               aria-label="Confirm thread deletion"
+            />
+          }
+        />
+
+        <SettingsRow
+          title="Git quick action"
+          description="When local work is ready, choose whether the toolbar icon stops after commit and push or also creates a pull request."
+          resetAction={
+            settings.gitQuickActionPreference !==
+            DEFAULT_UNIFIED_SETTINGS.gitQuickActionPreference ? (
+              <SettingResetButton
+                label="git quick action"
+                onClick={() =>
+                  updateSettings({
+                    gitQuickActionPreference: DEFAULT_UNIFIED_SETTINGS.gitQuickActionPreference,
+                  })
+                }
+              />
+            ) : null
+          }
+          control={
+            <Switch
+              checked={settings.gitQuickActionPreference === "commit_push_pr"}
+              onCheckedChange={(checked) =>
+                updateSettings({
+                  gitQuickActionPreference: checked ? "commit_push_pr" : "commit_push",
+                })
+              }
+              aria-label="Create a pull request from the Git quick action"
             />
           }
         />

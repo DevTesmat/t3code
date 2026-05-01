@@ -189,7 +189,12 @@ const ComposerFooterModeControls = memo(function ComposerFooterModeControls(prop
         <>
           <Button
             variant="ghost"
-            className="shrink-0 whitespace-nowrap px-2 text-muted-foreground/70 hover:text-foreground/80 sm:px-3"
+            className={cn(
+              "shrink-0 rounded-full border px-2.5 font-medium whitespace-nowrap shadow-none transition-colors sm:px-3",
+              props.interactionMode === "plan"
+                ? "border-orange-500/25 bg-orange-500/12 text-orange-700 hover:bg-orange-500/18 dark:text-orange-300"
+                : "border-violet-500/25 bg-violet-500/12 text-violet-700 hover:bg-violet-500/18 dark:text-violet-300",
+            )}
             size="sm"
             type="button"
             onClick={props.onToggleInteractionMode}
