@@ -196,6 +196,12 @@ code {
 }
 
 /* Window drag region (frameless titlebar) */
+.app-topbar-main {
+  transition-property: padding-left, padding-right;
+  transition-duration: 150ms;
+  transition-timing-function: ease-out;
+}
+
 .drag-region {
   -webkit-app-region: drag;
 }
