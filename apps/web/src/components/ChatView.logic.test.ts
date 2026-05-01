@@ -13,8 +13,10 @@ import { type Thread } from "../types";
 
 import {
   MAX_HIDDEN_MOUNTED_TERMINAL_THREADS,
+  buildQueuedComposerFlush,
   buildExpiredTerminalContextToastCopy,
   createLocalDispatchSnapshot,
+  deleteQueuedComposerMessage,
   deriveComposerSendState,
   hasServerAcknowledgedLocalDispatch,
   reconcileMountedTerminalThreadIds,
@@ -87,6 +89,130 @@ describe("buildExpiredTerminalContextToastCopy", () => {
       title: "Expired terminal contexts omitted from message",
       description: "Re-add it if you want that terminal output included.",
     });
+  });
+});
+
+describe("buildQueuedComposerFlush", () => {
+  it("combines queued messages in order", () => {
+    const result = buildQueuedComposerFlush([
+      { text: "first", attachments: [], terminalContexts: [] },
+      { text: "second", attachments: [], terminalContexts: [] },
+    ]);
+
+    expect(result).toEqual({
+      ok: true,
+      text: "Queued message 1:\nfirst\n\nQueued message 2:\nsecond",
+      attachments: [],
+    });
+  });
+
+  it("appends terminal contexts to the queued entry they came from", () => {
+    const result = buildQueuedComposerFlush([
+      {
+        text: "inspect this",
+        attachments: [],
+        terminalContexts: [
+          {
+            id: "ctx-1",
+            threadId: ThreadId.make("thread-1"),
+            terminalId: "default",
+            terminalLabel: "Terminal 1",
+            lineStart: 2,
+            lineEnd: 3,
+            text: "npm run dev",
+            createdAt: "2026-03-17T12:52:29.000Z",
+          },
+        ],
+      },
+    ]);
+
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.text).toContain("Queued message 1:\ninspect this");
+      expect(result.text).toContain("Terminal 1");
+      expect(result.text).toContain("npm run dev");
+    }
+  });
+
+  it("flattens attachments in queue order", () => {
+    const result = buildQueuedComposerFlush([
+      { text: "first", attachments: ["a", "b"], terminalContexts: [] },
+      { text: "second", attachments: ["c"], terminalContexts: [] },
+    ]);
+
+    expect(result).toEqual({
+      ok: true,
+      text: "Queued message 1:\nfirst\n\nQueued message 2:\nsecond",
+      attachments: ["a", "b", "c"],
+    });
+  });
+
+  it("rejects combined queues over the provider attachment limit", () => {
+    const result = buildQueuedComposerFlush([
+      {
+        text: "too many",
+        attachments: Array.from({ length: 9 }, (_, index) => `attachment-${index}`),
+        terminalContexts: [],
+      },
+    ]);
+
+    expect(result).toEqual({
+      ok: false,
+      reason: "too-many-attachments",
+      attachmentCount: 9,
+      maxAttachmentCount: 8,
+    });
+  });
+});
+
+describe("deleteQueuedComposerMessage", () => {
+  it("removes only the selected queued message", () => {
+    const messages = [
+      { id: "queued-1", text: "first", attachments: [], terminalContexts: [] },
+      { id: "queued-2", text: "second", attachments: [], terminalContexts: [] },
+      { id: "queued-3", text: "third", attachments: [], terminalContexts: [] },
+    ];
+
+    expect(deleteQueuedComposerMessage(messages, "queued-2").map((message) => message.id)).toEqual([
+      "queued-1",
+      "queued-3",
+    ]);
+  });
+
+  it("revokes image preview URLs for only the deleted queued message", () => {
+    const revokePreviewUrl = vi.fn();
+
+    deleteQueuedComposerMessage(
+      [
+        {
+          id: "queued-1",
+          text: "first",
+          attachments: [{ previewUrl: "blob:first" }],
+          terminalContexts: [],
+        },
+        {
+          id: "queued-2",
+          text: "second",
+          attachments: [{ previewUrl: "blob:second-a" }, { previewUrl: "blob:second-b" }],
+          terminalContexts: [],
+        },
+      ],
+      "queued-2",
+      revokePreviewUrl,
+    );
+
+    expect(revokePreviewUrl).toHaveBeenCalledTimes(2);
+    expect(revokePreviewUrl).toHaveBeenNthCalledWith(1, "blob:second-a");
+    expect(revokePreviewUrl).toHaveBeenNthCalledWith(2, "blob:second-b");
+  });
+
+  it("deleting the final queued message leaves the queue empty", () => {
+    expect(
+      deleteQueuedComposerMessage(
+        [{ id: "queued-1", text: "final", attachments: [], terminalContexts: [] }],
+        "queued-1",
+      ),
+    ).toEqual([]);
   });
 });
 

@@ -141,6 +141,7 @@ import {
 import { selectThreadTerminalState, useTerminalStateStore } from "../terminalStateStore";
 import { ChatComposer, type ChatComposerHandle } from "./chat/ChatComposer";
 import { ComposerChangedFilesBar } from "./chat/ComposerChangedFilesBar";
+import { ComposerQueuedMessagesBar } from "./chat/ComposerQueuedMessagesBar";
 import { ExpandedImageDialog } from "./chat/ExpandedImageDialog";
 import { PullRequestThreadDialog } from "./PullRequestThreadDialog";
 import { MessagesTimeline } from "./chat/MessagesTimeline";
@@ -153,9 +154,11 @@ import { ThreadErrorBanner } from "./chat/ThreadErrorBanner";
 import {
   MAX_HIDDEN_MOUNTED_TERMINAL_THREADS,
   buildExpiredTerminalContextToastCopy,
+  buildQueuedComposerFlush,
   buildLocalDraftThread,
   collectUserMessageBlobPreviewUrls,
   createLocalDispatchSnapshot,
+  deleteQueuedComposerMessage,
   deriveComposerSendState,
   hasServerAcknowledgedLocalDispatch,
   LAST_INVOKED_SCRIPT_BY_PROJECT_KEY,
@@ -189,6 +192,29 @@ const EMPTY_ACTIVITIES: OrchestrationThreadActivity[] = [];
 const EMPTY_PROPOSED_PLANS: Thread["proposedPlans"] = [];
 const EMPTY_PROVIDERS: ServerProvider[] = [];
 const EMPTY_PENDING_USER_INPUT_ANSWERS: Record<string, PendingUserInputDraftAnswer> = {};
+
+type QueuedComposerFlushReason = "agent-finished" | "empty-enter-force";
+
+interface QueuedComposerMessage {
+  id: string;
+  text: string;
+  attachments: ComposerImageAttachment[];
+  terminalContexts: TerminalContextDraft[];
+  createdAt: string;
+  selectedProvider: ProviderDriverKind;
+  selectedModel: string;
+  selectedProviderModels: ReadonlyArray<ServerProvider["models"][number]>;
+  selectedPromptEffort: string | null;
+  selectedModelSelection: ModelSelection;
+}
+
+function revokeQueuedComposerMessagePreviewUrls(messages: ReadonlyArray<QueuedComposerMessage>) {
+  for (const message of messages) {
+    for (const attachment of message.attachments) {
+      revokeBlobPreviewUrl(attachment.previewUrl);
+    }
+  }
+}
 
 type ThreadPlanCatalogEntry = Pick<Thread, "id" | "proposedPlans">;
 
@@ -683,6 +709,7 @@ export default function ChatView(props: ChatViewProps) {
   const [showScrollToBottom, setShowScrollToBottom] = useState(false);
   const [expandedImage, setExpandedImage] = useState<ExpandedImagePreview | null>(null);
   const [optimisticUserMessages, setOptimisticUserMessages] = useState<ChatMessage[]>([]);
+  const [queuedComposerMessages, setQueuedComposerMessages] = useState<QueuedComposerMessage[]>([]);
   const optimisticUserMessagesRef = useRef(optimisticUserMessages);
   optimisticUserMessagesRef.current = optimisticUserMessages;
   const [localDraftErrorsByDraftId, setLocalDraftErrorsByDraftId] = useState<
@@ -728,7 +755,14 @@ export default function ChatView(props: ChatViewProps) {
   const attachmentPreviewHandoffByMessageIdRef = useRef<Record<string, string[]>>({});
   const attachmentPreviewPromotionInFlightByMessageIdRef = useRef<Record<string, true>>({});
   const sendInFlightRef = useRef(false);
+  const queuedComposerMessagesRef = useRef<QueuedComposerMessage[]>([]);
+  const queuedFlushInFlightRef = useRef(false);
+  const previousPhaseRef = useRef<SessionPhase | null>(null);
   const terminalOpenByThreadRef = useRef<Record<string, boolean>>({});
+
+  useEffect(() => {
+    queuedComposerMessagesRef.current = queuedComposerMessages;
+  }, [queuedComposerMessages]);
 
   useEffect(() => {
     const fallbackHeight = Math.max(160, Math.min(240, Math.floor(window.innerHeight * 0.25)));
@@ -1112,6 +1146,9 @@ export default function ChatView(props: ChatViewProps) {
   );
   const selectedProvider: ProviderDriverKind = lockedProvider ?? unlockedSelectedProvider;
   const phase = derivePhase(activeThread?.session ?? null);
+  const activeTurnRunning =
+    phase === "running" || activeThread?.session?.orchestrationStatus === "running";
+  const composerPhase: SessionPhase = activeTurnRunning ? "running" : phase;
   const threadActivities = activeThread?.activities ?? EMPTY_ACTIVITIES;
   const workLogEntries = useMemo(
     () => deriveWorkLogEntries(threadActivities, activeLatestTurn?.turnId ?? undefined),
@@ -1201,12 +1238,12 @@ export default function ChatView(props: ChatViewProps) {
   } = useLocalDispatchState({
     activeThread,
     activeLatestTurn,
-    phase,
+    phase: composerPhase,
     activePendingApproval: activePendingApproval?.requestId ?? null,
     activePendingUserInput: activePendingUserInput?.requestId ?? null,
     threadError: activeThread?.error,
   });
-  const isWorking = phase === "running" || isSendBusy || isConnecting || isRevertingCheckpoint;
+  const isWorking = activeTurnRunning || isSendBusy || isConnecting || isRevertingCheckpoint;
   const activeWorkStartedAt = deriveActiveWorkStartedAt(
     activeLatestTurn,
     activeThread?.session ?? null,
@@ -2095,6 +2132,11 @@ export default function ChatView(props: ChatViewProps) {
       setPlanSidebarOpen(false);
     }
     planSidebarDismissedForTurnRef.current = null;
+    revokeQueuedComposerMessagePreviewUrls(queuedComposerMessagesRef.current);
+    setQueuedComposerMessages([]);
+    queuedComposerMessagesRef.current = [];
+    queuedFlushInFlightRef.current = false;
+    previousPhaseRef.current = null;
   }, [activeThread?.id]);
 
   // Auto-open the plan sidebar when plan/todo steps arrive for the current turn.
@@ -2413,7 +2455,7 @@ export default function ChatView(props: ChatViewProps) {
       const localApi = readLocalApi();
       if (!api || !localApi || !activeThread || isRevertingCheckpoint) return;
 
-      if (phase === "running" || isSendBusy || isConnecting) {
+      if (activeTurnRunning || isSendBusy || isConnecting) {
         setThreadError(activeThread.id, "Interrupt the current turn before reverting checkpoints.");
         return;
       }
@@ -2452,10 +2494,161 @@ export default function ChatView(props: ChatViewProps) {
       isConnecting,
       isRevertingCheckpoint,
       isSendBusy,
-      phase,
+      activeTurnRunning,
       setThreadError,
     ],
   );
+
+  const flushQueuedMessages = useCallback(
+    async (_reason: QueuedComposerFlushReason) => {
+      const api = readEnvironmentApi(environmentId);
+      const queuedMessages = queuedComposerMessagesRef.current;
+      if (
+        !api ||
+        !activeThread ||
+        queuedMessages.length === 0 ||
+        queuedFlushInFlightRef.current ||
+        isSendBusy ||
+        isConnecting ||
+        sendInFlightRef.current
+      ) {
+        return;
+      }
+
+      const flush = buildQueuedComposerFlush(queuedMessages);
+      if (!flush.ok) {
+        setThreadError(
+          activeThread.id,
+          `Queued messages include ${flush.attachmentCount} image attachments, but only ${flush.maxAttachmentCount} can be sent at once.`,
+        );
+        return;
+      }
+
+      const firstQueuedMessage = queuedMessages[0];
+      if (!firstQueuedMessage) {
+        return;
+      }
+
+      const threadIdForSend = activeThread.id;
+      const messageIdForSend = newMessageId();
+      const messageCreatedAt = new Date().toISOString();
+      const outgoingMessageText = formatOutgoingPrompt({
+        provider: firstQueuedMessage.selectedProvider,
+        model: firstQueuedMessage.selectedModel,
+        models: firstQueuedMessage.selectedProviderModels,
+        effort: firstQueuedMessage.selectedPromptEffort,
+        text: flush.text,
+      });
+      const optimisticAttachments = flush.attachments.map((image) => ({
+        type: "image" as const,
+        id: image.id,
+        name: image.name,
+        mimeType: image.mimeType,
+        sizeBytes: image.sizeBytes,
+        previewUrl: image.previewUrl,
+      }));
+
+      queuedFlushInFlightRef.current = true;
+      sendInFlightRef.current = true;
+      beginLocalDispatch({ preparingWorktree: false });
+      setThreadError(threadIdForSend, null);
+
+      isAtEndRef.current = true;
+      showScrollDebouncer.current.cancel();
+      setShowScrollToBottom(false);
+      await legendListRef.current?.scrollToEnd?.({ animated: false });
+
+      setOptimisticUserMessages((existing) => [
+        ...existing,
+        {
+          id: messageIdForSend,
+          role: "user",
+          text: outgoingMessageText,
+          ...(optimisticAttachments.length > 0 ? { attachments: optimisticAttachments } : {}),
+          createdAt: messageCreatedAt,
+          streaming: false,
+        },
+      ]);
+
+      let turnStartSucceeded = false;
+      try {
+        await persistThreadSettingsForNextTurn({
+          threadId: threadIdForSend,
+          createdAt: messageCreatedAt,
+          modelSelection: firstQueuedMessage.selectedModelSelection,
+          runtimeMode,
+          interactionMode,
+        });
+
+        const turnAttachments = await Promise.all(
+          flush.attachments.map(async (image) => ({
+            type: "image" as const,
+            name: image.name,
+            mimeType: image.mimeType,
+            sizeBytes: image.sizeBytes,
+            dataUrl: await readFileAsDataUrl(image.file),
+          })),
+        );
+
+        await api.orchestration.dispatchCommand({
+          type: "thread.turn.start",
+          commandId: newCommandId(),
+          threadId: threadIdForSend,
+          message: {
+            messageId: messageIdForSend,
+            role: "user",
+            text: outgoingMessageText,
+            attachments: turnAttachments,
+          },
+          modelSelection: firstQueuedMessage.selectedModelSelection,
+          titleSeed: activeThread.title,
+          runtimeMode,
+          interactionMode,
+          createdAt: messageCreatedAt,
+        });
+        turnStartSucceeded = true;
+        setQueuedComposerMessages([]);
+        queuedComposerMessagesRef.current = [];
+      } catch (err) {
+        if (!turnStartSucceeded) {
+          setOptimisticUserMessages((existing) => {
+            const next = existing.filter((message) => message.id !== messageIdForSend);
+            return next.length === existing.length ? existing : next;
+          });
+        }
+        setThreadError(
+          threadIdForSend,
+          err instanceof Error ? err.message : "Failed to send queued messages.",
+        );
+      } finally {
+        sendInFlightRef.current = false;
+        queuedFlushInFlightRef.current = false;
+        if (!turnStartSucceeded) {
+          resetLocalDispatch();
+        }
+      }
+    },
+    [
+      activeThread,
+      beginLocalDispatch,
+      environmentId,
+      interactionMode,
+      isConnecting,
+      isSendBusy,
+      persistThreadSettingsForNextTurn,
+      resetLocalDispatch,
+      runtimeMode,
+      setThreadError,
+    ],
+  );
+
+  const onDeleteQueuedComposerMessage = useCallback((messageId: string) => {
+    setQueuedComposerMessages((existing) => {
+      const next = deleteQueuedComposerMessage(existing, messageId);
+      queuedComposerMessagesRef.current = next;
+      return next.length === existing.length ? existing : next;
+    });
+  }, []);
 
   const onSend = async (e?: { preventDefault: () => void }) => {
     e?.preventDefault();
@@ -2513,6 +2706,10 @@ export default function ChatView(props: ChatViewProps) {
       return;
     }
     if (!hasSendableContent) {
+      if (composerPhase === "running" && queuedComposerMessagesRef.current.length > 0) {
+        await flushQueuedMessages("empty-enter-force");
+        return;
+      }
       if (expiredTerminalContextCount > 0) {
         const toastCopy = buildExpiredTerminalContextToastCopy(
           expiredTerminalContextCount,
@@ -2526,6 +2723,47 @@ export default function ChatView(props: ChatViewProps) {
           }),
         );
       }
+      return;
+    }
+    if (composerPhase === "running") {
+      const queuedText =
+        promptForSend || (composerImages.length > 0 ? IMAGE_ONLY_BOOTSTRAP_PROMPT : "");
+      setQueuedComposerMessages((existing) => {
+        const next = [
+          ...existing,
+          {
+            id: randomUUID(),
+            text: queuedText,
+            attachments: [...composerImages],
+            terminalContexts: [...sendableComposerTerminalContexts],
+            createdAt: new Date().toISOString(),
+            selectedProvider: ctxSelectedProvider,
+            selectedModel: ctxSelectedModel,
+            selectedProviderModels: ctxSelectedProviderModels,
+            selectedPromptEffort: ctxSelectedPromptEffort,
+            selectedModelSelection: ctxSelectedModelSelection,
+          },
+        ];
+        queuedComposerMessagesRef.current = next;
+        return next;
+      });
+      setThreadError(activeThread.id, null);
+      if (expiredTerminalContextCount > 0) {
+        const toastCopy = buildExpiredTerminalContextToastCopy(
+          expiredTerminalContextCount,
+          "omitted",
+        );
+        toastManager.add(
+          stackedThreadToast({
+            type: "warning",
+            title: toastCopy.title,
+            description: toastCopy.description,
+          }),
+        );
+      }
+      promptRef.current = "";
+      clearComposerDraftContent(composerDraftTarget);
+      composerRef.current?.resetCursorState();
       return;
     }
     if (!activeProject) return;
@@ -2762,6 +3000,18 @@ export default function ChatView(props: ChatViewProps) {
       createdAt: new Date().toISOString(),
     });
   };
+
+  useEffect(() => {
+    const previousPhase = previousPhaseRef.current;
+    previousPhaseRef.current = composerPhase;
+    if (previousPhase !== "running" || composerPhase === "running") {
+      return;
+    }
+    if (queuedComposerMessagesRef.current.length === 0) {
+      return;
+    }
+    void flushQueuedMessages("agent-finished");
+  }, [composerPhase, flushQueuedMessages]);
 
   const onRespondToApproval = useCallback(
     async (requestId: ApprovalRequestId, decision: ProviderApprovalDecision) => {
@@ -3446,6 +3696,10 @@ export default function ChatView(props: ChatViewProps) {
                 onOpenTurnDiff={onOpenTurnDiff}
                 maxExpandedHeightPx={changedFilesMaxHeight}
               />
+              <ComposerQueuedMessagesBar
+                messages={queuedComposerMessages}
+                onDeleteMessage={onDeleteQueuedComposerMessage}
+              />
               <ChatComposer
                 ref={composerRef}
                 composerDraftTarget={composerDraftTarget}
@@ -3458,7 +3712,7 @@ export default function ChatView(props: ChatViewProps) {
                 activeThread={activeThread}
                 isServerThread={isServerThread}
                 isLocalDraftThread={isLocalDraftThread}
-                phase={phase}
+                phase={composerPhase}
                 isConnecting={isConnecting}
                 isSendBusy={isSendBusy}
                 isPreparingWorktree={isPreparingWorktree}

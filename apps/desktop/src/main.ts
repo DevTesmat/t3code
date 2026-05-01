@@ -26,6 +26,7 @@ import type {
   DesktopServerExposureMode,
   DesktopServerExposureState,
   DesktopUpdateChannel,
+  DesktopRunningThreadsState,
   PersistedSavedEnvironmentRecord,
   DesktopUpdateActionResult,
   DesktopUpdateCheckResult,
@@ -62,6 +63,11 @@ import { getAutoUpdateDisabledReason, shouldBroadcastDownloadProgress } from "./
 import { doesVersionMatchDesktopUpdateChannel } from "./updateChannels.ts";
 import { ServerListeningDetector } from "./serverListeningDetector.ts";
 import {
+  createRunningThreadsQuitDialogOptions,
+  normalizeRunningThreadsState,
+  shouldPromptBeforeQuitWithRunningThreads,
+} from "./runningThreadsQuitGuard.ts";
+import {
   createInitialDesktopUpdateState,
   reduceDesktopUpdateStateOnCheckFailure,
   reduceDesktopUpdateStateOnCheckStart,
@@ -86,6 +92,7 @@ const CONFIRM_CHANNEL = "desktop:confirm";
 const SET_THEME_CHANNEL = "desktop:set-theme";
 const CONTEXT_MENU_CHANNEL = "desktop:context-menu";
 const OPEN_EXTERNAL_CHANNEL = "desktop:open-external";
+const PLAY_NOTIFICATION_SOUND_CHANNEL = "desktop:play-notification-sound";
 const MENU_ACTION_CHANNEL = "desktop:menu-action";
 const UPDATE_STATE_CHANNEL = "desktop:update-state";
 const UPDATE_GET_STATE_CHANNEL = "desktop:update-get-state";
@@ -104,6 +111,7 @@ const SET_SAVED_ENVIRONMENT_SECRET_CHANNEL = "desktop:set-saved-environment-secr
 const REMOVE_SAVED_ENVIRONMENT_SECRET_CHANNEL = "desktop:remove-saved-environment-secret";
 const GET_SERVER_EXPOSURE_STATE_CHANNEL = "desktop:get-server-exposure-state";
 const SET_SERVER_EXPOSURE_MODE_CHANNEL = "desktop:set-server-exposure-mode";
+const SET_RUNNING_THREADS_STATE_CHANNEL = "desktop:set-running-threads-state";
 const BASE_DIR =
   process.env.T3CODE_HOME?.trim() ||
   Path.join(OS.homedir(), DESKTOP_APP_VARIANT === "local" ? ".t3-local" : ".t3");
@@ -236,6 +244,9 @@ let backendListeningDetector: ServerListeningDetector | null = null;
 let restartAttempt = 0;
 let restartTimer: ReturnType<typeof setTimeout> | null = null;
 let isQuitting = false;
+let quitConfirmedWithRunningThreads = false;
+let runningThreadsQuitPromptInFlight = false;
+let runningThreadsState: DesktopRunningThreadsState = { count: 0, updatedAt: "" };
 let desktopProtocolRegistered = false;
 let aboutCommitHashCache: string | null | undefined;
 let desktopLogSink: RotatingFileSink | null = null;
@@ -1689,6 +1700,16 @@ function registerIpcHandlers(): void {
     return nextState;
   });
 
+  ipcMain.removeHandler(SET_RUNNING_THREADS_STATE_CHANNEL);
+  ipcMain.handle(SET_RUNNING_THREADS_STATE_CHANNEL, async (_event, rawState: unknown) => {
+    const nextState = normalizeRunningThreadsState(rawState);
+    if (!nextState) {
+      return;
+    }
+
+    runningThreadsState = nextState;
+  });
+
   ipcMain.removeHandler(PICK_FOLDER_CHANNEL);
   ipcMain.handle(PICK_FOLDER_CHANNEL, async (_event, rawOptions: unknown) => {
     const owner = BrowserWindow.getFocusedWindow() ?? mainWindow;
@@ -1722,6 +1743,11 @@ function registerIpcHandlers(): void {
     }
 
     nativeTheme.themeSource = theme;
+  });
+
+  ipcMain.removeHandler(PLAY_NOTIFICATION_SOUND_CHANNEL);
+  ipcMain.handle(PLAY_NOTIFICATION_SOUND_CHANNEL, async () => {
+    shell.beep();
   });
 
   ipcMain.removeHandler(CONTEXT_MENU_CHANNEL);
@@ -1938,6 +1964,31 @@ function syncAllWindowAppearance(): void {
 
 nativeTheme.on("updated", syncAllWindowAppearance);
 
+async function confirmCloseWithRunningThreads(window: BrowserWindow): Promise<void> {
+  if (runningThreadsQuitPromptInFlight) {
+    revealWindow(window);
+    return;
+  }
+
+  runningThreadsQuitPromptInFlight = true;
+  try {
+    const result = await dialog.showMessageBox(
+      window,
+      createRunningThreadsQuitDialogOptions(runningThreadsState.count),
+    );
+    if (result.response === 1) {
+      quitConfirmedWithRunningThreads = true;
+      isQuitting = true;
+      app.quit();
+      return;
+    }
+
+    revealWindow(window);
+  } finally {
+    runningThreadsQuitPromptInFlight = false;
+  }
+}
+
 function createWindow(): BrowserWindow {
   const window = new BrowserWindow({
     width: 1100,
@@ -2017,6 +2068,20 @@ function createWindow(): BrowserWindow {
   window.webContents.on("did-finish-load", () => {
     window.setTitle(APP_DISPLAY_NAME);
     emitUpdateState();
+  });
+  window.on("close", (event) => {
+    if (
+      !shouldPromptBeforeQuitWithRunningThreads({
+        runningCount: runningThreadsState.count,
+        quitConfirmedWithRunningThreads,
+        updateInstallInFlight,
+      })
+    ) {
+      return;
+    }
+
+    event.preventDefault();
+    void confirmCloseWithRunningThreads(window);
   });
 
   // On Linux/Wayland with `show: false`, Electron's `ready-to-show` only
@@ -2124,6 +2189,17 @@ async function bootstrap(): Promise<void> {
 }
 
 app.on("before-quit", () => {
+  if (
+    shouldPromptBeforeQuitWithRunningThreads({
+      runningCount: runningThreadsState.count,
+      quitConfirmedWithRunningThreads,
+      updateInstallInFlight,
+    })
+  ) {
+    writeDesktopLogHeader("before-quit deferred for running threads confirmation");
+    return;
+  }
+
   isQuitting = true;
   updateInstallInFlight = false;
   writeDesktopLogHeader("before-quit received");

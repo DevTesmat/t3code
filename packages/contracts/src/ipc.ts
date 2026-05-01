@@ -143,6 +143,11 @@ export interface DesktopServerExposureState {
   advertisedHost: string | null;
 }
 
+export interface DesktopRunningThreadsState {
+  count: number;
+  updatedAt: string;
+}
+
 export interface PickFolderOptions {
   initialPath?: string | null;
 }
@@ -161,6 +166,7 @@ export interface DesktopBridge {
   removeSavedEnvironmentSecret: (environmentId: EnvironmentId) => Promise<void>;
   getServerExposureState: () => Promise<DesktopServerExposureState>;
   setServerExposureMode: (mode: DesktopServerExposureMode) => Promise<DesktopServerExposureState>;
+  setRunningThreadsState: (state: DesktopRunningThreadsState) => Promise<void>;
   pickFolder: (options?: PickFolderOptions) => Promise<string | null>;
   confirm: (message: string) => Promise<boolean>;
   setTheme: (theme: DesktopTheme) => Promise<void>;
@@ -169,6 +175,7 @@ export interface DesktopBridge {
     position?: { x: number; y: number },
   ) => Promise<T | null>;
   openExternal: (url: string) => Promise<boolean>;
+  playNotificationSound: () => Promise<void>;
   onMenuAction: (listener: (action: string) => void) => () => void;
   getUpdateState: () => Promise<DesktopUpdateState>;
   setUpdateChannel: (channel: DesktopUpdateChannel) => Promise<DesktopUpdateState>;

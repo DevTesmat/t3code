@@ -54,6 +54,7 @@ import {
   resolveInitialServerAuthGateState,
   updatePrimaryEnvironmentDescriptor,
 } from "../environments/primary";
+import { startRunningThreadsStatePublisher } from "../runningThreadsState";
 
 export const Route = createRootRouteWithContext<{
   queryClient: QueryClient;
@@ -100,6 +101,7 @@ function RootRouteView() {
         <AuthenticatedTracingBootstrap />
         <ServerStateBootstrap />
         <EnvironmentConnectionManagerBootstrap />
+        <RunningThreadsStateBootstrap />
         <EventRouter />
         <WebSocketConnectionCoordinator />
         <SlowRpcAckToastCoordinator />
@@ -206,6 +208,12 @@ function EnvironmentConnectionManagerBootstrap() {
   useEffect(() => {
     return startEnvironmentConnectionService(queryClient);
   }, [queryClient]);
+
+  return null;
+}
+
+function RunningThreadsStateBootstrap() {
+  useEffect(() => startRunningThreadsStatePublisher(), []);
 
   return null;
 }

@@ -37,6 +37,7 @@ export const ClientSettingsSchema = Schema.Struct({
   confirmThreadArchive: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
   confirmThreadDelete: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(true))),
   diffWordWrap: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
+  notificationSoundsEnabled: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(true))),
   gitQuickActionPreference: GitQuickActionPreference.pipe(
     Schema.withDecodingDefault(Effect.succeed(DEFAULT_GIT_QUICK_ACTION_PREFERENCE)),
   ),
@@ -277,6 +278,7 @@ export const ClientSettingsPatch = Schema.Struct({
   confirmThreadArchive: Schema.optionalKey(Schema.Boolean),
   confirmThreadDelete: Schema.optionalKey(Schema.Boolean),
   diffWordWrap: Schema.optionalKey(Schema.Boolean),
+  notificationSoundsEnabled: Schema.optionalKey(Schema.Boolean),
   gitQuickActionPreference: Schema.optionalKey(GitQuickActionPreference),
   favorites: Schema.optionalKey(
     Schema.Array(

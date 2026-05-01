@@ -549,6 +549,9 @@ export function useSettingsRestore(onRestored?: () => void) {
       ...(settings.diffWordWrap !== DEFAULT_UNIFIED_SETTINGS.diffWordWrap
         ? ["Diff line wrapping"]
         : []),
+      ...(settings.notificationSoundsEnabled !== DEFAULT_UNIFIED_SETTINGS.notificationSoundsEnabled
+        ? ["Notification sounds"]
+        : []),
       ...(settings.autoOpenPlanSidebar !== DEFAULT_UNIFIED_SETTINGS.autoOpenPlanSidebar
         ? ["Auto-open task panel"]
         : []),
@@ -584,6 +587,7 @@ export function useSettingsRestore(onRestored?: () => void) {
       settings.diffWordWrap,
       settings.enableAssistantStreaming,
       settings.gitQuickActionPreference,
+      settings.notificationSoundsEnabled,
       settings.timestampFormat,
       theme,
     ],
@@ -1079,6 +1083,33 @@ export function GeneralSettingsPanel() {
                 updateSettings({ enableAssistantStreaming: Boolean(checked) })
               }
               aria-label="Stream assistant messages"
+            />
+          }
+        />
+
+        <SettingsRow
+          title="Notification sounds"
+          description="Play a chime when a thread finishes or needs input."
+          resetAction={
+            settings.notificationSoundsEnabled !==
+            DEFAULT_UNIFIED_SETTINGS.notificationSoundsEnabled ? (
+              <SettingResetButton
+                label="notification sounds"
+                onClick={() =>
+                  updateSettings({
+                    notificationSoundsEnabled: DEFAULT_UNIFIED_SETTINGS.notificationSoundsEnabled,
+                  })
+                }
+              />
+            ) : null
+          }
+          control={
+            <Switch
+              checked={settings.notificationSoundsEnabled}
+              onCheckedChange={(checked) =>
+                updateSettings({ notificationSoundsEnabled: Boolean(checked) })
+              }
+              aria-label="Play notification sounds"
             />
           }
         />
