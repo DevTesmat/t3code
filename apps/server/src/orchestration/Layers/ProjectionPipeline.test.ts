@@ -118,6 +118,7 @@ it.layer(BaseTestLayer)("OrchestrationProjectionPipeline", (it) => {
           threadId: ThreadId.make("thread-1"),
           messageId: MessageId.make("message-1"),
           role: "assistant",
+          source: "harness",
           text: "hello",
           turnId: null,
           streaming: false,
@@ -145,14 +146,16 @@ it.layer(BaseTestLayer)("OrchestrationProjectionPipeline", (it) => {
 
       const messageRows = yield* sql<{
         readonly messageId: string;
+        readonly source: string;
         readonly text: string;
       }>`
         SELECT
           message_id AS "messageId",
+          source,
           text
         FROM projection_thread_messages
       `;
-      assert.deepEqual(messageRows, [{ messageId: "message-1", text: "hello" }]);
+      assert.deepEqual(messageRows, [{ messageId: "message-1", source: "harness", text: "hello" }]);
 
       const stateRows = yield* sql<{
         readonly projector: string;

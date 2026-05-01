@@ -477,6 +477,7 @@ describe("orchestration projector", () => {
             threadId: "thread-1",
             messageId: "assistant:msg-1",
             role: "assistant",
+            source: "harness",
             text: "hello",
             turnId: "turn-1",
             streaming: true,
@@ -513,6 +514,7 @@ describe("orchestration projector", () => {
 
     const message = afterComplete.threads[0]?.messages[0];
     expect(message?.id).toBe("assistant:msg-1");
+    expect(message?.source).toBe("harness");
     expect(message?.text).toBe("hello");
     expect(message?.streaming).toBe(false);
     expect(message?.updatedAt).toBe(completeAt);

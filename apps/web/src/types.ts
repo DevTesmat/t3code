@@ -2,6 +2,7 @@ import type {
   EnvironmentId,
   ModelSelection,
   OrchestrationLatestTurn,
+  OrchestrationMessageSource,
   OrchestrationProposedPlanId,
   RepositoryIdentity,
   OrchestrationSessionStatus,
@@ -46,6 +47,7 @@ export type ChatAttachment = ChatImageAttachment;
 export interface ChatMessage {
   id: MessageId;
   role: "user" | "assistant" | "system";
+  source?: OrchestrationMessageSource;
   text: string;
   attachments?: ChatAttachment[];
   turnId?: TurnId | null;

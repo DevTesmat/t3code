@@ -558,6 +558,7 @@ function coalesceOrchestrationUiEvents(
           ...event.payload,
           attachments: event.payload.attachments ?? previous.payload.attachments,
           createdAt: previous.payload.createdAt,
+          source: event.payload.source ?? previous.payload.source ?? "user",
           text:
             !event.payload.streaming && event.payload.text.length > 0
               ? event.payload.text

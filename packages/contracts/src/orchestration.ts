@@ -206,10 +206,15 @@ export type OrchestrationProject = typeof OrchestrationProject.Type;
 
 export const OrchestrationMessageRole = Schema.Literals(["user", "assistant", "system"]);
 export type OrchestrationMessageRole = typeof OrchestrationMessageRole.Type;
+export const OrchestrationMessageSource = Schema.Literals(["user", "harness"]);
+export type OrchestrationMessageSource = typeof OrchestrationMessageSource.Type;
 
 export const OrchestrationMessage = Schema.Struct({
   id: MessageId,
   role: OrchestrationMessageRole,
+  source: Schema.optionalKey(OrchestrationMessageSource).pipe(
+    Schema.withDecodingDefault(Effect.succeed("user")),
+  ),
   text: Schema.String,
   attachments: Schema.optional(Schema.Array(ChatAttachment)),
   turnId: Schema.NullOr(TurnId),
@@ -918,6 +923,9 @@ export const ThreadMessageSentPayload = Schema.Struct({
   threadId: ThreadId,
   messageId: MessageId,
   role: OrchestrationMessageRole,
+  source: Schema.optionalKey(OrchestrationMessageSource).pipe(
+    Schema.withDecodingDefault(Effect.succeed("user")),
+  ),
   text: Schema.String,
   attachments: Schema.optional(Schema.Array(ChatAttachment)),
   turnId: Schema.NullOr(TurnId),

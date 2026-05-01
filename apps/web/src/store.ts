@@ -175,6 +175,7 @@ function mapMessage(environmentId: EnvironmentId, message: OrchestrationMessage)
   return {
     id: message.id,
     role: message.role,
+    source: message.source ?? "user",
     text: message.text,
     turnId: message.turnId,
     createdAt: message.createdAt,
@@ -1382,6 +1383,7 @@ function applyEnvironmentOrchestrationEvent(
         const message = mapMessage(thread.environmentId, {
           id: event.payload.messageId,
           role: event.payload.role,
+          source: event.payload.source ?? "user",
           text: event.payload.text,
           ...(event.payload.attachments !== undefined
             ? { attachments: event.payload.attachments }

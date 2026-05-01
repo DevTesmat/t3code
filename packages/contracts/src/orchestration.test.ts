@@ -10,6 +10,7 @@ import {
   OrchestrationEvent,
   OrchestrationGetTurnDiffInput,
   OrchestrationLatestTurn,
+  OrchestrationMessage,
   ProjectCreatedPayload,
   ProjectMetaUpdatedPayload,
   OrchestrationProposedPlan,
@@ -18,6 +19,7 @@ import {
   ThreadMetaUpdatedPayload,
   ThreadTurnStartCommand,
   ThreadCreatedPayload,
+  ThreadMessageSentPayload,
   ThreadTurnDiff,
   ThreadTurnStartRequestedPayload,
 } from "./orchestration.ts";
@@ -32,6 +34,8 @@ const decodeThreadTurnStartCommand = Schema.decodeUnknownEffect(ThreadTurnStartC
 const decodeThreadTurnStartRequestedPayload = Schema.decodeUnknownEffect(
   ThreadTurnStartRequestedPayload,
 );
+const decodeOrchestrationMessage = Schema.decodeUnknownEffect(OrchestrationMessage);
+const decodeThreadMessageSentPayload = Schema.decodeUnknownEffect(ThreadMessageSentPayload);
 const decodeOrchestrationLatestTurn = Schema.decodeUnknownEffect(OrchestrationLatestTurn);
 const decodeOrchestrationProposedPlan = Schema.decodeUnknownEffect(OrchestrationProposedPlan);
 const decodeOrchestrationSession = Schema.decodeUnknownEffect(OrchestrationSession);
@@ -282,6 +286,49 @@ it.effect("decodes thread.created runtime mode for historical events", () =>
     assert.strictEqual(parsed.runtimeMode, DEFAULT_RUNTIME_MODE);
     assert.strictEqual(parsed.modelSelection.instanceId, "codex");
     assert.strictEqual(parsed.pinnedAt, null);
+  }),
+);
+
+it.effect("defaults historical messages and message events to user source", () =>
+  Effect.gen(function* () {
+    const message = yield* decodeOrchestrationMessage({
+      id: "msg-1",
+      role: "user",
+      text: "hello",
+      turnId: null,
+      streaming: false,
+      createdAt: "2026-01-01T00:00:00.000Z",
+      updatedAt: "2026-01-01T00:00:00.000Z",
+    });
+    const payload = yield* decodeThreadMessageSentPayload({
+      threadId: "thread-1",
+      messageId: "msg-1",
+      role: "user",
+      text: "hello",
+      turnId: null,
+      streaming: false,
+      createdAt: "2026-01-01T00:00:00.000Z",
+      updatedAt: "2026-01-01T00:00:00.000Z",
+    });
+
+    assert.strictEqual(message.source, "user");
+    assert.strictEqual(payload.source, "user");
+  }),
+);
+
+it.effect("decodes harness message source", () =>
+  Effect.gen(function* () {
+    const message = yield* decodeOrchestrationMessage({
+      id: "msg-harness",
+      role: "user",
+      source: "harness",
+      text: "PLEASE IMPLEMENT THIS PLAN:\n...",
+      turnId: null,
+      streaming: false,
+      createdAt: "2026-01-01T00:00:00.000Z",
+      updatedAt: "2026-01-01T00:00:00.000Z",
+    });
+    assert.strictEqual(message.source, "harness");
   }),
 );
 

@@ -469,6 +469,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           threadId: command.threadId,
           messageId: command.message.messageId,
           role: "user",
+          source: sourceProposedPlan ? "harness" : "user",
           text: command.message.text,
           attachments: command.message.attachments,
           turnId: null,

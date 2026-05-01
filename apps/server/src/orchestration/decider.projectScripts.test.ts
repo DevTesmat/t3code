@@ -180,6 +180,9 @@ describe("decider project scripts", () => {
     const events = Array.isArray(result) ? result : [result];
     expect(events).toHaveLength(2);
     expect(events[0]?.type).toBe("thread.message-sent");
+    if (events[0]?.type === "thread.message-sent") {
+      expect(events[0].payload.source).toBe("user");
+    }
     const turnStartEvent = events[1];
     expect(turnStartEvent?.type).toBe("thread.turn-start-requested");
     expect(turnStartEvent?.causationEventId).toBe(events[0]?.eventId ?? null);
@@ -195,6 +198,119 @@ describe("decider project scripts", () => {
       ]),
       runtimeMode: "approval-required",
     });
+  });
+
+  it("marks source proposed plan implementation prompts as harness messages", async () => {
+    const now = new Date().toISOString();
+    const initial = createEmptyReadModel(now);
+    const withProject = await Effect.runPromise(
+      projectEvent(initial, {
+        sequence: 1,
+        eventId: asEventId("evt-project-create-plan-source"),
+        aggregateKind: "project",
+        aggregateId: asProjectId("project-plan-source"),
+        type: "project.created",
+        occurredAt: now,
+        commandId: CommandId.make("cmd-project-create-plan-source"),
+        causationEventId: null,
+        correlationId: CommandId.make("cmd-project-create-plan-source"),
+        metadata: {},
+        payload: {
+          projectId: asProjectId("project-plan-source"),
+          title: "Project",
+          workspaceRoot: "/tmp/project",
+          defaultModelSelection: null,
+          scripts: [],
+          createdAt: now,
+          updatedAt: now,
+        },
+      }),
+    );
+    const withThread = await Effect.runPromise(
+      projectEvent(withProject, {
+        sequence: 2,
+        eventId: asEventId("evt-thread-create-plan-source"),
+        aggregateKind: "thread",
+        aggregateId: ThreadId.make("thread-plan-source"),
+        type: "thread.created",
+        occurredAt: now,
+        commandId: CommandId.make("cmd-thread-create-plan-source"),
+        causationEventId: null,
+        correlationId: CommandId.make("cmd-thread-create-plan-source"),
+        metadata: {},
+        payload: {
+          threadId: ThreadId.make("thread-plan-source"),
+          projectId: asProjectId("project-plan-source"),
+          title: "Thread",
+          modelSelection: {
+            instanceId: ProviderInstanceId.make("codex"),
+            model: "gpt-5-codex",
+          },
+          interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+          runtimeMode: "approval-required",
+          branch: null,
+          worktreePath: null,
+          createdAt: now,
+          updatedAt: now,
+        },
+      }),
+    );
+    const readModel = await Effect.runPromise(
+      projectEvent(withThread, {
+        sequence: 3,
+        eventId: asEventId("evt-plan-upsert"),
+        aggregateKind: "thread",
+        aggregateId: ThreadId.make("thread-plan-source"),
+        type: "thread.proposed-plan-upserted",
+        occurredAt: now,
+        commandId: CommandId.make("cmd-plan-upsert"),
+        causationEventId: null,
+        correlationId: CommandId.make("cmd-plan-upsert"),
+        metadata: {},
+        payload: {
+          threadId: ThreadId.make("thread-plan-source"),
+          proposedPlan: {
+            id: "plan-1",
+            turnId: null,
+            planMarkdown: "# Plan",
+            implementedAt: null,
+            implementationThreadId: null,
+            createdAt: now,
+            updatedAt: now,
+          },
+        },
+      }),
+    );
+
+    const result = await Effect.runPromise(
+      decideOrchestrationCommand({
+        command: {
+          type: "thread.turn.start",
+          commandId: CommandId.make("cmd-turn-start-plan-source"),
+          threadId: ThreadId.make("thread-plan-source"),
+          message: {
+            messageId: asMessageId("message-harness-1"),
+            role: "user",
+            text: "PLEASE IMPLEMENT THIS PLAN:\n# Plan",
+            attachments: [],
+          },
+          interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+          runtimeMode: "approval-required",
+          sourceProposedPlan: {
+            threadId: ThreadId.make("thread-plan-source"),
+            planId: "plan-1",
+          },
+          createdAt: now,
+        },
+        readModel,
+      }),
+    );
+
+    const events = Array.isArray(result) ? result : [result];
+    expect(events[0]?.type).toBe("thread.message-sent");
+    if (events[0]?.type === "thread.message-sent") {
+      expect(events[0].payload.source).toBe("harness");
+    }
   });
 
   it("emits thread.runtime-mode-set from thread.runtime-mode.set", async () => {

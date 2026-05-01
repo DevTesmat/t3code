@@ -1336,6 +1336,47 @@ describe("deriveTimelineEntries", () => {
     });
   });
 
+  it("hides harness implementation prompts while keeping proposed plan cards", () => {
+    const entries = deriveTimelineEntries(
+      [
+        {
+          id: MessageId.make("message-harness"),
+          role: "user",
+          source: "harness",
+          text: "PLEASE IMPLEMENT THIS PLAN:\n# Ship it",
+          createdAt: "2026-02-23T00:00:01.000Z",
+          streaming: false,
+        },
+        {
+          id: MessageId.make("message-user"),
+          role: "user",
+          source: "user",
+          text: "visible follow-up",
+          createdAt: "2026-02-23T00:00:03.000Z",
+          streaming: false,
+        },
+      ],
+      [
+        {
+          id: "plan:thread-1:turn:turn-1",
+          turnId: TurnId.make("turn-1"),
+          planMarkdown: "# Ship it",
+          implementedAt: null,
+          implementationThreadId: null,
+          createdAt: "2026-02-23T00:00:02.000Z",
+          updatedAt: "2026-02-23T00:00:02.000Z",
+        },
+      ],
+      [],
+    );
+
+    expect(entries.map((entry) => entry.id)).toEqual([
+      "plan:thread-1:turn:turn-1",
+      MessageId.make("message-user"),
+    ]);
+    expect(entries.map((entry) => entry.kind)).toEqual(["proposed-plan", "message"]);
+  });
+
   it("anchors the completion divider to latestTurn.assistantMessageId before timestamp fallback", () => {
     const entries = deriveTimelineEntries(
       [

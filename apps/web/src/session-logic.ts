@@ -1357,12 +1357,18 @@ export function deriveTimelineEntries(
   proposedPlans: ProposedPlan[],
   workEntries: WorkLogEntry[],
 ): TimelineEntry[] {
-  const messageRows: TimelineEntry[] = messages.map((message) => ({
-    id: message.id,
-    kind: "message",
-    createdAt: message.createdAt,
-    message,
-  }));
+  const messageRows: TimelineEntry[] = messages
+    .filter(
+      (message) =>
+        message.source !== "harness" &&
+        !message.text.trimStart().startsWith("PLEASE IMPLEMENT THIS PLAN:"),
+    )
+    .map((message) => ({
+      id: message.id,
+      kind: "message",
+      createdAt: message.createdAt,
+      message,
+    }));
   const proposedPlanRows: TimelineEntry[] = proposedPlans.map((proposedPlan) => ({
     id: proposedPlan.id,
     kind: "proposed-plan",
