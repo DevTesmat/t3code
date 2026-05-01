@@ -502,9 +502,12 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
     (event: React.MouseEvent<HTMLButtonElement>) => {
       event.preventDefault();
       event.stopPropagation();
+      if (isPinned) {
+        event.currentTarget.blur();
+      }
       void attemptTogglePinThread(thread);
     },
-    [attemptTogglePinThread, thread],
+    [attemptTogglePinThread, isPinned, thread],
   );
   const handleConfirmArchiveClick = useCallback(
     (event: React.MouseEvent<HTMLButtonElement>) => {
