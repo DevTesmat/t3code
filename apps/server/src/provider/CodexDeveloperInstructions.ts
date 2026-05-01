@@ -1,6 +1,6 @@
 export const CODEX_PLAN_MODE_DEVELOPER_INSTRUCTIONS = `<collaboration_mode># Plan Mode (Conversational)
 
-You work in 3 phases, and you should *chat your way* to a great plan before finalizing it. A great plan is very detailed-intent- and implementation-wise-so that it can be handed to another engineer or agent to be implemented right away. It must be **decision complete**, where the implementer does not need to make any decisions.
+You work in 3 phases, and you should *chat your way* to a great plan before finalizing it. A great plan is concise, decision-complete, and implementation-ready: it explains the conceptual steps, core mechanisms, and critical details clearly enough that another engineer or agent can implement it without making product or architecture decisions.
 
 ## Mode rules (strict)
 
@@ -92,6 +92,14 @@ Use the \`request_user_input\` tool only for decisions that materially change th
 ## Finalization rule
 
 Only output the final plan when it is decision complete and leaves no decisions to the implementer.
+
+## Final plan length and shape
+
+Keep final plans as short as correctness allows. Prefer the core concept, execution sequence, data flow/mechanisms, critical edge cases, and verification strategy over exhaustive routine detail.
+
+Aim for under 100 lines when possible. If a plan must be longer, the extra detail must be necessary for correctness, reliability, data flow, failure handling, cross-package behavior, migrations, or public interfaces.
+
+Avoid implementation bloat: do not list obvious mechanical edits, repeat repository facts already established, or include step-by-step instructions for routine code changes unless they are critical to avoid ambiguity.
 
 When you present the official plan, wrap it in a \`<proposed_plan>\` block so the client can render it specially:
 

@@ -15,7 +15,7 @@ import {
 } from "@t3tools/shared/model";
 import { memo, useCallback, useState } from "react";
 import type { VariantProps } from "class-variance-authority";
-import { ChevronDownIcon } from "lucide-react";
+import { ChevronDownIcon, ZapIcon } from "lucide-react";
 import { Button, buttonVariants } from "../ui/button";
 import {
   Menu,
@@ -45,6 +45,21 @@ type TraitsPersistence =
 
 const ULTRATHINK_PROMPT_PREFIX = "Ultrathink:\n";
 
+type TraitPillTone = "low" | "medium" | "high" | "highest" | "fast" | "neutral";
+
+type TraitTriggerPill = {
+  key: string;
+  label: string;
+  tone: TraitPillTone;
+};
+
+const LOW_REASONING_VALUES = new Set(["low", "minimal", "fast", "light"]);
+const MEDIUM_REASONING_VALUES = new Set(["medium", "normal", "balanced"]);
+const HIGH_REASONING_VALUES = new Set(["high", "deep"]);
+const HIGHEST_REASONING_VALUES = new Set(["max", "xhigh", "ultra", "ultrathink"]);
+const TRAIT_PILL_BASE_CLASS =
+  "flex h-6 max-w-full min-w-0 shrink items-center truncate rounded-full border px-2.5 text-xs font-medium leading-none";
+
 function replaceDescriptorCurrentValue(
   descriptors: ReadonlyArray<ProviderOptionDescriptor>,
   descriptorId: string,
@@ -73,6 +88,85 @@ function getDescriptorStringValue(
   }
   const value = getProviderOptionCurrentValue(descriptor);
   return typeof value === "string" ? value : null;
+}
+
+function normalizeTraitToneValue(value: string | null | undefined): string {
+  return value?.trim().toLowerCase() ?? "";
+}
+
+function getReasoningTone(value: string | null, label: string | null): TraitPillTone {
+  const normalizedValue = normalizeTraitToneValue(value);
+  const normalizedLabel = normalizeTraitToneValue(label);
+  const candidates = [normalizedValue, normalizedLabel].filter(Boolean);
+
+  if (candidates.some((candidate) => LOW_REASONING_VALUES.has(candidate))) {
+    return "low";
+  }
+  if (candidates.some((candidate) => MEDIUM_REASONING_VALUES.has(candidate))) {
+    return "medium";
+  }
+  if (candidates.some((candidate) => HIGH_REASONING_VALUES.has(candidate))) {
+    return "high";
+  }
+  if (candidates.some((candidate) => HIGHEST_REASONING_VALUES.has(candidate))) {
+    return "highest";
+  }
+  return "neutral";
+}
+
+function getTraitPillClassName(tone: TraitPillTone): string {
+  switch (tone) {
+    case "low":
+      return "border-blue-500/30 bg-blue-500/12 text-blue-700 dark:border-blue-400/30 dark:bg-blue-400/12 dark:text-blue-200";
+    case "medium":
+      return "border-cyan-500/30 bg-cyan-500/12 text-cyan-700 dark:border-cyan-400/30 dark:bg-cyan-400/12 dark:text-cyan-200";
+    case "high":
+      return "border-amber-500/35 bg-amber-500/14 text-amber-800 dark:border-amber-400/30 dark:bg-amber-400/12 dark:text-amber-200";
+    case "highest":
+      return "border-rose-500/35 bg-rose-500/14 text-rose-800 dark:border-rose-400/30 dark:bg-rose-400/12 dark:text-rose-200";
+    case "fast":
+      return "h-5 rounded-none border-0 bg-transparent p-0 text-yellow-600 dark:text-yellow-300";
+    case "neutral":
+      return "border-border/70 bg-muted/60 text-muted-foreground";
+  }
+}
+
+function getDescriptorTriggerPill(input: {
+  descriptor: ProviderOptionDescriptor;
+  primarySelectDescriptor: Extract<ProviderOptionDescriptor, { type: "select" }> | null;
+  ultrathinkPromptControlled: boolean;
+}): TraitTriggerPill | null {
+  const { descriptor, primarySelectDescriptor, ultrathinkPromptControlled } = input;
+  if (ultrathinkPromptControlled && descriptor.id === primarySelectDescriptor?.id) {
+    return {
+      key: descriptor.id,
+      label: "Ultrathink",
+      tone: getReasoningTone("ultrathink", "Ultrathink"),
+    };
+  }
+  if (descriptor.type === "boolean") {
+    if (descriptor.id === "fastMode") {
+      return descriptor.currentValue === true
+        ? { key: descriptor.id, label: "Fast mode", tone: "fast" }
+        : null;
+    }
+    return {
+      key: descriptor.id,
+      label: `${descriptor.label} ${descriptor.currentValue === true ? "On" : "Off"}`,
+      tone: "neutral",
+    };
+  }
+
+  const label = getProviderOptionCurrentLabel(descriptor);
+  if (!label) {
+    return null;
+  }
+  const value = getDescriptorStringValue(descriptor);
+  return {
+    key: descriptor.id,
+    label,
+    tone: getReasoningTone(value, label),
+  };
 }
 
 function getSelectedTraits(
@@ -376,22 +470,15 @@ export const TraitsPicker = memo(function TraitsPicker({
     return null;
   }
 
-  const triggerLabel =
-    descriptors
-      .map((descriptor) => {
-        if (ultrathinkPromptControlled && descriptor.id === primarySelectDescriptor?.id) {
-          return "Ultrathink";
-        }
-        if (descriptor.type === "boolean") {
-          if (descriptor.id === "fastMode") {
-            return descriptor.currentValue === true ? "Fast" : "Normal";
-          }
-          return `${descriptor.label} ${descriptor.currentValue === true ? "On" : "Off"}`;
-        }
-        return getProviderOptionCurrentLabel(descriptor);
-      })
-      .filter((label): label is string => typeof label === "string" && label.length > 0)
-      .join(" · ") || "";
+  const triggerPills = descriptors
+    .map((descriptor) =>
+      getDescriptorTriggerPill({
+        descriptor,
+        primarySelectDescriptor,
+        ultrathinkPromptControlled,
+      }),
+    )
+    .filter((pill): pill is TraitTriggerPill => pill !== null);
 
   const isCodexStyle = provider === "codex";
 
@@ -418,12 +505,42 @@ export const TraitsPicker = memo(function TraitsPicker({
       >
         {isCodexStyle ? (
           <span className="flex min-w-0 w-full items-center gap-2 overflow-hidden">
-            {triggerLabel}
+            <span className="flex min-w-0 flex-1 items-center gap-1 overflow-hidden">
+              {triggerPills.map((pill) => (
+                <span
+                  key={pill.key}
+                  aria-label={pill.tone === "fast" ? pill.label : undefined}
+                  data-tone={pill.tone}
+                  className={cn(TRAIT_PILL_BASE_CLASS, getTraitPillClassName(pill.tone))}
+                >
+                  {pill.tone === "fast" ? (
+                    <ZapIcon aria-hidden="true" className="size-4 stroke-[2.4]" />
+                  ) : (
+                    pill.label
+                  )}
+                </span>
+              ))}
+            </span>
             <ChevronDownIcon aria-hidden="true" className="size-3 shrink-0 opacity-60" />
           </span>
         ) : (
           <>
-            <span>{triggerLabel}</span>
+            <span className="flex min-w-0 items-center gap-1 overflow-hidden">
+              {triggerPills.map((pill) => (
+                <span
+                  key={pill.key}
+                  aria-label={pill.tone === "fast" ? pill.label : undefined}
+                  data-tone={pill.tone}
+                  className={cn(TRAIT_PILL_BASE_CLASS, getTraitPillClassName(pill.tone))}
+                >
+                  {pill.tone === "fast" ? (
+                    <ZapIcon aria-hidden="true" className="size-4 stroke-[2.4]" />
+                  ) : (
+                    pill.label
+                  )}
+                </span>
+              ))}
+            </span>
             <ChevronDownIcon aria-hidden="true" className="size-3 opacity-60" />
           </>
         )}
