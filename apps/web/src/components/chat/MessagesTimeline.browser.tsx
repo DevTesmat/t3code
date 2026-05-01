@@ -56,7 +56,6 @@ function buildProps() {
     activeTurnStartedAt: null,
     listRef: createRef<LegendListRef | null>(),
     completionDividerBeforeEntryId: null,
-    completionSummary: null,
     turnDiffSummaryByAssistantMessageId: new Map(),
     revertTurnCountByUserMessageId: new Map(),
     onRevertUserMessage: vi.fn(),

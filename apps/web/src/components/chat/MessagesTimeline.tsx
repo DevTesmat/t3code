@@ -66,7 +66,7 @@ import { formatWorkspaceRelativePath } from "../../filePathDisplay";
 // Context — shared state consumed by every row component via useContext.
 // Propagates through LegendList's memo boundaries for shared callbacks and
 // non-row-scoped state. `nowIso` is intentionally excluded — self-ticking
-// components (WorkingTimer, LiveElapsed) handle it.
+// components such as LiveElapsed handle it.
 // ---------------------------------------------------------------------------
 
 interface TimelineRowSharedState {
@@ -74,7 +74,6 @@ interface TimelineRowSharedState {
   activeTurnId: TurnId | null | undefined;
   isWorking: boolean;
   isRevertingCheckpoint: boolean;
-  completionSummary: string | null;
   timestampFormat: TimestampFormat;
   markdownCwd: string | undefined;
   workspaceRoot: string | undefined;
@@ -98,7 +97,6 @@ interface MessagesTimelineProps {
   listRef: React.RefObject<LegendListRef | null>;
   timelineEntries: ReturnType<typeof deriveTimelineEntries>;
   completionDividerBeforeEntryId: string | null;
-  completionSummary: string | null;
   turnDiffSummaryByAssistantMessageId: Map<MessageId, TurnDiffSummary>;
   revertTurnCountByUserMessageId: Map<MessageId, number>;
   onRevertUserMessage: (messageId: MessageId) => void;
@@ -124,7 +122,6 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   listRef,
   timelineEntries,
   completionDividerBeforeEntryId,
-  completionSummary,
   turnDiffSummaryByAssistantMessageId,
   revertTurnCountByUserMessageId,
   onRevertUserMessage,
@@ -192,7 +189,6 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       activeTurnId: activeTurnId ?? null,
       isWorking,
       isRevertingCheckpoint,
-      completionSummary,
       timestampFormat,
       markdownCwd,
       workspaceRoot,
@@ -205,7 +201,6 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       activeTurnId,
       isWorking,
       isRevertingCheckpoint,
-      completionSummary,
       timestampFormat,
       markdownCwd,
       workspaceRoot,
@@ -385,7 +380,7 @@ function TimelineRowContent({ row }: { row: TimelineRow }) {
                 <div className="my-3 flex items-center gap-3">
                   <span className="h-px flex-1 bg-border" />
                   <span className="rounded-full border border-border bg-background px-2.5 py-1 text-[10px] uppercase tracking-[0.14em] text-muted-foreground/80">
-                    {ctx.completionSummary ? `Response • ${ctx.completionSummary}` : "Response"}
+                    Response
                   </span>
                   <span className="h-px flex-1 bg-border" />
                 </div>
@@ -442,23 +437,10 @@ function TimelineRowContent({ row }: { row: TimelineRow }) {
       {row.kind === "working" && (
         <div className="py-0.5 pl-1.5">
           <div className="flex items-center gap-2 pt-1 text-[11px] text-muted-foreground/70">
-            <span className="inline-flex items-center gap-[3px]">
-              <span className="h-1 w-1 rounded-full bg-muted-foreground/30 animate-pulse" />
-              <span className="h-1 w-1 rounded-full bg-muted-foreground/30 animate-pulse [animation-delay:200ms]" />
-              <span className="h-1 w-1 rounded-full bg-muted-foreground/30 animate-pulse [animation-delay:400ms]" />
-            </span>
-            <span>
-              {row.createdAt ? (
-                <>
-                  {row.activityState.label} for <WorkingTimer createdAt={row.createdAt} />
-                </>
-              ) : (
-                `${row.activityState.label}...`
-              )}
-            </span>
+            <span>{row.activityState.label}</span>
           </div>
           {row.activityState.detail ? (
-            <div className="ml-[26px] max-w-full truncate pt-0.5 text-[11px] text-muted-foreground/45">
+            <div className="max-w-full truncate pt-0.5 text-[11px] text-muted-foreground/45">
               {row.activityState.detail}
             </div>
           ) : null}
@@ -473,16 +455,6 @@ function TimelineRowContent({ row }: { row: TimelineRow }) {
 // Each owns a `nowMs` state value consumed in the render output so the
 // React Compiler cannot elide the re-render as a no-op.
 // ---------------------------------------------------------------------------
-
-/** Live "Working for Xs" label. */
-function WorkingTimer({ createdAt }: { createdAt: string }) {
-  const [nowMs, setNowMs] = useState(() => Date.now());
-  useEffect(() => {
-    const id = setInterval(() => setNowMs(Date.now()), 1000);
-    return () => clearInterval(id);
-  }, [createdAt]);
-  return <>{formatWorkingTimer(createdAt, new Date(nowMs).toISOString()) ?? "0s"}</>;
-}
 
 /** Live timestamp + elapsed duration for a streaming assistant message. */
 function LiveMessageMeta({
@@ -691,29 +663,6 @@ function useStableRows(rows: MessagesTimelineRow[]): MessagesTimelineRow[] {
 // ---------------------------------------------------------------------------
 // Pure helpers
 // ---------------------------------------------------------------------------
-
-function formatWorkingTimer(startIso: string, endIso: string): string | null {
-  const startedAtMs = Date.parse(startIso);
-  const endedAtMs = Date.parse(endIso);
-  if (!Number.isFinite(startedAtMs) || !Number.isFinite(endedAtMs)) {
-    return null;
-  }
-
-  const elapsedSeconds = Math.max(0, Math.floor((endedAtMs - startedAtMs) / 1000));
-  if (elapsedSeconds < 60) {
-    return `${elapsedSeconds}s`;
-  }
-
-  const hours = Math.floor(elapsedSeconds / 3600);
-  const minutes = Math.floor((elapsedSeconds % 3600) / 60);
-  const seconds = elapsedSeconds % 60;
-
-  if (hours > 0) {
-    return minutes > 0 ? `${hours}h ${minutes}m` : `${hours}h`;
-  }
-
-  return seconds > 0 ? `${minutes}m ${seconds}s` : `${minutes}m`;
-}
 
 function formatMessageMeta(
   createdAt: string,

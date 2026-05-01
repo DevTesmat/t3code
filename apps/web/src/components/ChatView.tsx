@@ -1527,25 +1527,32 @@ export default function ChatView(props: ChatViewProps) {
     return byUserMessageId;
   }, [inferredCheckpointTurnCountByTurnId, timelineEntries, turnDiffSummaryByAssistantMessageId]);
 
-  const completionSummary = useMemo(() => {
+  const latestTurnElapsedTiming = useMemo(() => {
     if (!latestTurnSettled) return null;
     if (!activeLatestTurn?.startedAt) return null;
     if (!activeLatestTurn.completedAt) return null;
     if (!latestTurnHasToolActivity) return null;
+    if (!formatElapsed(activeLatestTurn.startedAt, activeLatestTurn.completedAt)) return null;
 
-    const elapsed = formatElapsed(activeLatestTurn.startedAt, activeLatestTurn.completedAt);
-    return elapsed ? `Worked for ${elapsed}` : null;
+    return {
+      startIso: activeLatestTurn.startedAt,
+      endIso: activeLatestTurn.completedAt,
+    };
   }, [
     activeLatestTurn?.completedAt,
     activeLatestTurn?.startedAt,
     latestTurnHasToolActivity,
     latestTurnSettled,
   ]);
+  const composerElapsedTiming =
+    isWorking && activeWorkStartedAt
+      ? { startIso: activeWorkStartedAt, endIso: null }
+      : latestTurnElapsedTiming;
   const completionDividerBeforeEntryId = useMemo(() => {
     if (!latestTurnSettled) return null;
-    if (!completionSummary) return null;
+    if (!latestTurnElapsedTiming) return null;
     return deriveCompletionDividerBeforeEntryId(timelineEntries, activeLatestTurn);
-  }, [activeLatestTurn, completionSummary, latestTurnSettled, timelineEntries]);
+  }, [activeLatestTurn, latestTurnElapsedTiming, latestTurnSettled, timelineEntries]);
   const gitCwd = activeProject
     ? projectScriptCwd({
         project: { cwd: activeProject.cwd },
@@ -3679,7 +3686,6 @@ export default function ChatView(props: ChatViewProps) {
               listRef={legendListRef}
               timelineEntries={timelineEntries}
               completionDividerBeforeEntryId={completionDividerBeforeEntryId}
-              completionSummary={completionSummary}
               turnDiffSummaryByAssistantMessageId={turnDiffSummaryByAssistantMessageId}
               activeThreadEnvironmentId={activeThread.environmentId}
               revertTurnCountByUserMessageId={revertTurnCountByUserMessageId}
@@ -3711,13 +3717,24 @@ export default function ChatView(props: ChatViewProps) {
           <div
             ref={composerAreaRef}
             className={cn(
-              "pl-[calc(env(safe-area-inset-left)+0.75rem)] pr-[calc(env(safe-area-inset-right)+0.75rem)] pt-1.5 sm:pl-[calc(env(safe-area-inset-left)+1.25rem)] sm:pr-[calc(env(safe-area-inset-right)+1.25rem)] sm:pt-2",
+              "relative pl-[calc(env(safe-area-inset-left)+0.75rem)] pr-[calc(env(safe-area-inset-right)+0.75rem)] pt-1.5 sm:pl-[calc(env(safe-area-inset-left)+1.25rem)] sm:pr-[calc(env(safe-area-inset-right)+1.25rem)] sm:pt-2",
               isGitRepo
                 ? "pb-[calc(env(safe-area-inset-bottom)+0.25rem)]"
                 : "pb-[calc(env(safe-area-inset-bottom)+0.75rem)] sm:pb-[calc(env(safe-area-inset-bottom)+1rem)]",
             )}
           >
-            <div className="mx-auto flex w-full min-w-0 max-w-208 flex-col">
+            <div
+              className={cn(
+                "relative mx-auto flex w-full min-w-0 max-w-208 flex-col",
+                composerElapsedTiming && "pt-6",
+              )}
+            >
+              {composerElapsedTiming ? (
+                <ComposerElapsedLabel
+                  startIso={composerElapsedTiming.startIso}
+                  endIso={composerElapsedTiming.endIso}
+                />
+              ) : null}
               <ComposerChangedFilesBar
                 turnSummary={latestChangedFilesSummary}
                 resolvedTheme={resolvedTheme}
@@ -3899,4 +3916,47 @@ export default function ChatView(props: ChatViewProps) {
       )}
     </div>
   );
+}
+
+function ComposerElapsedLabel(props: { startIso: string; endIso: string | null }) {
+  const [nowMs, setNowMs] = useState(() => Date.now());
+
+  useEffect(() => {
+    if (props.endIso) return;
+    const id = window.setInterval(() => setNowMs(Date.now()), 1000);
+    return () => window.clearInterval(id);
+  }, [props.endIso, props.startIso]);
+
+  const elapsed = formatComposerElapsed(
+    props.startIso,
+    props.endIso ?? new Date(nowMs).toISOString(),
+  );
+  if (!elapsed) return null;
+
+  return (
+    <div className="pointer-events-none absolute right-0 top-0 z-40 rounded-full border border-border/60 bg-background/90 px-2 py-0.5 font-mono text-[10px] tabular-nums text-muted-foreground shadow-sm backdrop-blur">
+      {elapsed}
+    </div>
+  );
+}
+
+function formatComposerElapsed(startIso: string, endIso: string): string | null {
+  const startedAtMs = Date.parse(startIso);
+  const endedAtMs = Date.parse(endIso);
+  if (!Number.isFinite(startedAtMs) || !Number.isFinite(endedAtMs) || endedAtMs < startedAtMs) {
+    return null;
+  }
+
+  const elapsedSeconds = Math.max(1, Math.round((endedAtMs - startedAtMs) / 1000));
+  if (elapsedSeconds < 60) return `${elapsedSeconds}s`;
+
+  const hours = Math.floor(elapsedSeconds / 3600);
+  const minutes = Math.floor((elapsedSeconds % 3600) / 60);
+  const seconds = elapsedSeconds % 60;
+
+  if (hours > 0) {
+    return minutes > 0 ? `${hours}h ${minutes}m` : `${hours}h`;
+  }
+
+  return seconds > 0 ? `${minutes}m ${seconds}s` : `${minutes}m`;
 }

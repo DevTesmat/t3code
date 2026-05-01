@@ -82,7 +82,6 @@ function buildProps() {
     activeTurnStartedAt: null,
     listRef: createRef<LegendListRef | null>(),
     completionDividerBeforeEntryId: null,
-    completionSummary: null,
     turnDiffSummaryByAssistantMessageId: new Map(),
     revertTurnCountByUserMessageId: new Map(),
     onRevertUserMessage: () => {},
@@ -223,5 +222,34 @@ describe("MessagesTimeline", () => {
     expect(markup).toContain("Done.");
     expect(markup).not.toContain("Changed files");
     expect(markup).not.toContain("ChatView.tsx");
+  });
+
+  it("renders the response divider without elapsed work text", async () => {
+    const { MessagesTimeline } = await import("./MessagesTimeline");
+    const assistantMessageId = MessageId.make("message-assistant-1");
+    const markup = renderToStaticMarkup(
+      <MessagesTimeline
+        {...buildProps()}
+        completionDividerBeforeEntryId="entry-1"
+        timelineEntries={[
+          {
+            id: "entry-1",
+            kind: "message",
+            createdAt: "2026-03-17T19:12:28.000Z",
+            message: {
+              id: assistantMessageId,
+              role: "assistant",
+              text: "Done.",
+              createdAt: "2026-03-17T19:12:28.000Z",
+              completedAt: "2026-03-17T19:12:40.000Z",
+              streaming: false,
+            },
+          },
+        ]}
+      />,
+    );
+
+    expect(markup).toContain("Response");
+    expect(markup).not.toContain("Worked for");
   });
 });
