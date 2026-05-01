@@ -4,6 +4,7 @@ import { type KeyboardEvent, type ReactNode, useCallback, useMemo, useRef, useSt
 import {
   defaultInstanceIdForDriver,
   type DesktopUpdateChannel,
+  type KeybindingCommand,
   ProviderDriverKind,
   type ProviderInstanceConfig,
   type ProviderInstanceId,
@@ -407,12 +408,23 @@ function keybindingStringFromKeyboardEvent(event: KeyboardEvent<HTMLButtonElemen
   if (event.altKey) parts.push("alt");
   if (event.shiftKey) parts.push("shift");
 
-  const keyToken = key === " " ? "space" : key.startsWith("arrow") ? key.replace("arrow", "") : key;
+  const keyToken = key === " " ? "space" : key;
   parts.push(keyToken);
   return parts.join("+");
 }
 
-function SidebarToggleKeybindingControl() {
+function isMacPlatformLabel(): boolean {
+  const platform = typeof navigator === "undefined" ? "" : navigator.platform;
+  return platform.toLowerCase().includes("mac");
+}
+
+interface KeybindingControlProps {
+  command: KeybindingCommand;
+  defaultKeybinding: string;
+  defaultLabel: string;
+}
+
+function KeybindingControl({ command, defaultKeybinding, defaultLabel }: KeybindingControlProps) {
   const serverConfig = useServerConfig();
   const keybindings = useServerKeybindings();
   const [recording, setRecording] = useState(false);
@@ -421,36 +433,38 @@ function SidebarToggleKeybindingControl() {
   const hasMalformedKeybindings = Boolean(
     serverConfig?.issues.some((issue) => issue.kind === "keybindings.malformed-config"),
   );
-  const configuredValue = keybindingValueForCommand(keybindings, "sidebar.toggle") ?? "mod+b";
-  const platform = typeof navigator === "undefined" ? "" : navigator.platform;
+  const configuredValue = keybindingValueForCommand(keybindings, command) ?? defaultKeybinding;
   const shortcutLabel =
-    shortcutLabelForCommand(keybindings, "sidebar.toggle", {
+    shortcutLabelForCommand(keybindings, command, {
       context: { terminalFocus: false, terminalOpen: false },
-    }) ?? (platform.toLowerCase().includes("mac") ? "\u2318B" : "Ctrl+B");
+    }) ?? defaultLabel;
   const disabled = !localApi || hasMalformedKeybindings || saving;
 
-  const persistKeybinding = useCallback(async (nextKey: string) => {
-    const rule = buildKeybindingRule({
-      keybinding: nextKey,
-      command: "sidebar.toggle",
-    });
-    if (!rule) return;
+  const persistKeybinding = useCallback(
+    async (nextKey: string) => {
+      const rule = buildKeybindingRule({
+        keybinding: nextKey,
+        command,
+      });
+      if (!rule) return;
 
-    setSaving(true);
-    try {
-      await ensureLocalApi().server.upsertKeybinding(rule);
-    } catch {
-      toastManager.add(
-        stackedThreadToast({
-          type: "error",
-          title: "Unable to save keybinding",
-        }),
-      );
-    } finally {
-      setSaving(false);
-      setRecording(false);
-    }
-  }, []);
+      setSaving(true);
+      try {
+        await ensureLocalApi().server.upsertKeybinding(rule);
+      } catch {
+        toastManager.add(
+          stackedThreadToast({
+            type: "error",
+            title: "Unable to save keybinding",
+          }),
+        );
+      } finally {
+        setSaving(false);
+        setRecording(false);
+      }
+    },
+    [command],
+  );
 
   const handleKeyDown = useCallback(
     (event: KeyboardEvent<HTMLButtonElement>) => {
@@ -463,7 +477,7 @@ function SidebarToggleKeybindingControl() {
         return;
       }
       if (event.key === "Backspace") {
-        void persistKeybinding("mod+b");
+        void persistKeybinding(defaultKeybinding);
         return;
       }
 
@@ -471,7 +485,7 @@ function SidebarToggleKeybindingControl() {
       if (!nextKey) return;
       void persistKeybinding(nextKey);
     },
-    [persistKeybinding, recording],
+    [defaultKeybinding, persistKeybinding, recording],
   );
 
   return (
@@ -492,8 +506,8 @@ function SidebarToggleKeybindingControl() {
           type="button"
           size="xs"
           variant="ghost"
-          disabled={disabled || configuredValue === "mod+b"}
-          onClick={() => void persistKeybinding("mod+b")}
+          disabled={disabled || configuredValue === defaultKeybinding}
+          onClick={() => void persistKeybinding(defaultKeybinding)}
         >
           Reset
         </Button>
@@ -1503,7 +1517,45 @@ export function GeneralSettingsPanel() {
               ? "Click the shortcut, then press a new key combination."
               : "Keybinding edits are unavailable in this environment."
           }
-          control={<SidebarToggleKeybindingControl />}
+          control={
+            <KeybindingControl
+              command="sidebar.toggle"
+              defaultKeybinding="mod+b"
+              defaultLabel={isMacPlatformLabel() ? "\u2318B" : "Ctrl+B"}
+            />
+          }
+        />
+        <SettingsRow
+          title="Previous composer history"
+          description="Recall older sent prompts in the active thread composer."
+          status={
+            readLocalApi()
+              ? "Click the shortcut, then press a new key combination."
+              : "Keybinding edits are unavailable in this environment."
+          }
+          control={
+            <KeybindingControl
+              command="composer.history.previous"
+              defaultKeybinding="mod+arrowup"
+              defaultLabel={isMacPlatformLabel() ? "\u2318Up" : "Ctrl+Up"}
+            />
+          }
+        />
+        <SettingsRow
+          title="Next composer history"
+          description="Move toward newer sent prompts, then restore the draft captured when navigation started."
+          status={
+            readLocalApi()
+              ? "Click the shortcut, then press a new key combination."
+              : "Keybinding edits are unavailable in this environment."
+          }
+          control={
+            <KeybindingControl
+              command="composer.history.next"
+              defaultKeybinding="mod+arrowdown"
+              defaultLabel={isMacPlatformLabel() ? "\u2318Down" : "Ctrl+Down"}
+            />
+          }
         />
         <SettingsRow
           title="Advanced keybindings file"
