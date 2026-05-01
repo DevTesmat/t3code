@@ -308,6 +308,8 @@ const createDesktopBridgeStub = (overrides?: {
         advertisedHost: mode === "network-accessible" ? "192.168.1.44" : null,
       })),
     setRunningThreadsState: vi.fn().mockResolvedValue(undefined),
+    getWindowState: vi.fn().mockResolvedValue({ isFullScreen: false }),
+    onWindowState: () => () => {},
     pickFolder: vi.fn().mockResolvedValue(null),
     confirm: vi.fn().mockResolvedValue(false),
     setTheme: vi.fn().mockResolvedValue(undefined),

@@ -112,6 +112,8 @@ const REMOVE_SAVED_ENVIRONMENT_SECRET_CHANNEL = "desktop:remove-saved-environmen
 const GET_SERVER_EXPOSURE_STATE_CHANNEL = "desktop:get-server-exposure-state";
 const SET_SERVER_EXPOSURE_MODE_CHANNEL = "desktop:set-server-exposure-mode";
 const SET_RUNNING_THREADS_STATE_CHANNEL = "desktop:set-running-threads-state";
+const GET_WINDOW_STATE_CHANNEL = "desktop:get-window-state";
+const WINDOW_STATE_CHANNEL = "desktop:window-state";
 const BASE_DIR =
   process.env.T3CODE_HOME?.trim() ||
   Path.join(OS.homedir(), DESKTOP_APP_VARIANT === "local" ? ".t3-local" : ".t3");
@@ -1710,6 +1712,16 @@ function registerIpcHandlers(): void {
     runningThreadsState = nextState;
   });
 
+  ipcMain.removeHandler(GET_WINDOW_STATE_CHANNEL);
+  ipcMain.handle(GET_WINDOW_STATE_CHANNEL, async (event) => {
+    const owner = BrowserWindow.fromWebContents(event.sender) ?? mainWindow;
+    if (!owner) {
+      return { isFullScreen: false } as const;
+    }
+
+    return getDesktopWindowState(owner);
+  });
+
   ipcMain.removeHandler(PICK_FOLDER_CHANNEL);
   ipcMain.handle(PICK_FOLDER_CHANNEL, async (_event, rawOptions: unknown) => {
     const owner = BrowserWindow.getFocusedWindow() ?? mainWindow;
@@ -1964,6 +1976,20 @@ function syncAllWindowAppearance(): void {
 
 nativeTheme.on("updated", syncAllWindowAppearance);
 
+function getDesktopWindowState(window: BrowserWindow) {
+  return {
+    isFullScreen: window.isFullScreen(),
+  } as const;
+}
+
+function sendDesktopWindowState(window: BrowserWindow): void {
+  if (window.isDestroyed()) {
+    return;
+  }
+
+  window.webContents.send(WINDOW_STATE_CHANNEL, getDesktopWindowState(window));
+}
+
 async function confirmCloseWithRunningThreads(window: BrowserWindow): Promise<void> {
   if (runningThreadsQuitPromptInFlight) {
     revealWindow(window);
@@ -2065,9 +2091,12 @@ function createWindow(): BrowserWindow {
     event.preventDefault();
     window.setTitle(APP_DISPLAY_NAME);
   });
+  window.on("enter-full-screen", () => sendDesktopWindowState(window));
+  window.on("leave-full-screen", () => sendDesktopWindowState(window));
   window.webContents.on("did-finish-load", () => {
     window.setTitle(APP_DISPLAY_NAME);
     emitUpdateState();
+    sendDesktopWindowState(window);
   });
   window.on("close", (event) => {
     if (

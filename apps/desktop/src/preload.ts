@@ -26,6 +26,8 @@ const REMOVE_SAVED_ENVIRONMENT_SECRET_CHANNEL = "desktop:remove-saved-environmen
 const GET_SERVER_EXPOSURE_STATE_CHANNEL = "desktop:get-server-exposure-state";
 const SET_SERVER_EXPOSURE_MODE_CHANNEL = "desktop:set-server-exposure-mode";
 const SET_RUNNING_THREADS_STATE_CHANNEL = "desktop:set-running-threads-state";
+const GET_WINDOW_STATE_CHANNEL = "desktop:get-window-state";
+const WINDOW_STATE_CHANNEL = "desktop:window-state";
 
 contextBridge.exposeInMainWorld("desktopBridge", {
   getAppBranding: () => {
@@ -56,6 +58,18 @@ contextBridge.exposeInMainWorld("desktopBridge", {
   getServerExposureState: () => ipcRenderer.invoke(GET_SERVER_EXPOSURE_STATE_CHANNEL),
   setServerExposureMode: (mode) => ipcRenderer.invoke(SET_SERVER_EXPOSURE_MODE_CHANNEL, mode),
   setRunningThreadsState: (state) => ipcRenderer.invoke(SET_RUNNING_THREADS_STATE_CHANNEL, state),
+  getWindowState: () => ipcRenderer.invoke(GET_WINDOW_STATE_CHANNEL),
+  onWindowState: (listener) => {
+    const wrappedListener = (_event: Electron.IpcRendererEvent, state: unknown) => {
+      if (typeof state !== "object" || state === null) return;
+      listener(state as Parameters<typeof listener>[0]);
+    };
+
+    ipcRenderer.on(WINDOW_STATE_CHANNEL, wrappedListener);
+    return () => {
+      ipcRenderer.removeListener(WINDOW_STATE_CHANNEL, wrappedListener);
+    };
+  },
   pickFolder: (options) => ipcRenderer.invoke(PICK_FOLDER_CHANNEL, options),
   confirm: (message) => ipcRenderer.invoke(CONFIRM_CHANNEL, message),
   setTheme: (theme) => ipcRenderer.invoke(SET_THEME_CHANNEL, theme),

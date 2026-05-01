@@ -182,6 +182,8 @@ function makeDesktopBridge(overrides: Partial<DesktopBridge> = {}): DesktopBridg
       advertisedHost: null,
     }),
     setRunningThreadsState: async () => undefined,
+    getWindowState: async () => ({ isFullScreen: false }),
+    onWindowState: () => () => undefined,
     pickFolder: async () => null,
     confirm: async () => true,
     setTheme: async () => undefined,

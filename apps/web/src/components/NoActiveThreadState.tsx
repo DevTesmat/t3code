@@ -2,6 +2,7 @@ import { Empty, EmptyDescription, EmptyHeader, EmptyTitle } from "./ui/empty";
 import { SidebarInset, SidebarTrigger } from "./ui/sidebar";
 import { isElectron } from "../env";
 import { cn } from "~/lib/utils";
+import { AppTopbarBrand } from "./AppTopbarBrand";
 
 export function NoActiveThreadState() {
   return (
@@ -11,14 +12,16 @@ export function NoActiveThreadState() {
           className={cn(
             "border-b border-border px-3 sm:px-5",
             isElectron
-              ? "drag-region flex h-[52px] items-center wco:h-[env(titlebar-area-height)]"
+              ? "drag-region flex h-[52px] items-center pl-[104px] wco:h-[env(titlebar-area-height)] wco:pl-[calc(env(titlebar-area-x)+env(titlebar-area-width)+1em)] desktop-fullscreen:pl-3 desktop-fullscreen:sm:pl-5 desktop-fullscreen:wco:pl-3 desktop-fullscreen:wco:sm:pl-5"
               : "py-2 sm:py-3",
           )}
         >
           {isElectron ? (
-            <span className="text-xs text-muted-foreground/50 wco:pr-[calc(100vw-env(titlebar-area-width)-env(titlebar-area-x)+1em)]">
-              No active thread
-            </span>
+            <div className="flex min-w-0 items-center gap-2 wco:pr-[calc(100vw-env(titlebar-area-width)-env(titlebar-area-x)+1em)]">
+              <AppTopbarBrand />
+              <div className="h-4 w-px shrink-0 bg-border" />
+              <span className="truncate text-xs text-muted-foreground/50">No active thread</span>
+            </div>
           ) : (
             <div className="flex items-center gap-2">
               <SidebarTrigger className="size-7 shrink-0 md:hidden" />

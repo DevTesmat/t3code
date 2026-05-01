@@ -81,7 +81,7 @@ function SettingsContentLayout() {
         )}
 
         {isElectron && (
-          <div className="app-topbar-main drag-region fixed top-0 right-0 left-0 z-30 flex h-[52px] shrink-0 items-center border-b border-border bg-background px-5 pl-[104px] wco:h-[env(titlebar-area-height)] wco:pl-[calc(env(titlebar-area-x)+env(titlebar-area-width)+1em)] wco:pr-[calc(100vw-env(titlebar-area-width)-env(titlebar-area-x)+1em)]">
+          <div className="app-topbar-main drag-region fixed top-0 right-0 left-0 z-30 flex h-[52px] shrink-0 items-center border-b border-border bg-background px-5 pl-[104px] wco:h-[env(titlebar-area-height)] wco:pl-[calc(env(titlebar-area-x)+env(titlebar-area-width)+1em)] wco:pr-[calc(100vw-env(titlebar-area-width)-env(titlebar-area-x)+1em)] desktop-fullscreen:pl-5 desktop-fullscreen:wco:pl-5">
             <AppTopbarBrand />
             <div className="mx-2 h-4 w-px shrink-0 bg-border" />
             <span className="text-xs font-medium tracking-wide text-muted-foreground/70">

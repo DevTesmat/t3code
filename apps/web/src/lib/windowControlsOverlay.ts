@@ -1,4 +1,5 @@
 const WCO_CLASS_NAME = "wco";
+const DESKTOP_FULLSCREEN_CLASS_NAME = "desktop-fullscreen";
 
 interface WindowControlsOverlayLike {
   readonly visible: boolean;
@@ -37,4 +38,25 @@ export function syncDocumentWindowControlsOverlayClass(): () => void {
   return () => {
     overlay.removeEventListener("geometrychange", update);
   };
+}
+
+export function syncDocumentDesktopWindowStateClass(): () => void {
+  if (typeof document === "undefined" || typeof window === "undefined") {
+    return () => {};
+  }
+
+  const bridge = window.desktopBridge;
+  if (!bridge?.getWindowState || !bridge.onWindowState) {
+    return () => {};
+  }
+
+  const update = (state: { isFullScreen: boolean }) => {
+    document.documentElement.classList.toggle(DESKTOP_FULLSCREEN_CLASS_NAME, state.isFullScreen);
+  };
+
+  void bridge
+    .getWindowState()
+    .then(update)
+    .catch(() => undefined);
+  return bridge.onWindowState(update);
 }

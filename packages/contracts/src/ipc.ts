@@ -148,6 +148,10 @@ export interface DesktopRunningThreadsState {
   updatedAt: string;
 }
 
+export interface DesktopWindowState {
+  isFullScreen: boolean;
+}
+
 export interface PickFolderOptions {
   initialPath?: string | null;
 }
@@ -167,6 +171,8 @@ export interface DesktopBridge {
   getServerExposureState: () => Promise<DesktopServerExposureState>;
   setServerExposureMode: (mode: DesktopServerExposureMode) => Promise<DesktopServerExposureState>;
   setRunningThreadsState: (state: DesktopRunningThreadsState) => Promise<void>;
+  getWindowState: () => Promise<DesktopWindowState>;
+  onWindowState: (listener: (state: DesktopWindowState) => void) => () => void;
   pickFolder: (options?: PickFolderOptions) => Promise<string | null>;
   confirm: (message: string) => Promise<boolean>;
   setTheme: (theme: DesktopTheme) => Promise<void>;
