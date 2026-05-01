@@ -9,6 +9,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   deriveCompletionDividerBeforeEntryId,
+  deriveActiveTurnActivityState,
   deriveActiveWorkStartedAt,
   deriveActivePlanState,
   derivePendingApprovals,
@@ -21,6 +22,7 @@ import {
   hasToolActivityForTurn,
   isLatestTurnSettled,
 } from "./session-logic";
+import type { ChatMessage, ThreadSession } from "./types";
 
 function makeActivity(overrides: {
   id?: string;
@@ -42,6 +44,30 @@ function makeActivity(overrides: {
     payload,
     turnId: overrides.turnId ? TurnId.make(overrides.turnId) : null,
     ...(overrides.sequence !== undefined ? { sequence: overrides.sequence } : {}),
+  };
+}
+
+function makeRunningSession(overrides: Partial<ThreadSession> = {}): ThreadSession {
+  return {
+    provider: "codex" as never,
+    status: "running",
+    activeTurnId: TurnId.make("turn-1"),
+    createdAt: "2026-02-23T00:00:00.000Z",
+    updatedAt: "2026-02-23T00:00:01.000Z",
+    orchestrationStatus: "running",
+    ...overrides,
+  };
+}
+
+function makeAssistantMessage(overrides: Partial<ChatMessage> = {}): ChatMessage {
+  return {
+    id: MessageId.make("assistant-1"),
+    role: "assistant",
+    text: "partial",
+    turnId: TurnId.make("turn-1"),
+    createdAt: "2026-02-23T00:00:02.000Z",
+    streaming: true,
+    ...overrides,
   };
 }
 
@@ -1405,6 +1431,137 @@ describe("hasToolActivityForTurn", () => {
 
     expect(hasToolActivityForTurn(activities, TurnId.make("turn-1"))).toBe(true);
     expect(hasToolActivityForTurn(activities, TurnId.make("turn-2"))).toBe(false);
+  });
+});
+
+describe("deriveActiveTurnActivityState", () => {
+  const baseInput = {
+    session: makeRunningSession(),
+    latestTurn: {
+      turnId: TurnId.make("turn-1"),
+      state: "running" as const,
+      requestedAt: "2026-02-23T00:00:00.000Z",
+      startedAt: "2026-02-23T00:00:01.000Z",
+      completedAt: null,
+      assistantMessageId: null,
+    },
+    activities: [] as OrchestrationThreadActivity[],
+    messages: [] as ChatMessage[],
+    pendingApprovals: [],
+    pendingUserInputs: [],
+    isSendBusy: false,
+    isConnecting: false,
+    isRevertingCheckpoint: false,
+  };
+
+  it("shows waiting for model stream after turn start before content or tool events", () => {
+    expect(deriveActiveTurnActivityState(baseInput)).toMatchObject({
+      kind: "waitingForModel",
+      label: "Waiting for model stream",
+    });
+  });
+
+  it("shows streaming response when the current assistant message is streaming", () => {
+    expect(
+      deriveActiveTurnActivityState({
+        ...baseInput,
+        messages: [makeAssistantMessage()],
+      }),
+    ).toMatchObject({
+      kind: "streamingAssistant",
+      label: "Streaming response",
+    });
+  });
+
+  it("shows the active tool and falls back after the tool completes", () => {
+    const toolStarted = makeActivity({
+      id: "tool-started",
+      turnId: "turn-1",
+      kind: "tool.started",
+      summary: "Terminal started",
+      payload: {
+        itemType: "command_execution",
+        title: "Terminal",
+        data: { toolCallId: "tool-1", command: "bun lint" },
+      },
+    });
+    const running = deriveActiveTurnActivityState({
+      ...baseInput,
+      activities: [toolStarted],
+    });
+
+    expect(running).toMatchObject({
+      kind: "runningTool",
+      label: "Running terminal",
+      detail: "bun lint",
+    });
+
+    expect(
+      deriveActiveTurnActivityState({
+        ...baseInput,
+        activities: [
+          toolStarted,
+          makeActivity({
+            id: "tool-completed",
+            turnId: "turn-1",
+            kind: "tool.completed",
+            summary: "Terminal completed",
+            payload: {
+              itemType: "command_execution",
+              title: "Terminal",
+              data: { toolCallId: "tool-1", command: "bun lint" },
+            },
+          }),
+        ],
+      }),
+    ).toMatchObject({
+      kind: "waitingForModel",
+      label: "Waiting for model stream",
+    });
+  });
+
+  it("lets approval and user-input blockers override running states", () => {
+    expect(
+      deriveActiveTurnActivityState({
+        ...baseInput,
+        messages: [makeAssistantMessage()],
+        pendingApprovals: [
+          {
+            requestId: "approval-1" as never,
+            requestKind: "command",
+            createdAt: "2026-02-23T00:00:03.000Z",
+          },
+        ],
+      }),
+    ).toMatchObject({
+      kind: "awaitingApproval",
+      label: "Waiting for command approval",
+    });
+
+    expect(
+      deriveActiveTurnActivityState({
+        ...baseInput,
+        pendingUserInputs: [
+          {
+            requestId: "input-1" as never,
+            createdAt: "2026-02-23T00:00:03.000Z",
+            questions: [
+              {
+                id: "q1",
+                header: "Choice",
+                question: "Pick an option",
+                options: [{ label: "A", description: "Use A" }],
+                multiSelect: false,
+              },
+            ],
+          },
+        ],
+      }),
+    ).toMatchObject({
+      kind: "awaitingUserInput",
+      label: "Waiting for your answer",
+      detail: "Pick an option",
+    });
   });
 });
 

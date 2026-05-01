@@ -54,6 +54,7 @@ import {
   derivePendingUserInputs,
   derivePhase,
   deriveTimelineEntries,
+  deriveActiveTurnActivityState,
   deriveActiveWorkStartedAt,
   deriveActivePlanState,
   findSidebarProposedPlan,
@@ -189,6 +190,7 @@ import { RightPanelSheet } from "./RightPanelSheet";
 const IMAGE_ONLY_BOOTSTRAP_PROMPT =
   "[User attached one or more images without additional text. Respond using the conversation context and the attached image(s).]";
 const EMPTY_ACTIVITIES: OrchestrationThreadActivity[] = [];
+const EMPTY_MESSAGES: ChatMessage[] = [];
 const EMPTY_PROPOSED_PLANS: Thread["proposedPlans"] = [];
 const EMPTY_PROVIDERS: ServerProvider[] = [];
 const EMPTY_PENDING_USER_INPUT_ANSWERS: Record<string, PendingUserInputDraftAnswer> = {};
@@ -1244,6 +1246,31 @@ export default function ChatView(props: ChatViewProps) {
     threadError: activeThread?.error,
   });
   const isWorking = activeTurnRunning || isSendBusy || isConnecting || isRevertingCheckpoint;
+  const activeTurnActivityState = useMemo(
+    () =>
+      deriveActiveTurnActivityState({
+        session: activeThread?.session ?? null,
+        latestTurn: activeLatestTurn,
+        activities: threadActivities,
+        messages: activeThread?.messages ?? EMPTY_MESSAGES,
+        pendingApprovals,
+        pendingUserInputs,
+        isSendBusy,
+        isConnecting,
+        isRevertingCheckpoint,
+      }),
+    [
+      activeLatestTurn,
+      activeThread?.messages,
+      activeThread?.session,
+      isConnecting,
+      isRevertingCheckpoint,
+      isSendBusy,
+      pendingApprovals,
+      pendingUserInputs,
+      threadActivities,
+    ],
+  );
   const activeWorkStartedAt = deriveActiveWorkStartedAt(
     activeLatestTurn,
     activeThread?.session ?? null,
@@ -3648,6 +3675,7 @@ export default function ChatView(props: ChatViewProps) {
               activeTurnInProgress={isWorking || !latestTurnSettled}
               activeTurnId={activeLatestTurn?.turnId ?? null}
               activeTurnStartedAt={activeWorkStartedAt}
+              activeTurnActivityState={activeTurnActivityState}
               listRef={legendListRef}
               timelineEntries={timelineEntries}
               completionDividerBeforeEntryId={completionDividerBeforeEntryId}

@@ -111,6 +111,12 @@ import type { PendingApproval, PendingUserInput } from "../../session-logic";
 import { deriveLatestContextWindowSnapshot } from "../../lib/contextWindow";
 import { formatProviderSkillDisplayName } from "../../providerSkillPresentation";
 import { searchProviderSkills } from "../../providerSkillSearch";
+import {
+  navigateComposerHistory,
+  userPromptHistoryFromMessages,
+  type ComposerHistoryNavigationState,
+} from "../../composerHistory";
+import { resolveShortcutCommand } from "../../keybindings";
 
 const IMAGE_SIZE_LIMIT_LABEL = `${Math.round(PROVIDER_SEND_TURN_MAX_IMAGE_BYTES / (1024 * 1024))}MB`;
 
@@ -779,6 +785,10 @@ export const ChatComposer = memo(
     const [isComposerFooterCompact, setIsComposerFooterCompact] = useState(false);
     const [isComposerPrimaryActionsCompact, setIsComposerPrimaryActionsCompact] = useState(false);
     const [isComposerModelPickerOpen, setIsComposerModelPickerOpen] = useState(false);
+    const userPromptHistory = useMemo(
+      () => userPromptHistoryFromMessages(activeThread?.messages ?? []),
+      [activeThread?.messages],
+    );
 
     // ------------------------------------------------------------------
     // Refs
@@ -790,6 +800,8 @@ export const ChatComposer = memo(
     const composerMenuOpenRef = useRef(false);
     const composerMenuItemsRef = useRef<ComposerCommandItem[]>([]);
     const activeComposerMenuItemRef = useRef<ComposerCommandItem | null>(null);
+    const composerHistoryStateRef = useRef<ComposerHistoryNavigationState | null>(null);
+    const suppressHistoryResetForPromptRef = useRef<string | null>(null);
     const dragDepthRef = useRef(0);
 
     // ------------------------------------------------------------------
@@ -1087,7 +1099,17 @@ export const ChatComposer = memo(
     useEffect(() => {
       promptRef.current = prompt;
       setComposerCursor((existing) => clampCollapsedComposerCursor(prompt, existing));
+      if (suppressHistoryResetForPromptRef.current === prompt) {
+        return;
+      }
+      suppressHistoryResetForPromptRef.current = null;
+      composerHistoryStateRef.current = null;
     }, [prompt, promptRef]);
+
+    useEffect(() => {
+      composerHistoryStateRef.current = null;
+      suppressHistoryResetForPromptRef.current = null;
+    }, [composerDraftTarget, activeThread?.environmentId, activeThread?.id]);
 
     useEffect(() => {
       composerImagesRef.current = composerImages;
@@ -1337,6 +1359,12 @@ export const ChatComposer = memo(
         }
         promptRef.current = nextPrompt;
         setPrompt(nextPrompt);
+        if (suppressHistoryResetForPromptRef.current === nextPrompt) {
+          suppressHistoryResetForPromptRef.current = null;
+        } else {
+          suppressHistoryResetForPromptRef.current = null;
+          composerHistoryStateRef.current = null;
+        }
         if (!terminalContextIdListsEqual(composerTerminalContexts, terminalContextIds)) {
           setComposerDraftTerminalContexts(
             composerDraftTarget,
@@ -1584,7 +1612,50 @@ export const ChatComposer = memo(
           return true;
         }
       }
+      if (key === "ArrowDown" || key === "ArrowUp") {
+        const command = resolveShortcutCommand(event, keybindings, {
+          context: {
+            terminalFocus: false,
+            terminalOpen,
+            modelPickerOpen: isComposerModelPickerOpen,
+          },
+        });
+        const direction =
+          command === "composer.history.previous"
+            ? "previous"
+            : command === "composer.history.next"
+              ? "next"
+              : null;
+        if (
+          direction &&
+          !isConnecting &&
+          !activePendingApproval &&
+          pendingUserInputs.length === 0
+        ) {
+          const navigation = navigateComposerHistory({
+            currentPrompt: promptRef.current,
+            direction,
+            entries: userPromptHistory,
+            state: composerHistoryStateRef.current,
+          });
+          if (!navigation) return true;
+
+          composerHistoryStateRef.current = navigation.state;
+          suppressHistoryResetForPromptRef.current = navigation.prompt;
+          promptRef.current = navigation.prompt;
+          setPrompt(navigation.prompt);
+          const nextCursor = navigation.prompt.length;
+          setComposerCursor(nextCursor);
+          setComposerHighlightedItemId(null);
+          setComposerTrigger(null);
+          window.requestAnimationFrame(() => {
+            composerEditorRef.current?.focusAt(nextCursor);
+          });
+          return true;
+        }
+      }
       if (key === "Enter" && !event.shiftKey) {
+        composerHistoryStateRef.current = null;
         void onSend();
         return true;
       }

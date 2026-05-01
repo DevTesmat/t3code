@@ -90,6 +90,24 @@ export interface ActivePlanState {
   }>;
 }
 
+export type ActiveTurnActivityKind =
+  | "awaitingApproval"
+  | "awaitingUserInput"
+  | "dispatching"
+  | "connecting"
+  | "runningTool"
+  | "streamingAssistant"
+  | "thinking"
+  | "waitingForModel"
+  | "finalizing"
+  | "idle";
+
+export interface ActiveTurnActivityState {
+  kind: ActiveTurnActivityKind;
+  label: string;
+  detail?: string | undefined;
+}
+
 export interface LatestProposedPlanState {
   id: OrchestrationProposedPlanId;
   createdAt: string;
@@ -1154,6 +1172,184 @@ export function hasToolActivityForTurn(
 ): boolean {
   if (!turnId) return false;
   return activities.some((activity) => activity.turnId === turnId && activity.tone === "tool");
+}
+
+function formatApprovalActivityLabel(requestKind: PendingApproval["requestKind"] | undefined) {
+  switch (requestKind) {
+    case "command":
+      return "Waiting for command approval";
+    case "file-read":
+      return "Waiting for file-read approval";
+    case "file-change":
+      return "Waiting for file-change approval";
+    default:
+      return "Waiting for approval";
+  }
+}
+
+function labelForToolActivity(entry: WorkLogEntry): string {
+  switch (entry.itemType) {
+    case "command_execution":
+      return "Running terminal";
+    case "file_change":
+      return "Applying patch";
+    case "mcp_tool_call":
+      return "Calling MCP tool";
+    case "dynamic_tool_call":
+      return "Running tool";
+    case "collab_agent_tool_call":
+      return "Running agent";
+    case "web_search":
+      return "Searching web";
+    case "image_view":
+      return "Viewing image";
+    default:
+      return entry.toolTitle ? `Running ${entry.toolTitle}` : "Running tool";
+  }
+}
+
+function detailForToolActivity(entry: WorkLogEntry): string | undefined {
+  return entry.command ?? entry.detail;
+}
+
+function activeToolLifecycleKey(activity: OrchestrationThreadActivity): string | null {
+  const entry = toDerivedWorkLogEntry(activity);
+  return entry.toolCallId ?? entry.collapseKey ?? null;
+}
+
+function deriveActiveToolActivity(
+  activities: ReadonlyArray<OrchestrationThreadActivity>,
+  turnId: TurnId | null | undefined,
+): WorkLogEntry | null {
+  if (!turnId) {
+    return null;
+  }
+
+  const activeByKey = new Map<string, OrchestrationThreadActivity>();
+  const ordered = [...activities]
+    .filter((activity) => activity.turnId === turnId && activity.tone === "tool")
+    .filter(
+      (activity) =>
+        activity.kind === "tool.started" ||
+        activity.kind === "tool.updated" ||
+        activity.kind === "tool.completed",
+    )
+    .toSorted(compareActivitiesByOrder);
+
+  for (const activity of ordered) {
+    const key = activeToolLifecycleKey(activity) ?? activity.id;
+    if (activity.kind === "tool.completed") {
+      activeByKey.delete(key);
+      continue;
+    }
+    activeByKey.set(key, activity);
+  }
+
+  const latest = [...activeByKey.values()].at(-1);
+  if (!latest) {
+    return null;
+  }
+  const {
+    activityKind: _activityKind,
+    collapseKey: _collapseKey,
+    ...entry
+  } = toDerivedWorkLogEntry(latest);
+  return entry;
+}
+
+function hasStreamingAssistantMessageForTurn(
+  messages: ReadonlyArray<ChatMessage>,
+  turnId: TurnId | null | undefined,
+): boolean {
+  if (!turnId) return false;
+  return messages.some(
+    (message) => message.role === "assistant" && message.turnId === turnId && message.streaming,
+  );
+}
+
+function hasThinkingActivityForTurn(
+  activities: ReadonlyArray<OrchestrationThreadActivity>,
+  turnId: TurnId | null | undefined,
+): boolean {
+  if (!turnId) return false;
+  return activities.some(
+    (activity) =>
+      activity.turnId === turnId &&
+      (activity.kind === "task.progress" || activity.kind === "turn.plan.updated"),
+  );
+}
+
+export function deriveActiveTurnActivityState(input: {
+  session: ThreadSession | null;
+  latestTurn: OrchestrationLatestTurn | null;
+  activities: ReadonlyArray<OrchestrationThreadActivity>;
+  messages: ReadonlyArray<ChatMessage>;
+  pendingApprovals: ReadonlyArray<PendingApproval>;
+  pendingUserInputs: ReadonlyArray<PendingUserInput>;
+  isSendBusy: boolean;
+  isConnecting: boolean;
+  isRevertingCheckpoint: boolean;
+}): ActiveTurnActivityState {
+  const activeTurnId =
+    input.session?.orchestrationStatus === "running"
+      ? (input.session.activeTurnId ?? input.latestTurn?.turnId ?? null)
+      : input.latestTurn?.completedAt === null
+        ? input.latestTurn.turnId
+        : null;
+  const isRunning = input.session?.orchestrationStatus === "running" || activeTurnId !== null;
+
+  const activeApproval = input.pendingApprovals[0];
+  if (activeApproval) {
+    return {
+      kind: "awaitingApproval",
+      label: formatApprovalActivityLabel(activeApproval.requestKind),
+      ...(activeApproval.detail ? { detail: activeApproval.detail } : {}),
+    };
+  }
+
+  const activeUserInput = input.pendingUserInputs[0];
+  if (activeUserInput) {
+    return {
+      kind: "awaitingUserInput",
+      label: "Waiting for your answer",
+      detail: activeUserInput.questions[0]?.question,
+    };
+  }
+
+  if (input.isSendBusy) {
+    return { kind: "dispatching", label: "Sending request" };
+  }
+
+  if (input.isConnecting) {
+    return { kind: "connecting", label: "Connecting provider" };
+  }
+
+  const activeTool = deriveActiveToolActivity(input.activities, activeTurnId);
+  if (activeTool) {
+    return {
+      kind: "runningTool",
+      label: labelForToolActivity(activeTool),
+      detail: detailForToolActivity(activeTool),
+    };
+  }
+
+  if (hasStreamingAssistantMessageForTurn(input.messages, activeTurnId)) {
+    return { kind: "streamingAssistant", label: "Streaming response" };
+  }
+
+  if (hasThinkingActivityForTurn(input.activities, activeTurnId)) {
+    return { kind: "thinking", label: "Thinking" };
+  }
+
+  if (isRunning) {
+    return { kind: "waitingForModel", label: "Waiting for model stream" };
+  }
+
+  if (input.isRevertingCheckpoint) {
+    return { kind: "finalizing", label: "Finalizing" };
+  }
+
+  return { kind: "idle", label: "" };
 }
 
 export function deriveTimelineEntries(

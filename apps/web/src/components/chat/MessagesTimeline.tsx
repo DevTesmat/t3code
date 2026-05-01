@@ -11,7 +11,11 @@ import {
   type ReactNode,
 } from "react";
 import { LegendList, type LegendListRef } from "@legendapp/list/react";
-import { deriveTimelineEntries, formatElapsed } from "../../session-logic";
+import {
+  deriveTimelineEntries,
+  formatElapsed,
+  type ActiveTurnActivityState,
+} from "../../session-logic";
 import { type TurnDiffSummary } from "../../types";
 import ChatMarkdown from "../ChatMarkdown";
 import {
@@ -90,6 +94,7 @@ interface MessagesTimelineProps {
   activeTurnInProgress: boolean;
   activeTurnId?: TurnId | null;
   activeTurnStartedAt: string | null;
+  activeTurnActivityState?: ActiveTurnActivityState | undefined;
   listRef: React.RefObject<LegendListRef | null>;
   timelineEntries: ReturnType<typeof deriveTimelineEntries>;
   completionDividerBeforeEntryId: string | null;
@@ -115,6 +120,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   activeTurnInProgress,
   activeTurnId,
   activeTurnStartedAt,
+  activeTurnActivityState,
   listRef,
   timelineEntries,
   completionDividerBeforeEntryId,
@@ -137,6 +143,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
         completionDividerBeforeEntryId,
         isWorking,
         activeTurnStartedAt,
+        activeTurnActivityState,
         turnDiffSummaryByAssistantMessageId,
         revertTurnCountByUserMessageId,
       }),
@@ -145,6 +152,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       completionDividerBeforeEntryId,
       isWorking,
       activeTurnStartedAt,
+      activeTurnActivityState,
       turnDiffSummaryByAssistantMessageId,
       revertTurnCountByUserMessageId,
     ],
@@ -442,13 +450,18 @@ function TimelineRowContent({ row }: { row: TimelineRow }) {
             <span>
               {row.createdAt ? (
                 <>
-                  Working for <WorkingTimer createdAt={row.createdAt} />
+                  {row.activityState.label} for <WorkingTimer createdAt={row.createdAt} />
                 </>
               ) : (
-                "Working..."
+                `${row.activityState.label}...`
               )}
             </span>
           </div>
+          {row.activityState.detail ? (
+            <div className="ml-[26px] max-w-full truncate pt-0.5 text-[11px] text-muted-foreground/45">
+              {row.activityState.detail}
+            </div>
+          ) : null}
         </div>
       )}
     </div>
