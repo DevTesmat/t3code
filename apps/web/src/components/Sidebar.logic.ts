@@ -12,6 +12,7 @@ import { isLatestTurnSettled } from "../session-logic";
 
 export const THREAD_SELECTION_SAFE_SELECTOR = "[data-thread-item], [data-thread-selection-safe]";
 export const THREAD_JUMP_HINT_SHOW_DELAY_MS = 100;
+export const DONE_THREAD_STATUS_TTL_MS = 60 * 60 * 1000;
 // Visible sidebar rows are prewarmed into the thread-detail cache so opening a
 // nearby thread usually reuses an already-hot subscription.
 export const SIDEBAR_THREAD_PREWARM_LIMIT = 10;
@@ -30,6 +31,7 @@ export interface ThreadStatusPill {
   colorClass: string;
   dotClass: string;
   pulse: boolean;
+  showTextLabel?: boolean;
 }
 
 const THREAD_STATUS_PRIORITY: Record<ThreadStatusPill["label"], number> = {
@@ -52,6 +54,7 @@ type ThreadStatusInput = Pick<
   | "session"
 > & {
   lastVisitedAt?: string | undefined;
+  nowMs?: number | undefined;
 };
 
 export interface ThreadJumpHintVisibilityController {
@@ -155,6 +158,24 @@ export function hasUnseenTimestamp(
 
 export function hasUnseenCompletion(thread: ThreadStatusInput): boolean {
   return hasUnseenTimestamp(thread.latestTurn?.completedAt, thread.lastVisitedAt);
+}
+
+export function hasCompletedLatestTurn(thread: ThreadStatusInput): boolean {
+  return (
+    thread.latestTurn?.state === "completed" &&
+    isLatestTurnSettled(thread.latestTurn, thread.session)
+  );
+}
+
+export function hasFreshCompletedLatestTurn(thread: ThreadStatusInput): boolean {
+  if (!hasCompletedLatestTurn(thread)) {
+    return false;
+  }
+  const completedAtMs = Date.parse(thread.latestTurn?.completedAt ?? "");
+  if (Number.isNaN(completedAtMs)) {
+    return false;
+  }
+  return (thread.nowMs ?? Date.now()) - completedAtMs <= DONE_THREAD_STATUS_TTL_MS;
 }
 
 export function shouldClearThreadSelectionOnMouseDown(target: HTMLElement | null): boolean {
@@ -386,12 +407,13 @@ export function resolveThreadStatusPill(input: {
     };
   }
 
-  if (hasUnseenCompletion(thread)) {
+  if (hasFreshCompletedLatestTurn(thread)) {
     return {
       label: "Done",
       colorClass: "text-emerald-600 dark:text-emerald-300/90",
       dotClass: "bg-emerald-500 dark:bg-emerald-300/90",
       pulse: false,
+      showTextLabel: hasUnseenCompletion(thread),
     };
   }
 

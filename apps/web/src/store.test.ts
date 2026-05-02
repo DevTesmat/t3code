@@ -10,6 +10,8 @@ import {
   ThreadId,
   TurnId,
   type OrchestrationEvent,
+  type OrchestrationShellSnapshot,
+  type OrchestrationThread,
 } from "@t3tools/contracts";
 import { describe, expect, it } from "vitest";
 
@@ -18,13 +20,17 @@ import {
   applyOrchestrationEvents,
   selectEnvironmentState,
   selectProjectsAcrossEnvironments,
+  selectSidebarThreadSummaryByRef,
   selectThreadByRef,
   selectThreadExistsByRef,
   setThreadBranch,
   selectThreadsAcrossEnvironments,
+  syncServerShellSnapshot,
+  syncServerThreadDetail,
   type AppState,
   type EnvironmentState,
 } from "./store";
+import { resolveThreadStatusPill } from "./components/Sidebar.logic";
 import { DEFAULT_INTERACTION_MODE, DEFAULT_RUNTIME_MODE, type Thread } from "./types";
 
 const localEnvironmentId = EnvironmentId.make("environment-local");
@@ -246,6 +252,127 @@ function makeEvent<T extends OrchestrationEvent["type"]>(
   } as Extract<OrchestrationEvent, { type: T }>;
 }
 
+function makeServerThread(overrides: Partial<OrchestrationThread> = {}): OrchestrationThread {
+  return {
+    id: ThreadId.make("thread-1"),
+    projectId: ProjectId.make("project-1"),
+    title: "Thread",
+    modelSelection: {
+      instanceId: ProviderInstanceId.make("codex"),
+      model: DEFAULT_MODEL,
+    },
+    runtimeMode: DEFAULT_RUNTIME_MODE,
+    interactionMode: "plan",
+    branch: null,
+    worktreePath: null,
+    latestTurn: {
+      turnId: TurnId.make("turn-1"),
+      state: "completed",
+      requestedAt: "2026-02-27T00:00:00.000Z",
+      startedAt: "2026-02-27T00:00:01.000Z",
+      completedAt: "2026-02-27T00:00:05.000Z",
+      assistantMessageId: MessageId.make("assistant-1"),
+    },
+    createdAt: "2026-02-27T00:00:00.000Z",
+    updatedAt: "2026-02-27T00:00:05.000Z",
+    pinnedAt: null,
+    archivedAt: null,
+    deletedAt: null,
+    messages: [
+      {
+        id: MessageId.make("user-1"),
+        role: "user",
+        text: "make a plan",
+        turnId: TurnId.make("turn-1"),
+        streaming: false,
+        createdAt: "2026-02-27T00:00:00.000Z",
+        updatedAt: "2026-02-27T00:00:00.000Z",
+      },
+      {
+        id: MessageId.make("assistant-1"),
+        role: "assistant",
+        text: "plan",
+        turnId: TurnId.make("turn-1"),
+        streaming: false,
+        createdAt: "2026-02-27T00:00:01.000Z",
+        updatedAt: "2026-02-27T00:00:05.000Z",
+      },
+    ],
+    proposedPlans: [
+      {
+        id: "plan-1",
+        turnId: TurnId.make("turn-1"),
+        planMarkdown: "Do the thing",
+        implementedAt: null,
+        implementationThreadId: null,
+        createdAt: "2026-02-27T00:00:05.000Z",
+        updatedAt: "2026-02-27T00:00:05.000Z",
+      },
+    ],
+    checkpoints: [],
+    activities: [],
+    session: {
+      threadId: ThreadId.make("thread-1"),
+      status: "ready",
+      providerName: "codex",
+      runtimeMode: "full-access",
+      activeTurnId: null,
+      lastError: null,
+      updatedAt: "2026-02-27T00:00:05.000Z",
+    },
+    ...overrides,
+  };
+}
+
+function makeShellSnapshot(
+  thread: OrchestrationThread,
+  overrides: Partial<OrchestrationShellSnapshot["threads"][number]> = {},
+): OrchestrationShellSnapshot {
+  return {
+    snapshotSequence: 1,
+    projects: [
+      {
+        id: thread.projectId,
+        title: "Project",
+        workspaceRoot: "/tmp/project",
+        repositoryIdentity: null,
+        defaultModelSelection: {
+          instanceId: ProviderInstanceId.make("codex"),
+          model: DEFAULT_MODEL,
+        },
+        scripts: [],
+        createdAt: "2026-02-27T00:00:00.000Z",
+        updatedAt: "2026-02-27T00:00:00.000Z",
+      },
+    ],
+    threads: [
+      {
+        id: thread.id,
+        projectId: thread.projectId,
+        title: thread.title,
+        modelSelection: thread.modelSelection,
+        runtimeMode: thread.runtimeMode,
+        interactionMode: thread.interactionMode,
+        branch: thread.branch,
+        worktreePath: thread.worktreePath,
+        latestTurn: thread.latestTurn,
+        createdAt: thread.createdAt,
+        updatedAt: thread.updatedAt,
+        pinnedAt: thread.pinnedAt,
+        archivedAt: thread.archivedAt,
+        session: thread.session,
+        latestUserMessageAt: "2026-02-27T00:00:00.000Z",
+        hasPendingApprovals: false,
+        hasPendingUserInput: false,
+        latestPendingUserInputAt: null,
+        hasActionableProposedPlan: true,
+        ...overrides,
+      },
+    ],
+    updatedAt: "2026-02-27T00:00:05.000Z",
+  };
+}
+
 describe("thread selection memoization", () => {
   it("returns stable thread references for repeated reads of the same state", () => {
     const thread = makeThread({
@@ -365,6 +492,80 @@ describe("thread selection memoization", () => {
       ),
     ).toBe(false);
     expect(selectThreadExistsByRef(state, null)).toBe(false);
+  });
+});
+
+describe("shell and detail thread state", () => {
+  it("keeps plan-ready sidebar state when opening and closing thread detail", () => {
+    const thread = makeServerThread();
+    const threadRef = scopeThreadRef(localEnvironmentId, thread.id);
+    const shellState = syncServerShellSnapshot(
+      makeEmptyState({ activeEnvironmentId: localEnvironmentId, bootstrapComplete: false }),
+      makeShellSnapshot(thread),
+      localEnvironmentId,
+    );
+
+    const withDetail = syncServerThreadDetail(shellState, thread, localEnvironmentId);
+    const afterCloseLikeShellRefresh = syncServerShellSnapshot(
+      withDetail,
+      makeShellSnapshot(thread),
+      localEnvironmentId,
+    );
+    const summary = selectSidebarThreadSummaryByRef(afterCloseLikeShellRefresh, threadRef);
+
+    expect(summary?.hasActionableProposedPlan).toBe(true);
+    expect(summary?.latestTurn?.state).toBe("completed");
+    expect(
+      summary
+        ? resolveThreadStatusPill({
+            thread: {
+              ...summary,
+              lastVisitedAt: "2026-02-27T00:01:00.000Z",
+              nowMs: Date.parse("2026-02-27T00:01:00.000Z"),
+            },
+          })
+        : null,
+    ).toMatchObject({ label: "Plan Ready" });
+  });
+
+  it("falls back to persistent done when a completed plan has already been implemented", () => {
+    const thread = makeServerThread({
+      proposedPlans: [
+        {
+          id: "plan-1",
+          turnId: TurnId.make("turn-1"),
+          planMarkdown: "Do the thing",
+          implementedAt: "2026-02-27T00:00:10.000Z",
+          implementationThreadId: ThreadId.make("thread-implementation"),
+          createdAt: "2026-02-27T00:00:05.000Z",
+          updatedAt: "2026-02-27T00:00:10.000Z",
+        },
+      ],
+    });
+    const threadRef = scopeThreadRef(localEnvironmentId, thread.id);
+    const state = syncServerThreadDetail(
+      syncServerShellSnapshot(
+        makeEmptyState({ activeEnvironmentId: localEnvironmentId, bootstrapComplete: false }),
+        makeShellSnapshot(thread, { hasActionableProposedPlan: false }),
+        localEnvironmentId,
+      ),
+      thread,
+      localEnvironmentId,
+    );
+    const summary = selectSidebarThreadSummaryByRef(state, threadRef);
+
+    expect(summary?.hasActionableProposedPlan).toBe(false);
+    expect(
+      summary
+        ? resolveThreadStatusPill({
+            thread: {
+              ...summary,
+              lastVisitedAt: "2026-02-27T00:01:00.000Z",
+              nowMs: Date.parse("2026-02-27T00:01:00.000Z"),
+            },
+          })
+        : null,
+    ).toMatchObject({ label: "Done", showTextLabel: false });
   });
 });
 

@@ -3,12 +3,15 @@ import { ProviderDriverKind } from "@t3tools/contracts";
 
 import {
   createThreadJumpHintVisibilityController,
+  DONE_THREAD_STATUS_TTL_MS,
   getSidebarThreadIdsToPrewarm,
   getVisibleSidebarThreadIds,
   resolveAdjacentThreadId,
   getFallbackThreadIdAfterDelete,
   getVisibleThreadsForProject,
   getProjectSortTimestamp,
+  hasCompletedLatestTurn,
+  hasFreshCompletedLatestTurn,
   hasUnseenCompletion,
   isContextMenuPointerDown,
   orderItemsByPreferredIds,
@@ -36,6 +39,9 @@ import {
 } from "../types";
 
 const localEnvironmentId = EnvironmentId.make("environment-local");
+const afterLatestTurnCompletedMs = Date.parse("2026-03-09T10:06:00.000Z");
+const afterLatestTurnExpiredMs =
+  Date.parse("2026-03-09T10:05:00.000Z") + DONE_THREAD_STATUS_TTL_MS + 1;
 
 function makeLatestTurn(overrides?: {
   completedAt?: string | null;
@@ -65,6 +71,75 @@ describe("hasUnseenCompletion", () => {
         session: null,
       }),
     ).toBe(true);
+  });
+});
+
+describe("hasCompletedLatestTurn", () => {
+  it("returns true for completed latest turns even after the thread was visited", () => {
+    expect(
+      hasCompletedLatestTurn({
+        hasActionableProposedPlan: false,
+        hasPendingApprovals: false,
+        hasPendingUserInput: false,
+        interactionMode: "default",
+        latestPendingUserInputAt: null,
+        latestTurn: makeLatestTurn(),
+        lastVisitedAt: "2026-03-09T10:06:00.000Z",
+        session: null,
+      }),
+    ).toBe(true);
+  });
+
+  it("returns false for interrupted latest turns", () => {
+    expect(
+      hasCompletedLatestTurn({
+        hasActionableProposedPlan: false,
+        hasPendingApprovals: false,
+        hasPendingUserInput: false,
+        interactionMode: "default",
+        latestPendingUserInputAt: null,
+        latestTurn: {
+          ...makeLatestTurn(),
+          state: "interrupted",
+        },
+        lastVisitedAt: undefined,
+        session: null,
+      }),
+    ).toBe(false);
+  });
+});
+
+describe("hasFreshCompletedLatestTurn", () => {
+  it("returns true for completed turns inside the done status window", () => {
+    expect(
+      hasFreshCompletedLatestTurn({
+        hasActionableProposedPlan: false,
+        hasPendingApprovals: false,
+        hasPendingUserInput: false,
+        interactionMode: "default",
+        latestPendingUserInputAt: null,
+        latestTurn: makeLatestTurn(),
+        lastVisitedAt: undefined,
+        nowMs: afterLatestTurnCompletedMs,
+        session: null,
+      }),
+    ).toBe(true);
+  });
+
+  it("returns false after the done status window expires", () => {
+    expect(
+      hasFreshCompletedLatestTurn({
+        hasActionableProposedPlan: false,
+        hasPendingApprovals: false,
+        hasPendingUserInput: false,
+        interactionMode: "default",
+        latestPendingUserInputAt: null,
+        latestTurn: makeLatestTurn(),
+        lastVisitedAt: undefined,
+        nowMs: afterLatestTurnExpiredMs,
+        session: null,
+      }),
+    ).toBe(false);
   });
 });
 
@@ -531,6 +606,7 @@ describe("resolveThreadStatusPill", () => {
           ...baseThread,
           hasActionableProposedPlan: true,
           latestTurn: makeLatestTurn(),
+          nowMs: afterLatestTurnCompletedMs,
           session: {
             ...baseThread.session,
             status: "ready",
@@ -547,6 +623,7 @@ describe("resolveThreadStatusPill", () => {
         thread: {
           ...baseThread,
           latestTurn: makeLatestTurn(),
+          nowMs: afterLatestTurnCompletedMs,
           session: {
             ...baseThread.session,
             status: "ready",
@@ -554,10 +631,10 @@ describe("resolveThreadStatusPill", () => {
           },
         },
       }),
-    ).toMatchObject({ label: "Done", pulse: false });
+    ).toMatchObject({ label: "Done", pulse: false, showTextLabel: true });
   });
 
-  it("shows completed when there is an unseen completion and no active blocker", () => {
+  it("shows completed label when the latest turn completed after the thread was visited", () => {
     expect(
       resolveThreadStatusPill({
         thread: {
@@ -565,6 +642,7 @@ describe("resolveThreadStatusPill", () => {
           interactionMode: "default",
           latestTurn: makeLatestTurn(),
           lastVisitedAt: "2026-03-09T10:04:00.000Z",
+          nowMs: afterLatestTurnCompletedMs,
           session: {
             ...baseThread.session,
             status: "ready",
@@ -572,7 +650,111 @@ describe("resolveThreadStatusPill", () => {
           },
         },
       }),
-    ).toMatchObject({ label: "Done", pulse: false });
+    ).toMatchObject({ label: "Done", pulse: false, showTextLabel: true });
+  });
+
+  it("keeps the completed dot but hides the label after the thread has been visited", () => {
+    expect(
+      resolveThreadStatusPill({
+        thread: {
+          ...baseThread,
+          interactionMode: "default",
+          latestTurn: makeLatestTurn(),
+          lastVisitedAt: "2026-03-09T10:06:00.000Z",
+          nowMs: afterLatestTurnCompletedMs,
+          session: {
+            ...baseThread.session,
+            status: "ready",
+            orchestrationStatus: "ready",
+          },
+        },
+      }),
+    ).toMatchObject({ label: "Done", pulse: false, showTextLabel: false });
+  });
+
+  it("hides completed status after the done status window expires", () => {
+    expect(
+      resolveThreadStatusPill({
+        thread: {
+          ...baseThread,
+          interactionMode: "default",
+          latestTurn: makeLatestTurn(),
+          nowMs: afterLatestTurnExpiredMs,
+          session: {
+            ...baseThread.session,
+            status: "ready",
+            orchestrationStatus: "ready",
+          },
+        },
+      }),
+    ).toBeNull();
+  });
+
+  it("shows pending approval before plan ready and completed", () => {
+    expect(
+      resolveThreadStatusPill({
+        thread: {
+          ...baseThread,
+          hasActionableProposedPlan: true,
+          hasPendingApprovals: true,
+          latestTurn: makeLatestTurn(),
+          session: {
+            ...baseThread.session,
+            status: "ready",
+            orchestrationStatus: "ready",
+          },
+        },
+      }),
+    ).toMatchObject({ label: "Pending Approval", pulse: false });
+  });
+
+  it("shows awaiting input before plan ready and completed when input is unseen", () => {
+    expect(
+      resolveThreadStatusPill({
+        thread: {
+          ...baseThread,
+          hasActionableProposedPlan: true,
+          hasPendingUserInput: true,
+          latestPendingUserInputAt: "2026-03-09T10:06:00.000Z",
+          latestTurn: makeLatestTurn(),
+          lastVisitedAt: "2026-03-09T10:05:00.000Z",
+          session: {
+            ...baseThread.session,
+            status: "ready",
+            orchestrationStatus: "ready",
+          },
+        },
+      }),
+    ).toMatchObject({ label: "Awaiting Input", pulse: false });
+  });
+
+  it("shows running before plan ready and completed", () => {
+    expect(
+      resolveThreadStatusPill({
+        thread: {
+          ...baseThread,
+          hasActionableProposedPlan: true,
+          latestTurn: makeLatestTurn(),
+        },
+      }),
+    ).toMatchObject({ label: "Working", pulse: true });
+  });
+
+  it("shows connecting before plan ready and completed", () => {
+    expect(
+      resolveThreadStatusPill({
+        thread: {
+          ...baseThread,
+          hasActionableProposedPlan: true,
+          latestTurn: makeLatestTurn(),
+          session: {
+            ...baseThread.session,
+            status: "connecting",
+            orchestrationStatus: "starting",
+          },
+        },
+      }),
+    ).toMatchObject({ label: "Connecting", pulse: true });
   });
 });
 

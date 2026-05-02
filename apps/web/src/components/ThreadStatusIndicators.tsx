@@ -117,7 +117,9 @@ export function ThreadStatusLabel({
           status.pulse ? "animate-pulse" : ""
         }`}
       />
-      <span className="hidden md:inline">{status.label}</span>
+      <span className={status.showTextLabel === false ? "sr-only" : "hidden md:inline"}>
+        {status.label}
+      </span>
     </span>
   );
 }
