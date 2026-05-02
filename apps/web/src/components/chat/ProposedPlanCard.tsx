@@ -1,4 +1,4 @@
-import { memo, useState, useId } from "react";
+import { memo, useRef, useState, useId } from "react";
 import type { EnvironmentId } from "@t3tools/contracts";
 import {
   buildCollapsedProposedPlanPreviewMarkdown,
@@ -33,12 +33,15 @@ export const ProposedPlanCard = memo(function ProposedPlanCard({
   environmentId,
   cwd,
   workspaceRoot,
+  onToggleExpanded,
 }: {
   planMarkdown: string;
   environmentId: EnvironmentId;
   cwd: string | undefined;
   workspaceRoot: string | undefined;
+  onToggleExpanded?: ((anchor: HTMLElement, mutate: () => void) => void) | undefined;
 }) {
+  const cardRef = useRef<HTMLDivElement | null>(null);
   const [expanded, setExpanded] = useState(false);
   const [isSaveDialogOpen, setIsSaveDialogOpen] = useState(false);
   const [savePath, setSavePath] = useState("");
@@ -71,6 +74,16 @@ export const ProposedPlanCard = memo(function ProposedPlanCard({
 
   const handleCopyPlan = () => {
     copyToClipboard(saveContents);
+  };
+
+  const handleToggleExpanded = () => {
+    const mutate = () => setExpanded((value) => !value);
+    const anchor = cardRef.current;
+    if (!anchor || !onToggleExpanded) {
+      mutate();
+      return;
+    }
+    onToggleExpanded(anchor, mutate);
   };
 
   const openSaveDialog = () => {
@@ -137,7 +150,7 @@ export const ProposedPlanCard = memo(function ProposedPlanCard({
   };
 
   return (
-    <div className="rounded-[24px] border border-border/80 bg-card/70 p-4 sm:p-5">
+    <div ref={cardRef} className="rounded-[24px] border border-border/80 bg-card/70 p-4 sm:p-5">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div className="flex min-w-0 items-center gap-2">
           <Badge variant="secondary">Plan</Badge>
@@ -177,7 +190,7 @@ export const ProposedPlanCard = memo(function ProposedPlanCard({
               size="sm"
               variant="outline"
               data-scroll-anchor-ignore
-              onClick={() => setExpanded((value) => !value)}
+              onClick={handleToggleExpanded}
             >
               {expanded ? "Collapse plan" : "Expand plan"}
             </Button>

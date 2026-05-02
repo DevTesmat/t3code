@@ -81,6 +81,7 @@ interface TimelineRowSharedState {
   activeThreadEnvironmentId: EnvironmentId;
   onRevertUserMessage: (messageId: MessageId) => void;
   onImageExpand: (preview: ExpandedImagePreview) => void;
+  onPreserveViewportRequest?: ((anchor: HTMLElement, mutate: () => void) => void) | undefined;
 }
 
 const TimelineRowCtx = createContext<TimelineRowSharedState>(null!);
@@ -108,6 +109,8 @@ interface MessagesTimelineProps {
   timestampFormat: TimestampFormat;
   workspaceRoot: string | undefined;
   onIsAtEndChange: (isAtEnd: boolean) => void;
+  onPreserveViewportRequest?: ((anchor: HTMLElement, mutate: () => void) => void) | undefined;
+  suppressMaintainScrollAtEnd?: boolean | undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -133,6 +136,8 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   timestampFormat,
   workspaceRoot,
   onIsAtEndChange,
+  onPreserveViewportRequest,
+  suppressMaintainScrollAtEnd = false,
 }: MessagesTimelineProps) {
   const rawRows = useMemo(
     () =>
@@ -196,6 +201,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       activeThreadEnvironmentId,
       onRevertUserMessage,
       onImageExpand,
+      onPreserveViewportRequest,
     }),
     [
       activeTurnInProgress,
@@ -208,6 +214,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       activeThreadEnvironmentId,
       onRevertUserMessage,
       onImageExpand,
+      onPreserveViewportRequest,
     ],
   );
 
@@ -241,10 +248,11 @@ export const MessagesTimeline = memo(function MessagesTimeline({
         renderItem={renderItem}
         estimatedItemSize={90}
         initialScrollAtEnd
-        maintainScrollAtEnd
+        maintainScrollAtEnd={!suppressMaintainScrollAtEnd}
         maintainScrollAtEndThreshold={0.1}
         maintainVisibleContentPosition
         onScroll={handleScroll}
+        data-chat-messages-scroll="true"
         className="h-full overflow-x-hidden overscroll-y-contain px-3 sm:px-5"
         ListHeaderComponent={<div className="h-3 sm:h-4" />}
         ListFooterComponent={<div className="h-3 sm:h-4" />}
@@ -431,6 +439,7 @@ function TimelineRowContent({ row }: { row: TimelineRow }) {
             environmentId={ctx.activeThreadEnvironmentId}
             cwd={ctx.markdownCwd}
             workspaceRoot={ctx.workspaceRoot}
+            onToggleExpanded={ctx.onPreserveViewportRequest}
           />
         </div>
       )}

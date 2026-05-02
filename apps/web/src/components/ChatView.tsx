@@ -712,6 +712,8 @@ export default function ChatView(props: ChatViewProps) {
   const composerAreaRef = useRef<HTMLDivElement | null>(null);
   const [changedFilesMaxHeight, setChangedFilesMaxHeight] = useState<number | null>(null);
   const [showScrollToBottom, setShowScrollToBottom] = useState(false);
+  const [suppressTimelineMaintainScrollAtEnd, setSuppressTimelineMaintainScrollAtEnd] =
+    useState(false);
   const [expandedImage, setExpandedImage] = useState<ExpandedImagePreview | null>(null);
   const [optimisticUserMessages, setOptimisticUserMessages] = useState<ChatMessage[]>([]);
   const [queuedComposerMessages, setQueuedComposerMessages] = useState<QueuedComposerMessage[]>([]);
@@ -757,6 +759,9 @@ export default function ChatView(props: ChatViewProps) {
   );
   const legendListRef = useRef<LegendListRef | null>(null);
   const isAtEndRef = useRef(true);
+  const suppressComposerStickToBottomRef = useRef(false);
+  const preserveViewportFrameRef = useRef<number | null>(null);
+  const restoreMaintainScrollAtEndFrameRef = useRef<number | null>(null);
   const attachmentPreviewHandoffByMessageIdRef = useRef<Record<string, string[]>>({});
   const attachmentPreviewPromotionInFlightByMessageIdRef = useRef<Record<string, true>>({});
   const sendInFlightRef = useRef(false);
@@ -2135,6 +2140,72 @@ export default function ChatView(props: ChatViewProps) {
     legendListRef.current?.scrollToEnd?.({ animated });
   }, []);
 
+  const findMessagesScrollViewport = useCallback(() => {
+    const explicitViewport = chatColumnRef.current?.querySelector<HTMLElement>(
+      "[data-chat-messages-scroll='true']",
+    );
+    if (explicitViewport) return explicitViewport;
+
+    let element = chatColumnRef.current?.querySelector<HTMLElement>(
+      "[data-timeline-root='true']",
+    )?.parentElement;
+    while (element && element !== chatColumnRef.current) {
+      const style = window.getComputedStyle(element);
+      if (/(auto|scroll)/.test(style.overflowY)) {
+        return element;
+      }
+      element = element.parentElement;
+    }
+    return null;
+  }, []);
+
+  const preserveTimelineViewport = useCallback(
+    (anchor: HTMLElement, mutate: () => void) => {
+      const scrollViewport = findMessagesScrollViewport();
+      const previousTop = anchor.getBoundingClientRect().top;
+      const previousBottomDistance = scrollViewport
+        ? scrollViewport.scrollHeight - scrollViewport.clientHeight - scrollViewport.scrollTop
+        : null;
+      const wasExactlyAtBottom =
+        previousBottomDistance !== null && Math.abs(previousBottomDistance) < 0.5;
+
+      suppressComposerStickToBottomRef.current = true;
+      setSuppressTimelineMaintainScrollAtEnd(true);
+      mutate();
+
+      if (preserveViewportFrameRef.current !== null) {
+        window.cancelAnimationFrame(preserveViewportFrameRef.current);
+      }
+      if (restoreMaintainScrollAtEndFrameRef.current !== null) {
+        window.cancelAnimationFrame(restoreMaintainScrollAtEndFrameRef.current);
+        restoreMaintainScrollAtEndFrameRef.current = null;
+      }
+      preserveViewportFrameRef.current = window.requestAnimationFrame(() => {
+        preserveViewportFrameRef.current = null;
+        const nextTop = anchor.getBoundingClientRect().top;
+        const delta = nextTop - previousTop;
+        if (scrollViewport && Number.isFinite(delta) && Math.abs(delta) >= 0.5) {
+          scrollViewport.scrollTop += delta;
+        }
+        if (scrollViewport) {
+          const nextBottomDistance =
+            scrollViewport.scrollHeight - scrollViewport.clientHeight - scrollViewport.scrollTop;
+          const isExactlyAtBottom = Math.abs(nextBottomDistance) < 0.5;
+          if (!wasExactlyAtBottom || !isExactlyAtBottom) {
+            isAtEndRef.current = false;
+            showScrollDebouncer.current.maybeExecute();
+          }
+        }
+        restoreMaintainScrollAtEndFrameRef.current = window.requestAnimationFrame(() => {
+          restoreMaintainScrollAtEndFrameRef.current = null;
+          suppressComposerStickToBottomRef.current = false;
+          setSuppressTimelineMaintainScrollAtEnd(false);
+        });
+      });
+    },
+    [findMessagesScrollViewport],
+  );
+
   // Debounce *showing* the scroll-to-bottom pill so it doesn't flash during
   // thread switches.  LegendList fires scroll events with isAtEnd=false while
   // initialScrollAtEnd is settling; hiding is always immediate.
@@ -2153,10 +2224,41 @@ export default function ChatView(props: ChatViewProps) {
   }, []);
 
   useEffect(() => {
+    const composerArea = composerAreaRef.current;
+    if (!composerArea || typeof ResizeObserver === "undefined") return;
+
+    let previousHeight = composerArea.getBoundingClientRect().height;
+    const observer = new ResizeObserver((entries) => {
+      const [entry] = entries;
+      if (!entry) return;
+      const nextHeight = entry.contentRect.height;
+      if (Math.abs(nextHeight - previousHeight) < 0.5) return;
+      previousHeight = nextHeight;
+      if (suppressComposerStickToBottomRef.current || !isAtEndRef.current) return;
+      scrollToEnd(false);
+    });
+
+    observer.observe(composerArea);
+    return () => {
+      observer.disconnect();
+    };
+  }, [scrollToEnd]);
+
+  useEffect(() => {
     setPullRequestDialogState(null);
     isAtEndRef.current = true;
     showScrollDebouncer.current.cancel();
     setShowScrollToBottom(false);
+    setSuppressTimelineMaintainScrollAtEnd(false);
+    suppressComposerStickToBottomRef.current = false;
+    if (preserveViewportFrameRef.current !== null) {
+      window.cancelAnimationFrame(preserveViewportFrameRef.current);
+      preserveViewportFrameRef.current = null;
+    }
+    if (restoreMaintainScrollAtEndFrameRef.current !== null) {
+      window.cancelAnimationFrame(restoreMaintainScrollAtEndFrameRef.current);
+      restoreMaintainScrollAtEndFrameRef.current = null;
+    }
     if (planSidebarOpenOnNextThreadRef.current) {
       planSidebarOpenOnNextThreadRef.current = false;
       setPlanSidebarOpen(true);
@@ -3695,6 +3797,8 @@ export default function ChatView(props: ChatViewProps) {
               timestampFormat={timestampFormat}
               workspaceRoot={activeWorkspaceRoot}
               onIsAtEndChange={onIsAtEndChange}
+              onPreserveViewportRequest={preserveTimelineViewport}
+              suppressMaintainScrollAtEnd={suppressTimelineMaintainScrollAtEnd}
             />
 
             {/* scroll to bottom pill — shown when user has scrolled away from the bottom */}
