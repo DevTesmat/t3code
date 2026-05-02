@@ -56,6 +56,7 @@ import {
   deriveTimelineEntries,
   deriveActiveTurnActivityState,
   deriveActiveWorkStartedAt,
+  deriveThreadWorkDurationMs,
   deriveActivePlanState,
   findSidebarProposedPlan,
   findLatestProposedPlan,
@@ -64,6 +65,7 @@ import {
   hasToolActivityForTurn,
   isLatestTurnSettled,
   formatElapsed,
+  formatThreadWorkDuration,
 } from "../session-logic";
 import { type LegendListRef } from "@legendapp/list/react";
 import {
@@ -141,6 +143,7 @@ import {
 } from "../lib/terminalContext";
 import { selectThreadTerminalState, useTerminalStateStore } from "../terminalStateStore";
 import { ChatComposer, type ChatComposerHandle } from "./chat/ChatComposer";
+import { WorkingDots } from "./chat/WorkingDots";
 import { ComposerChangedFilesBar } from "./chat/ComposerChangedFilesBar";
 import { ComposerQueuedMessagesBar } from "./chat/ComposerQueuedMessagesBar";
 import { ExpandedImageDialog } from "./chat/ExpandedImageDialog";
@@ -1544,10 +1547,6 @@ export default function ChatView(props: ChatViewProps) {
     latestTurnHasToolActivity,
     latestTurnSettled,
   ]);
-  const composerElapsedTiming =
-    isWorking && activeWorkStartedAt
-      ? { startIso: activeWorkStartedAt, endIso: null }
-      : latestTurnElapsedTiming;
   const completionDividerBeforeEntryId = useMemo(() => {
     if (!latestTurnSettled) return null;
     if (!latestTurnElapsedTiming) return null;
@@ -3726,13 +3725,15 @@ export default function ChatView(props: ChatViewProps) {
             <div
               className={cn(
                 "relative mx-auto flex w-full min-w-0 max-w-208 flex-col",
-                composerElapsedTiming && "pt-6",
+                activeThread && "pt-6",
               )}
             >
-              {composerElapsedTiming ? (
-                <ComposerElapsedLabel
-                  startIso={composerElapsedTiming.startIso}
-                  endIso={composerElapsedTiming.endIso}
+              {activeThread ? (
+                <ComposerThreadWorkLabel
+                  totalWorkDurationMs={activeThread.totalWorkDurationMs ?? 0}
+                  latestTurn={activeLatestTurn}
+                  session={activeThread.session}
+                  sendStartedAt={localDispatchStartedAt}
                 />
               ) : null}
               <ComposerChangedFilesBar
@@ -3918,45 +3919,34 @@ export default function ChatView(props: ChatViewProps) {
   );
 }
 
-function ComposerElapsedLabel(props: { startIso: string; endIso: string | null }) {
+function ComposerThreadWorkLabel(props: {
+  totalWorkDurationMs: number;
+  latestTurn: Thread["latestTurn"] | null;
+  session: Thread["session"] | null;
+  sendStartedAt: string | null;
+}) {
   const [nowMs, setNowMs] = useState(() => Date.now());
+  const workDuration = deriveThreadWorkDurationMs({
+    totalWorkDurationMs: props.totalWorkDurationMs,
+    latestTurn: props.latestTurn,
+    session: props.session,
+    sendStartedAt: props.sendStartedAt,
+    nowMs,
+  });
 
   useEffect(() => {
-    if (props.endIso) return;
+    if (!workDuration.ticking) return;
     const id = window.setInterval(() => setNowMs(Date.now()), 1000);
     return () => window.clearInterval(id);
-  }, [props.endIso, props.startIso]);
-
-  const elapsed = formatComposerElapsed(
-    props.startIso,
-    props.endIso ?? new Date(nowMs).toISOString(),
-  );
-  if (!elapsed) return null;
+  }, [workDuration.ticking]);
 
   return (
-    <div className="pointer-events-none absolute right-0 top-0 z-40 rounded-full border border-border/60 bg-background/90 px-2 py-0.5 font-mono text-[10px] tabular-nums text-muted-foreground shadow-sm backdrop-blur">
-      {elapsed}
+    <div className="pointer-events-none absolute right-0 top-0 z-40 inline-flex items-center gap-1.5 rounded-full border border-border/60 bg-background/90 px-2 py-0.5 text-[10px] text-muted-foreground shadow-sm backdrop-blur">
+      <span>Agent work</span>
+      <span className="font-mono tabular-nums">
+        {formatThreadWorkDuration(workDuration.durationMs)}
+      </span>
+      {workDuration.ticking ? <WorkingDots className="text-muted-foreground/60" /> : null}
     </div>
   );
-}
-
-function formatComposerElapsed(startIso: string, endIso: string): string | null {
-  const startedAtMs = Date.parse(startIso);
-  const endedAtMs = Date.parse(endIso);
-  if (!Number.isFinite(startedAtMs) || !Number.isFinite(endedAtMs) || endedAtMs < startedAtMs) {
-    return null;
-  }
-
-  const elapsedSeconds = Math.max(1, Math.round((endedAtMs - startedAtMs) / 1000));
-  if (elapsedSeconds < 60) return `${elapsedSeconds}s`;
-
-  const hours = Math.floor(elapsedSeconds / 3600);
-  const minutes = Math.floor((elapsedSeconds % 3600) / 60);
-  const seconds = elapsedSeconds % 60;
-
-  if (hours > 0) {
-    return minutes > 0 ? `${hours}h ${minutes}m` : `${hours}h`;
-  }
-
-  return seconds > 0 ? `${minutes}m ${seconds}s` : `${minutes}m`;
 }

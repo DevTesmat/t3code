@@ -160,6 +160,21 @@ export function formatElapsed(startIso: string, endIso: string | undefined): str
   return formatDuration(endedAt - startedAt);
 }
 
+export function formatThreadWorkDuration(durationMs: number): string {
+  const elapsedSeconds = Math.max(0, Math.round(durationMs / 1000));
+  if (elapsedSeconds < 60) return `${elapsedSeconds}s`;
+
+  const hours = Math.floor(elapsedSeconds / 3600);
+  const minutes = Math.floor((elapsedSeconds % 3600) / 60);
+  const seconds = elapsedSeconds % 60;
+
+  if (hours > 0) {
+    return minutes > 0 ? `${hours}h ${minutes}m` : `${hours}h`;
+  }
+
+  return seconds > 0 ? `${minutes}m ${seconds}s` : `${minutes}m`;
+}
+
 type LatestTurnTiming = Pick<OrchestrationLatestTurn, "turnId" | "startedAt" | "completedAt">;
 type SessionActivityState = Pick<ThreadSession, "orchestrationStatus" | "activeTurnId">;
 
@@ -191,6 +206,34 @@ export function deriveActiveWorkStartedAt(
     return latestTurn?.startedAt ?? sendStartedAt;
   }
   return sendStartedAt;
+}
+
+export function deriveThreadWorkDurationMs(input: {
+  totalWorkDurationMs: number;
+  latestTurn: LatestTurnTiming | null;
+  session: SessionActivityState | null;
+  sendStartedAt: string | null;
+  nowMs: number;
+}): { durationMs: number; ticking: boolean } {
+  const persistedDurationMs = Math.max(0, Math.floor(input.totalWorkDurationMs));
+  const activeWorkStartedAt = deriveActiveWorkStartedAt(
+    input.latestTurn,
+    input.session,
+    input.sendStartedAt,
+  );
+  if (!activeWorkStartedAt) {
+    return { durationMs: persistedDurationMs, ticking: false };
+  }
+
+  const activeWorkStartedAtMs = Date.parse(activeWorkStartedAt);
+  if (!Number.isFinite(activeWorkStartedAtMs) || input.nowMs < activeWorkStartedAtMs) {
+    return { durationMs: persistedDurationMs, ticking: false };
+  }
+
+  return {
+    durationMs: persistedDurationMs + input.nowMs - activeWorkStartedAtMs,
+    ticking: true,
+  };
 }
 
 function requestKindFromRequestType(requestType: unknown): PendingApproval["requestKind"] | null {

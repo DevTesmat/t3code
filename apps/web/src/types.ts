@@ -113,6 +113,7 @@ export interface Thread {
   archivedAt: string | null;
   updatedAt?: string | undefined;
   latestTurn: OrchestrationLatestTurn | null;
+  totalWorkDurationMs?: number | undefined;
   pendingSourceProposedPlan?: OrchestrationLatestTurn["sourceProposedPlan"];
   branch: string | null;
   worktreePath: string | null;
@@ -136,6 +137,7 @@ export interface ThreadShell {
   updatedAt?: string | undefined;
   branch: string | null;
   worktreePath: string | null;
+  totalWorkDurationMs?: number | undefined;
 }
 
 export interface ThreadTurnState {
@@ -162,6 +164,7 @@ export interface SidebarThreadSummary {
   hasPendingUserInput: boolean;
   latestPendingUserInputAt: string | null;
   hasActionableProposedPlan: boolean;
+  totalWorkDurationMs?: number | undefined;
 }
 
 export interface ThreadSession {

@@ -252,4 +252,24 @@ describe("MessagesTimeline", () => {
     expect(markup).toContain("Response");
     expect(markup).not.toContain("Worked for");
   });
+
+  it("renders working dots only for an active working row", async () => {
+    const { MessagesTimeline } = await import("./MessagesTimeline");
+    const activeMarkup = renderToStaticMarkup(
+      <MessagesTimeline
+        {...buildProps()}
+        isWorking
+        activeTurnStartedAt="2026-03-17T19:12:28.000Z"
+        activeTurnActivityState={{ kind: "runningTool", label: "Running command" }}
+        timelineEntries={[]}
+      />,
+    );
+    const idleMarkup = renderToStaticMarkup(
+      <MessagesTimeline {...buildProps()} timelineEntries={[]} />,
+    );
+
+    expect(activeMarkup).toContain("Running command");
+    expect(activeMarkup).toContain("animate-pulse");
+    expect(idleMarkup).not.toContain("animate-pulse");
+  });
 });

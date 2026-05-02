@@ -262,6 +262,7 @@ export function projectEvent(
             branch: payload.branch,
             worktreePath: payload.worktreePath,
             latestTurn: null,
+            totalWorkDurationMs: 0,
             createdAt: payload.createdAt,
             updatedAt: payload.updatedAt,
             pinnedAt: payload.pinnedAt,
@@ -568,6 +569,20 @@ export function projectEvent(
           .toSorted((left, right) => left.checkpointTurnCount - right.checkpointTurnCount)
           .slice(-MAX_THREAD_CHECKPOINTS);
 
+        const latestTurnStartedAt =
+          thread.latestTurn?.turnId === payload.turnId ? thread.latestTurn.startedAt : null;
+        const shouldAddCompletedDuration =
+          thread.latestTurn?.turnId === payload.turnId &&
+          thread.latestTurn.completedAt === null &&
+          latestTurnStartedAt !== null;
+        const completedDurationMs = (() => {
+          if (!shouldAddCompletedDuration || latestTurnStartedAt === null) return 0;
+          const startedAtMs = Date.parse(latestTurnStartedAt);
+          const completedAtMs = Date.parse(payload.completedAt);
+          if (!Number.isFinite(startedAtMs) || !Number.isFinite(completedAtMs)) return 0;
+          return Math.max(0, completedAtMs - startedAtMs);
+        })();
+
         return {
           ...nextBase,
           threads: updateThread(nextBase.threads, payload.threadId, {
@@ -586,6 +601,7 @@ export function projectEvent(
               completedAt: payload.completedAt,
               assistantMessageId: payload.assistantMessageId,
             },
+            totalWorkDurationMs: (thread.totalWorkDurationMs ?? 0) + completedDurationMs,
             updatedAt: event.occurredAt,
           }),
         };

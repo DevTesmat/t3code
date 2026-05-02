@@ -15,6 +15,8 @@ import {
   ProjectMetaUpdatedPayload,
   OrchestrationProposedPlan,
   OrchestrationSession,
+  OrchestrationThread,
+  OrchestrationThreadShell,
   ProjectCreateCommand,
   ThreadMetaUpdatedPayload,
   ThreadTurnStartCommand,
@@ -39,6 +41,8 @@ const decodeThreadMessageSentPayload = Schema.decodeUnknownEffect(ThreadMessageS
 const decodeOrchestrationLatestTurn = Schema.decodeUnknownEffect(OrchestrationLatestTurn);
 const decodeOrchestrationProposedPlan = Schema.decodeUnknownEffect(OrchestrationProposedPlan);
 const decodeOrchestrationSession = Schema.decodeUnknownEffect(OrchestrationSession);
+const decodeOrchestrationThread = Schema.decodeUnknownEffect(OrchestrationThread);
+const decodeOrchestrationThreadShell = Schema.decodeUnknownEffect(OrchestrationThreadShell);
 
 function getOptionValue(
   options: ReadonlyArray<{ id: string; value: unknown }> | undefined,
@@ -147,6 +151,47 @@ it.effect("decodes historical project.created payloads with a default provider",
       updatedAt: "2026-01-01T00:00:00.000Z",
     });
     assert.strictEqual(parsed.defaultModelSelection?.instanceId, "codex");
+  }),
+);
+
+it.effect("defaults missing thread work durations to zero", () =>
+  Effect.gen(function* () {
+    const baseThread = {
+      id: "thread-1",
+      projectId: "project-1",
+      title: "Thread",
+      modelSelection: { provider: "codex", model: "gpt-5.4" },
+      runtimeMode: "full-access",
+      interactionMode: "default",
+      branch: null,
+      worktreePath: null,
+      latestTurn: null,
+      createdAt: "2026-01-01T00:00:00.000Z",
+      updatedAt: "2026-01-01T00:00:00.000Z",
+      archivedAt: null,
+      session: null,
+    };
+
+    const thread = yield* decodeOrchestrationThread({
+      ...baseThread,
+      pinnedAt: null,
+      deletedAt: null,
+      messages: [],
+      proposedPlans: [],
+      activities: [],
+      checkpoints: [],
+    });
+    const shell = yield* decodeOrchestrationThreadShell({
+      ...baseThread,
+      latestUserMessageAt: null,
+      hasPendingApprovals: false,
+      hasPendingUserInput: false,
+      latestPendingUserInputAt: null,
+      hasActionableProposedPlan: false,
+    });
+
+    assert.strictEqual(thread.totalWorkDurationMs, 0);
+    assert.strictEqual(shell.totalWorkDurationMs, 0);
   }),
 );
 

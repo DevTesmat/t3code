@@ -341,6 +341,10 @@ export const OrchestrationThread = Schema.Struct({
   branch: Schema.NullOr(TrimmedNonEmptyString),
   worktreePath: Schema.NullOr(TrimmedNonEmptyString),
   latestTurn: Schema.NullOr(OrchestrationLatestTurn),
+  totalWorkDurationMs: Schema.optionalKey(NonNegativeInt).pipe(
+    Schema.withDecodingDefault(Effect.succeed(0)),
+    Schema.withConstructorDefault(Effect.succeed(0)),
+  ),
   createdAt: IsoDateTime,
   updatedAt: IsoDateTime,
   pinnedAt: Schema.optional(Schema.NullOr(IsoDateTime)).pipe(
@@ -391,6 +395,10 @@ export const OrchestrationThreadShell = Schema.Struct({
   branch: Schema.NullOr(TrimmedNonEmptyString),
   worktreePath: Schema.NullOr(TrimmedNonEmptyString),
   latestTurn: Schema.NullOr(OrchestrationLatestTurn),
+  totalWorkDurationMs: Schema.optionalKey(NonNegativeInt).pipe(
+    Schema.withDecodingDefault(Effect.succeed(0)),
+    Schema.withConstructorDefault(Effect.succeed(0)),
+  ),
   createdAt: IsoDateTime,
   updatedAt: IsoDateTime,
   pinnedAt: Schema.optional(Schema.NullOr(IsoDateTime)).pipe(

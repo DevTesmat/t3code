@@ -249,6 +249,7 @@ function mapThread(thread: OrchestrationThread, environmentId: EnvironmentId): T
     archivedAt: thread.archivedAt,
     updatedAt: thread.updatedAt,
     latestTurn: thread.latestTurn,
+    totalWorkDurationMs: thread.totalWorkDurationMs ?? 0,
     pendingSourceProposedPlan: thread.latestTurn?.sourceProposedPlan,
     branch: thread.branch,
     worktreePath: thread.worktreePath,
@@ -282,6 +283,7 @@ function mapThreadShell(
     updatedAt: thread.updatedAt,
     branch: thread.branch,
     worktreePath: thread.worktreePath,
+    totalWorkDurationMs: thread.totalWorkDurationMs ?? 0,
   };
   const session = thread.session ? mapSession(thread.session) : null;
   const turnState: ThreadTurnState = {
@@ -307,6 +309,7 @@ function mapThreadShell(
     hasPendingUserInput: thread.hasPendingUserInput,
     latestPendingUserInputAt: thread.latestPendingUserInputAt,
     hasActionableProposedPlan: thread.hasActionableProposedPlan,
+    totalWorkDurationMs: thread.totalWorkDurationMs ?? 0,
   };
   return {
     shell,
@@ -333,6 +336,7 @@ function toThreadShell(thread: Thread): ThreadShell {
     updatedAt: thread.updatedAt,
     branch: thread.branch,
     worktreePath: thread.worktreePath,
+    totalWorkDurationMs: thread.totalWorkDurationMs,
   };
 }
 
@@ -410,7 +414,8 @@ function sidebarThreadSummariesEqual(
     left.hasPendingApprovals === right.hasPendingApprovals &&
     left.hasPendingUserInput === right.hasPendingUserInput &&
     left.latestPendingUserInputAt === right.latestPendingUserInputAt &&
-    left.hasActionableProposedPlan === right.hasActionableProposedPlan
+    left.hasActionableProposedPlan === right.hasActionableProposedPlan &&
+    left.totalWorkDurationMs === right.totalWorkDurationMs
   );
 }
 
@@ -431,7 +436,8 @@ function threadShellsEqual(left: ThreadShell | undefined, right: ThreadShell): b
     left.archivedAt === right.archivedAt &&
     left.updatedAt === right.updatedAt &&
     left.branch === right.branch &&
-    left.worktreePath === right.worktreePath
+    left.worktreePath === right.worktreePath &&
+    left.totalWorkDurationMs === right.totalWorkDurationMs
   );
 }
 
@@ -1268,6 +1274,7 @@ function applyEnvironmentOrchestrationEvent(
           branch: event.payload.branch,
           worktreePath: event.payload.worktreePath,
           latestTurn: null,
+          totalWorkDurationMs: 0,
           createdAt: event.payload.createdAt,
           updatedAt: event.payload.updatedAt,
           pinnedAt: event.payload.pinnedAt,
@@ -1575,10 +1582,22 @@ function applyEnvironmentOrchestrationEvent(
                 sourceProposedPlan: thread.pendingSourceProposedPlan,
               })
             : thread.latestTurn;
+        const shouldAddCompletedDuration =
+          thread.latestTurn?.turnId === event.payload.turnId &&
+          thread.latestTurn.completedAt === null &&
+          thread.latestTurn.startedAt !== null;
+        const completedDurationMs = (() => {
+          if (!shouldAddCompletedDuration) return 0;
+          const startedAtMs = Date.parse(thread.latestTurn!.startedAt!);
+          const completedAtMs = Date.parse(event.payload.completedAt);
+          if (!Number.isFinite(startedAtMs) || !Number.isFinite(completedAtMs)) return 0;
+          return Math.max(0, completedAtMs - startedAtMs);
+        })();
         return {
           ...thread,
           turnDiffSummaries,
           latestTurn,
+          totalWorkDurationMs: (thread.totalWorkDurationMs ?? 0) + completedDurationMs,
           updatedAt: event.occurredAt,
         };
       });

@@ -11,6 +11,7 @@ import {
   deriveCompletionDividerBeforeEntryId,
   deriveActiveTurnActivityState,
   deriveActiveWorkStartedAt,
+  deriveThreadWorkDurationMs,
   deriveActivePlanState,
   derivePendingApprovals,
   derivePendingUserInputs,
@@ -1712,5 +1713,57 @@ describe("deriveActiveWorkStartedAt", () => {
         "2026-02-27T21:11:00.000Z",
       ),
     ).toBe("2026-02-27T21:11:00.000Z");
+  });
+});
+
+describe("deriveThreadWorkDurationMs", () => {
+  it("adds live running duration to persisted work time", () => {
+    const result = deriveThreadWorkDurationMs({
+      totalWorkDurationMs: 4_000,
+      latestTurn: {
+        turnId: TurnId.make("turn-1"),
+        startedAt: "2026-02-27T21:10:00.000Z",
+        completedAt: null,
+      },
+      session: {
+        orchestrationStatus: "running",
+        activeTurnId: TurnId.make("turn-1"),
+      },
+      sendStartedAt: null,
+      nowMs: Date.parse("2026-02-27T21:10:03.000Z"),
+    });
+
+    expect(result).toEqual({ durationMs: 7_000, ticking: true });
+  });
+
+  it("does not double-count settled latest turns", () => {
+    const result = deriveThreadWorkDurationMs({
+      totalWorkDurationMs: 4_000,
+      latestTurn: {
+        turnId: TurnId.make("turn-1"),
+        startedAt: "2026-02-27T21:10:00.000Z",
+        completedAt: "2026-02-27T21:10:03.000Z",
+      },
+      session: {
+        orchestrationStatus: "ready",
+        activeTurnId: undefined,
+      },
+      sendStartedAt: null,
+      nowMs: Date.parse("2026-02-27T21:10:10.000Z"),
+    });
+
+    expect(result).toEqual({ durationMs: 4_000, ticking: false });
+  });
+
+  it("uses sendStartedAt while a fresh turn is dispatching", () => {
+    const result = deriveThreadWorkDurationMs({
+      totalWorkDurationMs: 4_000,
+      latestTurn: null,
+      session: null,
+      sendStartedAt: "2026-02-27T21:10:00.000Z",
+      nowMs: Date.parse("2026-02-27T21:10:02.000Z"),
+    });
+
+    expect(result).toEqual({ durationMs: 6_000, ticking: true });
   });
 });

@@ -36,6 +36,7 @@ import { Button } from "../ui/button";
 import { buildExpandedImagePreview, ExpandedImagePreview } from "./ExpandedImagePreview";
 import { ProposedPlanCard } from "./ProposedPlanCard";
 import { MessageCopyButton } from "./MessageCopyButton";
+import { WorkingDots } from "./WorkingDots";
 import {
   computeStableMessagesTimelineRows,
   MAX_VISIBLE_WORK_LOG_ENTRIES,
@@ -438,6 +439,7 @@ function TimelineRowContent({ row }: { row: TimelineRow }) {
         <div className="py-0.5 pl-1.5">
           <div className="flex items-center gap-2 pt-1 text-[11px] text-muted-foreground/70">
             <span>{row.activityState.label}</span>
+            {ctx.isWorking ? <WorkingDots className="text-muted-foreground/55" /> : null}
           </div>
           {row.activityState.detail ? (
             <div className="max-w-full truncate pt-0.5 text-[11px] text-muted-foreground/45">
