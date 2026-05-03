@@ -59,6 +59,8 @@ export interface WorkLogEntry {
     stream: "stdout" | "stderr" | "mixed" | "unknown";
     truncated: boolean;
   };
+  status?: "running" | "completed" | "failed";
+  exitCode?: number;
   changedFiles?: ReadonlyArray<string>;
   tone: "thinking" | "tool" | "info" | "error";
   toolTitle?: string;
@@ -714,6 +716,8 @@ function toDerivedWorkLogEntry(activity: OrchestrationThreadActivity): DerivedWo
   const title = extractToolTitle(payload);
   const itemType = extractWorkLogItemType(payload);
   const outputPreview = extractCommandOutputPreview(payload, itemType);
+  const commandStatus = extractCommandStatus(payload, activity.kind, itemType);
+  const exitCode = extractCommandExitCode(payload);
   const isTaskActivity = activity.kind === "task.progress" || activity.kind === "task.completed";
   const taskSummary =
     isTaskActivity && typeof payload?.summary === "string" && payload.summary.length > 0
@@ -760,6 +764,12 @@ function toDerivedWorkLogEntry(activity: OrchestrationThreadActivity): DerivedWo
   }
   if (outputPreview) {
     entry.outputPreview = outputPreview;
+  }
+  if (commandStatus) {
+    entry.status = commandStatus;
+  }
+  if (exitCode !== null) {
+    entry.exitCode = exitCode;
   }
   if (changedFiles.length > 0) {
     entry.changedFiles = changedFiles;
@@ -832,6 +842,8 @@ function mergeDerivedWorkLogEntries(
   const command = next.command ?? previous.command;
   const rawCommand = next.rawCommand ?? previous.rawCommand;
   const outputPreview = next.outputPreview ?? previous.outputPreview;
+  const status = next.status ?? previous.status;
+  const exitCode = next.exitCode ?? previous.exitCode;
   const toolTitle = next.toolTitle ?? previous.toolTitle;
   const itemType = next.itemType ?? previous.itemType;
   const requestKind = next.requestKind ?? previous.requestKind;
@@ -844,6 +856,8 @@ function mergeDerivedWorkLogEntries(
     ...(command ? { command } : {}),
     ...(rawCommand ? { rawCommand } : {}),
     ...(outputPreview ? { outputPreview } : {}),
+    ...(status ? { status } : {}),
+    ...(exitCode !== undefined ? { exitCode } : {}),
     ...(changedFiles.length > 0 ? { changedFiles } : {}),
     ...(toolTitle ? { toolTitle } : {}),
     ...(itemType ? { itemType } : {}),
@@ -1006,6 +1020,57 @@ function rawOutputIndicatesFailure(
     payloadStatus === "failed" ||
     payloadStatus === "error"
   );
+}
+
+function extractCommandExitCode(payload: Record<string, unknown> | null): number | null {
+  const data = asRecord(payload?.data);
+  const rawOutput = asRecord(data?.rawOutput);
+  const rawExitCode = asNumber(rawOutput?.exitCode);
+  if (rawExitCode !== null) {
+    return Math.trunc(rawExitCode);
+  }
+  const item = asRecord(data?.item);
+  const itemResult = asRecord(item?.result);
+  const resultExitCode = asNumber(itemResult?.exitCode);
+  if (resultExitCode !== null) {
+    return Math.trunc(resultExitCode);
+  }
+  if (typeof payload?.detail === "string") {
+    return stripTrailingExitCode(payload.detail).exitCode ?? null;
+  }
+  return null;
+}
+
+function extractCommandStatus(
+  payload: Record<string, unknown> | null,
+  activityKind: OrchestrationThreadActivity["kind"],
+  itemType: WorkLogEntry["itemType"] | undefined,
+): WorkLogEntry["status"] | undefined {
+  if (itemType !== "command_execution") {
+    return undefined;
+  }
+  const data = asRecord(payload?.data);
+  const rawOutput = asRecord(data?.rawOutput);
+  const rawStatus = asTrimmedString(rawOutput?.status)?.toLowerCase();
+  const payloadStatus = asTrimmedString(payload?.status)?.toLowerCase();
+  const exitCode = extractCommandExitCode(payload);
+  if (
+    (exitCode !== null && exitCode !== 0) ||
+    rawStatus === "failed" ||
+    rawStatus === "error" ||
+    payloadStatus === "failed" ||
+    payloadStatus === "error"
+  ) {
+    return "failed";
+  }
+  if (
+    activityKind === "tool.completed" ||
+    payloadStatus === "completed" ||
+    rawStatus === "completed"
+  ) {
+    return "completed";
+  }
+  return "running";
 }
 
 function outputPreviewFromRawOutput(

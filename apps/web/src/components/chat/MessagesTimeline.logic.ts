@@ -300,6 +300,8 @@ function areWorkEntriesUnchanged(a: WorkLogEntry, b: WorkLogEntry): boolean {
     a.detail === b.detail &&
     a.command === b.command &&
     a.rawCommand === b.rawCommand &&
+    a.status === b.status &&
+    a.exitCode === b.exitCode &&
     a.tone === b.tone &&
     a.toolTitle === b.toolTitle &&
     a.itemType === b.itemType &&

@@ -798,11 +798,134 @@ function commandOutputPreviewLabel(workEntry: TimelineWorkEntry): string | null 
   }
 }
 
+function isTerminalWorkEntry(workEntry: TimelineWorkEntry): boolean {
+  return workEntry.itemType === "command_execution" || Boolean(workEntry.command);
+}
+
+function terminalStatusLabel(workEntry: TimelineWorkEntry): string {
+  if (workEntry.status === "failed") return "Failed";
+  if (workEntry.status === "completed") return "Completed";
+  return "Running";
+}
+
+function terminalStatusClass(workEntry: TimelineWorkEntry): string {
+  if (workEntry.status === "failed") {
+    return "border-destructive/25 bg-destructive/8 text-destructive/80";
+  }
+  if (workEntry.status === "completed") {
+    return "border-border/50 bg-muted/35 text-muted-foreground/80";
+  }
+  return "border-primary/20 bg-primary/8 text-primary/80";
+}
+
+const TerminalToolBox = memo(function TerminalToolBox(props: { workEntry: TimelineWorkEntry }) {
+  const { workEntry } = props;
+  const heading = toolWorkEntryHeading(workEntry);
+  const command = workEntry.command ?? workEntry.detail ?? "Command unavailable";
+  const rawCommand = workEntryRawCommand(workEntry);
+  const outputPreview =
+    (workEntry.outputPreview?.lines.length ?? 0) > 0 ? workEntry.outputPreview : null;
+  const outputPreviewLabel = commandOutputPreviewLabel(workEntry);
+  const outputIsError = outputPreview?.stream === "stderr";
+
+  return (
+    <details className="group rounded-lg border border-border/55 bg-background/70 shadow-xs/5">
+      <summary className="flex min-h-8 cursor-pointer list-none items-center gap-2 px-2.5 py-1.5 transition-colors hover:bg-muted/20 [&::-webkit-details-marker]:hidden">
+        <span className="flex size-5 shrink-0 items-center justify-center text-muted-foreground/75">
+          <TerminalIcon className="size-3.5" />
+        </span>
+        <span className="shrink-0 text-xs font-medium text-foreground/82">{heading}</span>
+        <span className="min-w-0 flex-1 truncate font-mono text-[11px] leading-4 text-muted-foreground/80">
+          {command}
+        </span>
+        <span
+          className={cn(
+            "shrink-0 rounded-md border px-1.5 py-0.5 text-[10px] leading-3 font-medium",
+            terminalStatusClass(workEntry),
+          )}
+        >
+          {terminalStatusLabel(workEntry)}
+        </span>
+        {workEntry.exitCode !== undefined && (
+          <span className="shrink-0 rounded-md border border-border/50 bg-muted/25 px-1.5 py-0.5 font-mono text-[10px] leading-3 text-muted-foreground/70">
+            exit {workEntry.exitCode}
+          </span>
+        )}
+      </summary>
+
+      <div className="space-y-2 border-t border-border/45 px-2.5 py-2">
+        <div>
+          <div className="mb-1 text-[10px] leading-3 font-medium tracking-[0.12em] text-muted-foreground/50 uppercase">
+            Input
+          </div>
+          <div className="max-w-full overflow-x-auto rounded-md border border-border/50 bg-muted/20 px-2 py-1.5 font-mono text-[11px] leading-4 whitespace-pre-wrap wrap-break-word text-foreground/82">
+            {command}
+          </div>
+          {rawCommand && (
+            <div className="mt-1 max-w-full overflow-x-auto font-mono text-[10px] leading-4 whitespace-pre-wrap wrap-break-word text-muted-foreground/55">
+              {rawCommand}
+            </div>
+          )}
+        </div>
+
+        <div>
+          <div className="mb-1 flex items-center gap-2">
+            <span className="text-[10px] leading-3 font-medium tracking-[0.12em] text-muted-foreground/50 uppercase">
+              Output
+            </span>
+            {outputPreviewLabel && (
+              <span
+                className={cn(
+                  "rounded-sm px-1 font-mono text-[9px] leading-3",
+                  outputIsError
+                    ? "bg-destructive/10 text-destructive/70"
+                    : "bg-muted/45 text-muted-foreground/60",
+                )}
+              >
+                {outputPreviewLabel}
+              </span>
+            )}
+          </div>
+          <div
+            className={cn(
+              "max-w-full overflow-hidden rounded-md border px-2 py-1.5 font-mono text-[11px] leading-4 whitespace-pre-wrap wrap-break-word",
+              outputIsError
+                ? "border-destructive/25 bg-destructive/5 text-destructive/85"
+                : "border-border/50 bg-muted/20 text-muted-foreground/85",
+            )}
+          >
+            {outputPreview ? (
+              outputPreview.lines.slice(0, 4).map((line, index) => (
+                <div key={`${workEntry.id}:terminal-box-output:${index}`} className="min-w-0">
+                  {line}
+                </div>
+              ))
+            ) : (
+              <span className="text-muted-foreground/50">
+                {workEntry.status === "completed" ? "No output captured" : "Waiting for output..."}
+              </span>
+            )}
+          </div>
+          {outputPreview?.truncated && (
+            <div className="mt-1 text-[10px] leading-4 text-muted-foreground/55">
+              Output preview truncated. Open the terminal for the full stream.
+            </div>
+          )}
+        </div>
+      </div>
+    </details>
+  );
+});
+
 const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
   workEntry: TimelineWorkEntry;
   workspaceRoot: string | undefined;
 }) {
   const { workEntry, workspaceRoot } = props;
+  if (isTerminalWorkEntry(workEntry)) {
+    return <TerminalToolBox workEntry={workEntry} />;
+  }
+
   const iconConfig = workToneIcon(workEntry.tone);
   const EntryIcon = workEntryIcon(workEntry);
   const heading = toolWorkEntryHeading(workEntry);

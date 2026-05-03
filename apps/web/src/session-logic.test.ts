@@ -1175,6 +1175,8 @@ describe("deriveWorkLogEntries", () => {
     ];
 
     const [entry] = deriveWorkLogEntries(activities, undefined);
+    expect(entry?.status).toBe("failed");
+    expect(entry?.exitCode).toBe(1);
     expect(entry?.outputPreview).toEqual({
       lines: ["actual failure"],
       stream: "stderr",
@@ -1226,11 +1228,82 @@ describe("deriveWorkLogEntries", () => {
     expect(entries[0]).toMatchObject({
       id: "command-preview-complete",
       command: "bun run lint",
+      status: "completed",
       outputPreview: {
         lines: ["latest"],
         stream: "stdout",
         truncated: false,
       },
+    });
+  });
+
+  it("collapses command lifecycle rows by tool call id while preserving earlier preview data", () => {
+    const activities: OrchestrationThreadActivity[] = [
+      makeActivity({
+        id: "command-preview-update",
+        createdAt: "2026-02-23T00:00:01.000Z",
+        kind: "tool.updated",
+        summary: "Terminal output",
+        payload: {
+          itemType: "command_execution",
+          data: {
+            toolCallId: "tool-command-preserve-preview",
+            outputPreview: {
+              lines: ["still running"],
+              stream: "stdout",
+              truncated: false,
+            },
+          },
+        },
+      }),
+      makeActivity({
+        id: "command-preview-complete",
+        createdAt: "2026-02-23T00:00:02.000Z",
+        kind: "tool.completed",
+        summary: "Ran command",
+        payload: {
+          itemType: "command_execution",
+          status: "completed",
+          data: {
+            toolCallId: "tool-command-preserve-preview",
+            command: "bun run lint",
+          },
+        },
+      }),
+    ];
+
+    const entries = deriveWorkLogEntries(activities, undefined);
+    expect(entries).toHaveLength(1);
+    expect(entries[0]).toMatchObject({
+      id: "command-preview-complete",
+      command: "bun run lint",
+      status: "completed",
+      outputPreview: {
+        lines: ["still running"],
+        stream: "stdout",
+        truncated: false,
+      },
+    });
+  });
+
+  it("derives failed terminal status from detail exit code", () => {
+    const activities: OrchestrationThreadActivity[] = [
+      makeActivity({
+        id: "command-detail-failed",
+        kind: "tool.completed",
+        summary: "Ran command",
+        payload: {
+          itemType: "command_execution",
+          detail: "bun run lint <exited with exit code 2>",
+        },
+      }),
+    ];
+
+    const [entry] = deriveWorkLogEntries(activities, undefined);
+    expect(entry).toMatchObject({
+      command: "bun run lint",
+      status: "failed",
+      exitCode: 2,
     });
   });
 

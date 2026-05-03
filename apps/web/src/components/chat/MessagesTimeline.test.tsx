@@ -183,7 +183,7 @@ describe("MessagesTimeline", () => {
     expect(markup).not.toContain("C:/Users/mike/dev-stuff/t3code/apps/web/src/session-logic.ts");
   });
 
-  it("renders terminal command rows with a four-line output preview", async () => {
+  it("renders terminal command rows as input/output boxes with a four-line output preview", async () => {
     const { MessagesTimeline } = await import("./MessagesTimeline");
     const markup = renderToStaticMarkup(
       <MessagesTimeline
@@ -200,6 +200,8 @@ describe("MessagesTimeline", () => {
               tone: "tool",
               itemType: "command_execution",
               command: "bun run lint",
+              status: "completed",
+              exitCode: 0,
               outputPreview: {
                 lines: ["line one", "line two", "line three", "line four"],
                 stream: "stdout",
@@ -212,11 +214,49 @@ describe("MessagesTimeline", () => {
     );
 
     expect(markup).toContain("Ran command");
+    expect(markup).toContain("Input");
+    expect(markup).toContain("Output");
+    expect(markup).toContain("Completed");
+    expect(markup).toContain("exit 0");
+    expect(markup).toContain("<details");
+    expect(markup).not.toContain("<details open");
     expect(markup).toContain("bun run lint");
     expect(markup).toContain("line one");
     expect(markup).toContain("line four");
     expect(markup).toContain("whitespace-pre-wrap");
     expect(markup).toContain("wrap-break-word");
+    expect(markup).toContain("Output preview truncated");
+  });
+
+  it("renders terminal command input while output is pending", async () => {
+    const { MessagesTimeline } = await import("./MessagesTimeline");
+    const markup = renderToStaticMarkup(
+      <MessagesTimeline
+        {...buildProps()}
+        timelineEntries={[
+          {
+            id: "entry-1",
+            kind: "work",
+            createdAt: "2026-03-17T19:12:28.000Z",
+            entry: {
+              id: "work-1",
+              createdAt: "2026-03-17T19:12:28.000Z",
+              label: "Ran command",
+              tone: "tool",
+              itemType: "command_execution",
+              command: "bun run typecheck",
+              status: "running",
+            },
+          },
+        ]}
+      />,
+    );
+
+    expect(markup).toContain("Input");
+    expect(markup).toContain("Output");
+    expect(markup).toContain("Running");
+    expect(markup).toContain("bun run typecheck");
+    expect(markup).toContain("Waiting for output");
   });
 
   it("renders stderr terminal previews with a subtle stream label", async () => {
@@ -236,6 +276,8 @@ describe("MessagesTimeline", () => {
               tone: "tool",
               itemType: "command_execution",
               command: "bun run build",
+              status: "failed",
+              exitCode: 1,
               outputPreview: {
                 lines: ["TypeError: nope"],
                 stream: "stderr",
@@ -248,6 +290,8 @@ describe("MessagesTimeline", () => {
     );
 
     expect(markup).toContain("stderr");
+    expect(markup).toContain("Failed");
+    expect(markup).toContain("exit 1");
     expect(markup).toContain("TypeError: nope");
     expect(markup).toContain("border-destructive");
   });
