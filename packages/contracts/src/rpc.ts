@@ -129,6 +129,7 @@ export const WS_METHODS = {
   serverGetHistorySyncConfig: "server.getHistorySyncConfig",
   serverUpdateHistorySyncConfig: "server.updateHistorySyncConfig",
   serverStartHistorySyncInitialImport: "server.startHistorySyncInitialImport",
+  serverRestoreHistorySyncBackup: "server.restoreHistorySyncBackup",
   serverTestHistorySyncConnection: "server.testHistorySyncConnection",
   serverGetHistorySyncProjectMappings: "server.getHistorySyncProjectMappings",
   serverApplyHistorySyncProjectMappings: "server.applyHistorySyncProjectMappings",
@@ -195,6 +196,15 @@ export const WsServerUpdateHistorySyncConfigRpc = Rpc.make(
 
 export const WsServerStartHistorySyncInitialImportRpc = Rpc.make(
   WS_METHODS.serverStartHistorySyncInitialImport,
+  {
+    payload: Schema.Struct({}),
+    success: HistorySyncConfig,
+    error: Schema.Union([ServerSettingsError, HistorySyncConfigError]),
+  },
+);
+
+export const WsServerRestoreHistorySyncBackupRpc = Rpc.make(
+  WS_METHODS.serverRestoreHistorySyncBackup,
   {
     payload: Schema.Struct({}),
     success: HistorySyncConfig,
@@ -437,6 +447,7 @@ export const WsRpcGroup = RpcGroup.make(
   WsServerGetHistorySyncConfigRpc,
   WsServerUpdateHistorySyncConfigRpc,
   WsServerStartHistorySyncInitialImportRpc,
+  WsServerRestoreHistorySyncBackupRpc,
   WsServerTestHistorySyncConnectionRpc,
   WsServerGetHistorySyncProjectMappingsRpc,
   WsServerApplyHistorySyncProjectMappingsRpc,

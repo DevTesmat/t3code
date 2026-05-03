@@ -812,6 +812,7 @@ function HistorySyncSettingsSection() {
   const [error, setError] = useState<string | null>(null);
   const [isSaving, setIsSaving] = useState(false);
   const [isStartingInitialSync, setIsStartingInitialSync] = useState(false);
+  const [isRestoringBackup, setIsRestoringBackup] = useState(false);
   const [isTesting, setIsTesting] = useState(false);
   const [mappingPlan, setMappingPlan] = useState<HistorySyncProjectMappingPlan | null>(null);
   const [mappingDraftByProjectId, setMappingDraftByProjectId] = useState<
@@ -962,6 +963,23 @@ function HistorySyncSettingsSection() {
     }
   }, []);
 
+  const handleRestoreBackup = useCallback(async () => {
+    setIsRestoringBackup(true);
+    setError(null);
+    try {
+      const next = await ensureLocalApi().server.restoreHistorySyncBackup();
+      setConfig(next);
+      setForm(historySyncFormFromConfig(next));
+      toastManager.add({ type: "success", title: "History sync backup restored" });
+    } catch (restoreError) {
+      setError(
+        restoreError instanceof Error ? restoreError.message : "Failed to restore history backup.",
+      );
+    } finally {
+      setIsRestoringBackup(false);
+    }
+  }, []);
+
   const handlePickMappingFolder = useCallback(
     async (remoteProjectId: string) => {
       const folder = await ensureLocalApi().dialogs.pickFolder();
@@ -1016,10 +1034,12 @@ function HistorySyncSettingsSection() {
             : effectiveHistorySyncStatus.state;
   const syncProgress =
     effectiveHistorySyncStatus?.state === "syncing" ? effectiveHistorySyncStatus.progress : null;
+  const isHistorySyncing = effectiveHistorySyncStatus?.state === "syncing";
   const unresolvedMappingCandidates =
     mappingPlan?.candidates.filter((candidate) => candidate.status === "unresolved") ?? [];
   const showInitialSyncAction =
     config?.configured === true && effectiveHistorySyncStatus?.state === "needs-initial-sync";
+  const showBackupRestoreAction = Boolean(config?.backup) && !isHistorySyncing;
 
   return (
     <SettingsSection title="History Sync">
@@ -1048,22 +1068,52 @@ function HistorySyncSettingsSection() {
           />
         }
       />
-      {showInitialSyncAction ? (
+      {showInitialSyncAction || showBackupRestoreAction ? (
         <div className={ITEM_ROW_CLASSNAME}>
           <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-            <div className="min-w-0">
-              <h3 className="text-sm font-medium text-foreground">Initial history sync</h3>
-              <p className="mt-1 text-xs text-muted-foreground">
-                Back up local threads, import the MySQL history, then merge the local threads back.
-              </p>
+            {showInitialSyncAction ? (
+              <div className="min-w-0">
+                <h3 className="text-sm font-medium text-foreground">Initial history sync</h3>
+                <p className="mt-1 text-xs text-muted-foreground">
+                  Back up local threads, import the MySQL history, then merge the local threads
+                  back.
+                </p>
+              </div>
+            ) : (
+              <div className="min-w-0">
+                <h3 className="text-sm font-medium text-foreground">History sync backup</h3>
+                <p className="mt-1 text-xs text-muted-foreground">
+                  Restore the local history snapshot saved before the last initial sync.
+                </p>
+              </div>
+            )}
+            <div className="flex shrink-0 flex-wrap justify-end gap-2">
+              {showBackupRestoreAction ? (
+                <Button
+                  size="xs"
+                  variant="outline"
+                  disabled={isRestoringBackup || isStartingInitialSync || isSaving || isTesting}
+                  onClick={() => void handleRestoreBackup()}
+                >
+                  {isRestoringBackup ? "Restoring..." : "Restore backup"}
+                </Button>
+              ) : null}
+              {showInitialSyncAction ? (
+                <Button
+                  size="xs"
+                  disabled={
+                    isStartingInitialSync ||
+                    isRestoringBackup ||
+                    isSaving ||
+                    isTesting ||
+                    !config.configured
+                  }
+                  onClick={() => void handleStartInitialSync()}
+                >
+                  {isStartingInitialSync ? "Starting..." : "Start history sync"}
+                </Button>
+              ) : null}
             </div>
-            <Button
-              size="xs"
-              disabled={isStartingInitialSync || isSaving || isTesting || !config.configured}
-              onClick={() => void handleStartInitialSync()}
-            >
-              {isStartingInitialSync ? "Starting..." : "Start history sync"}
-            </Button>
           </div>
         </div>
       ) : null}

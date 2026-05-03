@@ -1,4 +1,5 @@
 import * as Crypto from "node:crypto";
+import * as Fs from "node:fs/promises";
 import * as Path from "node:path";
 
 import {
@@ -21,6 +22,7 @@ import * as SqlClient from "effect/unstable/sql/SqlClient";
 import type { Pool, RowDataPacket } from "mysql2/promise";
 
 import { ServerSecretStore } from "./auth/Services/ServerSecretStore.ts";
+import { ServerConfig } from "./config.ts";
 import { ServerSettingsService } from "./serverSettings.ts";
 import type { ServerSettingsError } from "@t3tools/contracts";
 import { OrchestrationEngineService } from "./orchestration/Services/OrchestrationEngine.ts";
@@ -41,6 +43,7 @@ let latestHistorySyncControl: Pick<
   | "getConfig"
   | "updateConfig"
   | "startInitialSync"
+  | "restoreBackup"
   | "testConnection"
   | "getProjectMappings"
   | "applyProjectMappings"
@@ -53,6 +56,7 @@ const HISTORY_SYNC_MYSQL_BATCH_SIZE = 500;
 const HISTORY_SYNC_SQLITE_BATCH_SIZE = 50;
 const HISTORY_SYNC_OPERATION_TIMEOUT_MS = 10 * 60_000;
 const HISTORY_SYNC_STARTUP_DELAY_MS = 15_000;
+const HISTORY_SYNC_BACKUP_FILE_NAME = "history-sync-pre-sync.sqlite";
 
 interface HistorySyncProgress {
   readonly phase: string;
@@ -186,6 +190,16 @@ export const startHistorySyncInitialImport = Effect.suspend(() =>
       ),
 );
 
+export const restoreHistorySyncBackup = Effect.suspend(() =>
+  latestHistorySyncControl
+    ? latestHistorySyncControl.restoreBackup
+    : Effect.fail(
+        new HistorySyncConfigError({
+          message: "History sync service is not ready.",
+        }),
+      ),
+);
+
 export const testHistorySyncConnection = (input: HistorySyncMysqlFields) =>
   Effect.suspend(() =>
     latestHistorySyncControl
@@ -282,6 +296,10 @@ export interface HistorySyncServiceShape {
     input: HistorySyncUpdateConfigInput,
   ) => Effect.Effect<HistorySyncConfig, HistorySyncConfigError | ServerSettingsError>;
   readonly startInitialSync: Effect.Effect<
+    HistorySyncConfig,
+    HistorySyncConfigError | ServerSettingsError
+  >;
+  readonly restoreBackup: Effect.Effect<
     HistorySyncConfig,
     HistorySyncConfigError | ServerSettingsError
   >;
@@ -993,6 +1011,7 @@ export const HistorySyncServiceLive = Layer.effect(
     const secretStore = yield* ServerSecretStore;
     const settingsService = yield* ServerSettingsService;
     const engine = yield* OrchestrationEngineService;
+    const serverConfig = yield* ServerConfig;
     const statusRef = yield* Ref.make<HistorySyncStatus>(DISABLED_HISTORY_SYNC_STATUS);
     const statusPubSub = yield* PubSub.unbounded<HistorySyncStatus>();
     const runningRef = yield* Ref.make(false);
@@ -1044,6 +1063,39 @@ export const HistorySyncServiceLive = Layer.effect(
       return value.length > 0 ? value : null;
     });
 
+    const historySyncBackupPath = Path.join(
+      Path.dirname(serverConfig.dbPath),
+      HISTORY_SYNC_BACKUP_FILE_NAME,
+    );
+
+    const readBackupSummary = Effect.promise(async () => {
+      try {
+        const stat = await Fs.stat(historySyncBackupPath);
+        if (!stat.isFile()) return null;
+        return {
+          createdAt: stat.mtime.toISOString(),
+          path: historySyncBackupPath,
+        };
+      } catch {
+        return null;
+      }
+    });
+
+    const createSqliteBackup = Effect.gen(function* () {
+      yield* sql`PRAGMA wal_checkpoint(FULL)`;
+      yield* Effect.tryPromise({
+        try: async () => {
+          await Fs.mkdir(Path.dirname(historySyncBackupPath), { recursive: true });
+          await Fs.copyFile(serverConfig.dbPath, historySyncBackupPath);
+        },
+        catch: (cause) =>
+          new HistorySyncConfigError({
+            message: describeUnknownError(cause) || "Failed to create history sync backup.",
+          }),
+      });
+      console.info("[history-sync] sqlite backup created", { path: historySyncBackupPath });
+    });
+
     const withPool = <A>(connectionString: string, use: (pool: Pool) => Promise<A>) =>
       Effect.tryPromise({
         try: async () => {
@@ -1067,11 +1119,12 @@ export const HistorySyncServiceLive = Layer.effect(
       });
 
     const toConfig = Effect.gen(function* () {
-      const [settings, connectionString, status, state] = yield* Effect.all([
+      const [settings, connectionString, status, state, backup] = yield* Effect.all([
         settingsService.getSettings,
         getConnectionString,
         Ref.get(statusRef),
         readState.pipe(Effect.catch(() => Effect.succeed(null))),
+        readBackupSummary,
       ]);
       const effectiveStatus =
         connectionString !== null &&
@@ -1098,6 +1151,7 @@ export const HistorySyncServiceLive = Layer.effect(
         ...(settings.historySync.connectionSummary
           ? { connectionSummary: settings.historySync.connectionSummary }
           : {}),
+        ...(backup ? { backup } : {}),
       } satisfies HistorySyncConfig;
     });
 
@@ -1819,6 +1873,124 @@ export const HistorySyncServiceLive = Layer.effect(
         ),
       );
 
+    const restoreBackupTables = sql.withTransaction(
+      Effect.all(
+        [
+          sql`DELETE FROM orchestration_command_receipts`,
+          sql`DELETE FROM projection_pending_approvals`,
+          sql`DELETE FROM projection_turns`,
+          sql`DELETE FROM projection_thread_sessions`,
+          sql`DELETE FROM projection_thread_activities`,
+          sql`DELETE FROM projection_thread_proposed_plans`,
+          sql`DELETE FROM projection_thread_messages`,
+          sql`DELETE FROM projection_threads`,
+          sql`DELETE FROM projection_projects`,
+          sql`DELETE FROM projection_state`,
+          sql`DELETE FROM checkpoint_diff_blobs`,
+          sql`DELETE FROM orchestration_events`,
+          sql`DELETE FROM history_sync_project_mappings`,
+          sql`DELETE FROM history_sync_state`,
+          sql`
+            INSERT INTO orchestration_command_receipts
+            SELECT * FROM history_sync_backup.orchestration_command_receipts
+          `,
+          sql`
+            INSERT INTO projection_pending_approvals
+            SELECT * FROM history_sync_backup.projection_pending_approvals
+          `,
+          sql`
+            INSERT INTO projection_turns
+            SELECT * FROM history_sync_backup.projection_turns
+          `,
+          sql`
+            INSERT INTO projection_thread_sessions
+            SELECT * FROM history_sync_backup.projection_thread_sessions
+          `,
+          sql`
+            INSERT INTO projection_thread_activities
+            SELECT * FROM history_sync_backup.projection_thread_activities
+          `,
+          sql`
+            INSERT INTO projection_thread_proposed_plans
+            SELECT * FROM history_sync_backup.projection_thread_proposed_plans
+          `,
+          sql`
+            INSERT INTO projection_thread_messages
+            SELECT * FROM history_sync_backup.projection_thread_messages
+          `,
+          sql`
+            INSERT INTO projection_threads
+            SELECT * FROM history_sync_backup.projection_threads
+          `,
+          sql`
+            INSERT INTO projection_projects
+            SELECT * FROM history_sync_backup.projection_projects
+          `,
+          sql`
+            INSERT INTO projection_state
+            SELECT * FROM history_sync_backup.projection_state
+          `,
+          sql`
+            INSERT INTO checkpoint_diff_blobs
+            SELECT * FROM history_sync_backup.checkpoint_diff_blobs
+          `,
+          sql`
+            INSERT INTO orchestration_events
+            SELECT * FROM history_sync_backup.orchestration_events
+          `,
+          sql`
+            INSERT INTO history_sync_project_mappings
+            SELECT * FROM history_sync_backup.history_sync_project_mappings
+          `,
+          sql`
+            INSERT INTO history_sync_state
+            SELECT * FROM history_sync_backup.history_sync_state
+          `,
+        ],
+        { concurrency: 1 },
+      ),
+    );
+
+    const restoreBackupFromDisk = Effect.gen(function* () {
+      const backup = yield* readBackupSummary;
+      if (!backup) {
+        return yield* new HistorySyncConfigError({
+          message: "No history sync SQLite backup is available.",
+        });
+      }
+      yield* sql`ATTACH DATABASE ${historySyncBackupPath} AS history_sync_backup`;
+      yield* restoreBackupTables.pipe(
+        Effect.ensuring(sql`DETACH DATABASE history_sync_backup`.pipe(Effect.ignore)),
+      );
+      if (engine.reloadFromStorage) {
+        yield* engine.reloadFromStorage();
+      }
+      const restoredState = yield* readState.pipe(Effect.catch(() => Effect.succeed(null)));
+      const connectionString = yield* getConnectionString;
+      yield* publishStatus(
+        connectionString !== null && restoredState?.hasCompletedInitialSync !== 1
+          ? {
+              state: "needs-initial-sync",
+              configured: true,
+              lastSyncedAt: restoredState?.lastSuccessfulSyncAt ?? null,
+            }
+          : {
+              state: "idle",
+              configured: connectionString !== null,
+              lastSyncedAt: restoredState?.lastSuccessfulSyncAt ?? null,
+            },
+      );
+      console.info("[history-sync] sqlite backup restored", { path: historySyncBackupPath });
+    }).pipe(
+      Effect.catchTag("HistorySyncConfigError", (cause) => Effect.fail(cause)),
+      Effect.mapError(
+        (cause) =>
+          new HistorySyncConfigError({
+            message: describeSyncFailure(cause),
+          }),
+      ),
+    );
+
     const runImport = (
       events: readonly HistorySyncEventRow[],
       context: {
@@ -1906,6 +2078,9 @@ export const HistorySyncServiceLive = Layer.effect(
             lastSyncedAt: state?.lastSuccessfulSyncAt ?? lastSyncedAt,
           });
           return;
+        }
+        if (!hasCompletedInitialSync && options.allowInitialSync) {
+          yield* createSqliteBackup;
         }
         const remoteEvents = yield* readRemoteEvents(connectionString);
         const remoteMaxSequence = Math.max(0, ...remoteEvents.map((event) => event.sequence));
@@ -2148,6 +2323,23 @@ export const HistorySyncServiceLive = Layer.effect(
       }),
     );
 
+    const restoreBackup: HistorySyncServiceShape["restoreBackup"] = Ref.get(runningRef).pipe(
+      Effect.flatMap((running) => {
+        if (running) {
+          return Effect.fail(
+            new HistorySyncConfigError({
+              message: "Cannot restore the history sync backup while sync is running.",
+            }),
+          );
+        }
+        return Ref.set(runningRef, true).pipe(
+          Effect.andThen(restoreBackupFromDisk),
+          Effect.ensuring(Ref.set(runningRef, false)),
+          Effect.andThen(toConfig),
+        );
+      }),
+    );
+
     const start: HistorySyncServiceShape["start"] = Effect.gen(function* () {
       const timing = yield* settingsService.getSettings.pipe(
         Effect.map((settings) => settings.historySync),
@@ -2182,6 +2374,7 @@ export const HistorySyncServiceLive = Layer.effect(
       getConfig: toConfig,
       updateConfig,
       startInitialSync,
+      restoreBackup,
       testConnection,
       getProjectMappings,
       applyProjectMappings,
@@ -2194,6 +2387,7 @@ export const HistorySyncServiceLive = Layer.effect(
       getConfig: toConfig,
       updateConfig,
       startInitialSync,
+      restoreBackup,
       testConnection,
       getProjectMappings,
       applyProjectMappings,

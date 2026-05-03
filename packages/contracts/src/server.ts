@@ -287,6 +287,12 @@ export const HistorySyncConnectionSummary = Schema.Struct({
 });
 export type HistorySyncConnectionSummary = typeof HistorySyncConnectionSummary.Type;
 
+export const HistorySyncBackupSummary = Schema.Struct({
+  createdAt: IsoDateTime,
+  path: TrimmedNonEmptyString,
+});
+export type HistorySyncBackupSummary = typeof HistorySyncBackupSummary.Type;
+
 export const HistorySyncMysqlFields = Schema.Struct({
   host: TrimmedNonEmptyString,
   port: Schema.Number,
@@ -305,6 +311,7 @@ export const HistorySyncConfig = Schema.Struct({
   shutdownFlushTimeoutMs: Schema.Number,
   statusIndicatorEnabled: Schema.Boolean,
   connectionSummary: Schema.optionalKey(HistorySyncConnectionSummary),
+  backup: Schema.optionalKey(HistorySyncBackupSummary),
 });
 export type HistorySyncConfig = typeof HistorySyncConfig.Type;
 

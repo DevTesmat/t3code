@@ -249,6 +249,7 @@ export interface LocalApi {
     getHistorySyncConfig: () => Promise<HistorySyncConfig>;
     updateHistorySyncConfig: (input: HistorySyncUpdateConfigInput) => Promise<HistorySyncConfig>;
     startHistorySyncInitialImport: () => Promise<HistorySyncConfig>;
+    restoreHistorySyncBackup: () => Promise<HistorySyncConfig>;
     testHistorySyncConnection: (
       input: HistorySyncConnectionTestInput,
     ) => Promise<HistorySyncConnectionTestResult>;

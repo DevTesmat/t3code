@@ -26,6 +26,7 @@ import { OrchestrationEngineLive } from "./OrchestrationEngine.ts";
 import {
   ORCHESTRATION_PROJECTOR_NAMES,
   OrchestrationProjectionPipelineLive,
+  subscribeProjectionBootstrapProgress,
 } from "./ProjectionPipeline.ts";
 import { OrchestrationProjectionSnapshotQueryLive } from "./ProjectionSnapshotQuery.ts";
 import { OrchestrationEngineService } from "../Services/OrchestrationEngine.ts";
@@ -170,6 +171,132 @@ it.layer(BaseTestLayer)("OrchestrationProjectionPipeline", (it) => {
       assert.equal(stateRows.length, Object.keys(ORCHESTRATION_PROJECTOR_NAMES).length);
       for (const row of stateRows) {
         assert.equal(row.lastAppliedSequence, 3);
+      }
+    }),
+  );
+
+  it.effect("reports single-pass bootstrap progress and advances all projector states", () =>
+    Effect.gen(function* () {
+      const projectionPipeline = yield* OrchestrationProjectionPipeline;
+      const eventStore = yield* OrchestrationEventStore;
+      const sql = yield* SqlClient.SqlClient;
+      const now = new Date().toISOString();
+      const progressEvents: Array<{
+        readonly projector: string;
+        readonly projectedCount: number;
+        readonly maxSequence: number;
+        readonly completed: boolean;
+      }> = [];
+
+      const unsubscribe = yield* subscribeProjectionBootstrapProgress((progress) =>
+        Effect.sync(() => {
+          progressEvents.push(progress);
+        }),
+      );
+
+      yield* eventStore.append({
+        type: "project.created",
+        eventId: EventId.make("evt-progress-1"),
+        aggregateKind: "project",
+        aggregateId: ProjectId.make("project-progress"),
+        occurredAt: now,
+        commandId: CommandId.make("cmd-progress-1"),
+        causationEventId: null,
+        correlationId: CommandId.make("cmd-progress-1"),
+        metadata: {},
+        payload: {
+          projectId: ProjectId.make("project-progress"),
+          title: "Project Progress",
+          workspaceRoot: "/tmp/project-progress",
+          defaultModelSelection: null,
+          scripts: [],
+          createdAt: now,
+          updatedAt: now,
+        },
+      });
+
+      yield* eventStore.append({
+        type: "thread.created",
+        eventId: EventId.make("evt-progress-2"),
+        aggregateKind: "thread",
+        aggregateId: ThreadId.make("thread-progress"),
+        occurredAt: now,
+        commandId: CommandId.make("cmd-progress-2"),
+        causationEventId: null,
+        correlationId: CommandId.make("cmd-progress-2"),
+        metadata: {},
+        payload: {
+          threadId: ThreadId.make("thread-progress"),
+          projectId: ProjectId.make("project-progress"),
+          title: "Thread Progress",
+          modelSelection: {
+            instanceId: ProviderInstanceId.make("codex"),
+            model: "gpt-5-codex",
+          },
+          runtimeMode: "full-access",
+          interactionMode: "default",
+          branch: null,
+          worktreePath: null,
+          createdAt: now,
+          updatedAt: now,
+        },
+      });
+
+      yield* eventStore.append({
+        type: "thread.message-sent",
+        eventId: EventId.make("evt-progress-3"),
+        aggregateKind: "thread",
+        aggregateId: ThreadId.make("thread-progress"),
+        occurredAt: now,
+        commandId: CommandId.make("cmd-progress-3"),
+        causationEventId: null,
+        correlationId: CommandId.make("cmd-progress-3"),
+        metadata: {},
+        payload: {
+          threadId: ThreadId.make("thread-progress"),
+          messageId: MessageId.make("message-progress"),
+          role: "user",
+          source: "user",
+          text: "hello",
+          turnId: null,
+          streaming: false,
+          createdAt: now,
+          updatedAt: now,
+        },
+      });
+
+      yield* projectionPipeline.bootstrap.pipe(Effect.ensuring(Effect.sync(unsubscribe)));
+
+      assert.equal(
+        progressEvents.some((progress) => progress.projector === "projection.history"),
+        true,
+      );
+      assert.equal(
+        progressEvents.some((progress) => progress.projector === "projection.thread-summaries"),
+        true,
+      );
+      assert.equal(
+        progressEvents.some((progress) => progress.projector === "projection.threads"),
+        false,
+      );
+      for (const progress of progressEvents) {
+        assert.equal(
+          progress.projectedCount <= progress.maxSequence || progress.maxSequence === 0,
+          true,
+        );
+      }
+
+      const stateRows = yield* sql<{ readonly lastAppliedSequence: number }>`
+        SELECT last_applied_sequence AS "lastAppliedSequence"
+        FROM projection_state
+      `;
+      const maxSequenceRows = yield* sql<{ readonly maxSequence: number }>`
+        SELECT MAX(sequence) AS "maxSequence" FROM orchestration_events
+      `;
+      const maxSequence = maxSequenceRows[0]?.maxSequence ?? 0;
+      assert.equal(stateRows.length, Object.keys(ORCHESTRATION_PROJECTOR_NAMES).length);
+      for (const row of stateRows) {
+        assert.equal(row.lastAppliedSequence, maxSequence);
       }
     }),
   );

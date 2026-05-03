@@ -65,7 +65,7 @@ type ProjectorName =
   (typeof ORCHESTRATION_PROJECTOR_NAMES)[keyof typeof ORCHESTRATION_PROJECTOR_NAMES];
 
 export interface ProjectionBootstrapProgress {
-  readonly projector: ProjectorName;
+  readonly projector: ProjectorName | "projection.history" | "projection.thread-summaries";
   readonly projectedCount: number;
   readonly maxSequence: number;
   readonly completed: boolean;
@@ -107,6 +107,7 @@ interface ProjectorDefinition {
 interface AttachmentSideEffects {
   readonly deletedThreadIds: Set<string>;
   readonly prunedThreadRelativePaths: Map<string, Set<string>>;
+  readonly dirtyThreadSummaryIds?: Set<ThreadId>;
 }
 
 const materializeAttachmentsForProjection = Effect.fn("materializeAttachmentsForProjection")(
@@ -597,6 +598,18 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
       });
     });
 
+    const refreshThreadShellSummaryOrDefer = (
+      threadId: ThreadId,
+      attachmentSideEffects: AttachmentSideEffects,
+    ) => {
+      if (!attachmentSideEffects.dirtyThreadSummaryIds) {
+        return refreshThreadShellSummary(threadId);
+      }
+      return Effect.sync(() => {
+        attachmentSideEffects.dirtyThreadSummaryIds?.add(threadId);
+      });
+    };
+
     const applyThreadsProjection: ProjectorDefinition["apply"] = Effect.fn(
       "applyThreadsProjection",
     )(function* (event, attachmentSideEffects) {
@@ -766,7 +779,7 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
             ...existingRow.value,
             updatedAt: event.occurredAt,
           });
-          yield* refreshThreadShellSummary(event.payload.threadId);
+          yield* refreshThreadShellSummaryOrDefer(event.payload.threadId, attachmentSideEffects);
           return;
         }
 
@@ -782,7 +795,7 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
             latestTurnId: event.payload.session.activeTurnId,
             updatedAt: event.occurredAt,
           });
-          yield* refreshThreadShellSummary(event.payload.threadId);
+          yield* refreshThreadShellSummaryOrDefer(event.payload.threadId, attachmentSideEffects);
           return;
         }
 
@@ -798,7 +811,7 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
             latestTurnId: event.payload.turnId,
             updatedAt: event.occurredAt,
           });
-          yield* refreshThreadShellSummary(event.payload.threadId);
+          yield* refreshThreadShellSummaryOrDefer(event.payload.threadId, attachmentSideEffects);
           return;
         }
 
@@ -814,7 +827,7 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
             latestTurnId: null,
             updatedAt: event.occurredAt,
           });
-          yield* refreshThreadShellSummary(event.payload.threadId);
+          yield* refreshThreadShellSummaryOrDefer(event.payload.threadId, attachmentSideEffects);
           return;
         }
 
@@ -1458,6 +1471,14 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
       });
     });
 
+    const applyProjectorForBootstrapEvent = Effect.fn("applyProjectorForBootstrapEvent")(function* (
+      projector: ProjectorDefinition,
+      event: OrchestrationEvent,
+      attachmentSideEffects: AttachmentSideEffects,
+    ) {
+      yield* projector.apply(event, attachmentSideEffects);
+    });
+
     const runProjectorForEvent = Effect.fn("runProjectorForEvent")(function* (
       projector: ProjectorDefinition,
       event: OrchestrationEvent,
@@ -1481,76 +1502,145 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
       );
     });
 
-    const bootstrapProjector = (projector: ProjectorDefinition) =>
-      Effect.gen(function* () {
-        const maxRows = yield* sql<{ readonly maxSequence: number | null }>`
-          SELECT MAX(sequence) AS "maxSequence" FROM orchestration_events
-        `;
-        const maxSequence = Number(maxRows[0]?.maxSequence ?? 0);
-        const stateRow = yield* projectionStateRepository.getByProjector({
-          projector: projector.name,
-        });
-        const fromSequence = Option.isSome(stateRow) ? stateRow.value.lastAppliedSequence : 0;
-        let projectedCount = 0;
-        const attachmentSideEffects: AttachmentSideEffects = {
-          deletedThreadIds: new Set<string>(),
-          prunedThreadRelativePaths: new Map<string, Set<string>>(),
-        };
-        console.info("[projection] bootstrap projector started", {
-          projector: projector.name,
-          fromSequence,
-          maxSequence,
-        });
-        yield* publishProjectionBootstrapProgress({
-          projector: projector.name,
-          projectedCount,
-          maxSequence,
-          completed: false,
-        });
-
-        yield* sql.withTransaction(
-          Stream.runForEach(
-            eventStore.readFromSequence(fromSequence, Number.MAX_SAFE_INTEGER),
-            (event) =>
-              applyProjectorForEvent(projector, event, attachmentSideEffects).pipe(
-                Effect.tap(() =>
-                  Effect.sync(() => {
-                    projectedCount += 1;
-                  }),
-                ),
-                Effect.tap(() =>
-                  projectedCount % 100 === 0 || event.sequence >= maxSequence
-                    ? publishProjectionBootstrapProgress({
-                        projector: projector.name,
-                        projectedCount,
-                        maxSequence,
-                        completed: false,
-                      })
-                    : Effect.void,
-                ),
-              ),
-          ),
-        );
-
-        yield* runAttachmentSideEffects(attachmentSideEffects).pipe(
-          Effect.catch((cause) =>
-            Effect.logWarning("failed to apply projected attachment side-effects", {
+    const bootstrapProjectors = Effect.fn("bootstrapProjectors")(function* () {
+      const maxRows = yield* sql<{ readonly maxSequence: number | null }>`
+        SELECT MAX(sequence) AS "maxSequence" FROM orchestration_events
+      `;
+      const maxSequence = Number(maxRows[0]?.maxSequence ?? 0);
+      const stateRows = yield* Effect.forEach(
+        projectors,
+        (projector) =>
+          projectionStateRepository
+            .getByProjector({
               projector: projector.name,
-              cause,
-            }),
-          ),
-        );
-        console.info("[projection] bootstrap projector completed", {
-          projector: projector.name,
-          projectedCount,
-        });
-        yield* publishProjectionBootstrapProgress({
-          projector: projector.name,
-          projectedCount,
-          maxSequence,
-          completed: true,
-        });
+            })
+            .pipe(
+              Effect.map((stateRow) => ({
+                projector,
+                fromSequence: Option.isSome(stateRow) ? stateRow.value.lastAppliedSequence : 0,
+              })),
+            ),
+        { concurrency: 1 },
+      );
+      const fromSequence = Math.min(...stateRows.map((row) => row.fromSequence));
+      let projectedCount = fromSequence;
+      let latestSequence: number | null = null;
+      const lastAppliedByProjector = new Map<ProjectorName, OrchestrationEvent>();
+      const dirtyThreadIds = new Set<ThreadId>();
+      const attachmentSideEffects: AttachmentSideEffects = {
+        deletedThreadIds: new Set<string>(),
+        prunedThreadRelativePaths: new Map<string, Set<string>>(),
+        dirtyThreadSummaryIds: dirtyThreadIds,
+      };
+
+      console.info("[projection] bootstrap started", {
+        fromSequence,
+        maxSequence,
+        projectors: projectors.length,
       });
+      yield* publishProjectionBootstrapProgress({
+        projector: "projection.history",
+        projectedCount,
+        maxSequence,
+        completed: false,
+      });
+
+      const startedAt = Date.now();
+      yield* sql.withTransaction(
+        Stream.runForEach(
+          eventStore.readFromSequence(fromSequence, Number.MAX_SAFE_INTEGER),
+          (event) =>
+            Effect.gen(function* () {
+              for (const { projector, fromSequence: projectorFromSequence } of stateRows) {
+                if (event.sequence <= projectorFromSequence) {
+                  continue;
+                }
+                yield* applyProjectorForBootstrapEvent(projector, event, attachmentSideEffects);
+                lastAppliedByProjector.set(projector.name, event);
+              }
+              latestSequence = event.sequence;
+              projectedCount = event.sequence;
+              if ((event.sequence - fromSequence) % 100 === 0 || event.sequence >= maxSequence) {
+                yield* publishProjectionBootstrapProgress({
+                  projector: "projection.history",
+                  projectedCount,
+                  maxSequence,
+                  completed: false,
+                });
+              }
+            }),
+        ).pipe(
+          Effect.andThen(
+            Effect.forEach(
+              projectors,
+              (projector) => {
+                const event = lastAppliedByProjector.get(projector.name);
+                if (!event) return Effect.void;
+                return projectionStateRepository.upsert({
+                  projector: projector.name,
+                  lastAppliedSequence: event.sequence,
+                  updatedAt: event.occurredAt,
+                });
+              },
+              { concurrency: 1 },
+            ),
+          ),
+        ),
+      );
+
+      const replayCompletedAt = Date.now();
+      yield* runAttachmentSideEffects(attachmentSideEffects).pipe(
+        Effect.catch((cause) =>
+          Effect.logWarning("failed to apply projected attachment side-effects", { cause }),
+        ),
+      );
+
+      let refreshedThreadCount = 0;
+      yield* publishProjectionBootstrapProgress({
+        projector: "projection.thread-summaries",
+        projectedCount: refreshedThreadCount,
+        maxSequence: dirtyThreadIds.size,
+        completed: dirtyThreadIds.size === 0,
+      });
+      yield* Effect.forEach(
+        dirtyThreadIds,
+        (threadId) =>
+          refreshThreadShellSummary(threadId).pipe(
+            Effect.tap(() =>
+              Effect.sync(() => {
+                refreshedThreadCount += 1;
+              }),
+            ),
+            Effect.tap(() =>
+              refreshedThreadCount % 25 === 0 || refreshedThreadCount >= dirtyThreadIds.size
+                ? publishProjectionBootstrapProgress({
+                    projector: "projection.thread-summaries",
+                    projectedCount: refreshedThreadCount,
+                    maxSequence: dirtyThreadIds.size,
+                    completed: refreshedThreadCount >= dirtyThreadIds.size,
+                  })
+                : Effect.void,
+            ),
+          ),
+        { concurrency: 1 },
+      );
+      const completedAt = Date.now();
+
+      console.info("[projection] bootstrap completed", {
+        projectedCount,
+        maxSequence,
+        latestSequence,
+        dirtyThreadCount: dirtyThreadIds.size,
+        replayMs: replayCompletedAt - startedAt,
+        refreshMs: completedAt - replayCompletedAt,
+      });
+      yield* publishProjectionBootstrapProgress({
+        projector: "projection.history",
+        projectedCount,
+        maxSequence,
+        completed: true,
+      });
+    });
 
     const projectEvent: OrchestrationProjectionPipelineShape["projectEvent"] = (event) =>
       Effect.forEach(projectors, (projector) => runProjectorForEvent(projector, event), {
@@ -1565,11 +1655,7 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
         ),
       );
 
-    const bootstrap: OrchestrationProjectionPipelineShape["bootstrap"] = Effect.forEach(
-      projectors,
-      bootstrapProjector,
-      { concurrency: 1 },
-    ).pipe(
+    const bootstrap: OrchestrationProjectionPipelineShape["bootstrap"] = bootstrapProjectors().pipe(
       Effect.provideService(FileSystem.FileSystem, fileSystem),
       Effect.provideService(Path.Path, path),
       Effect.provideService(ServerConfig, serverConfig),

@@ -118,6 +118,7 @@ export function createLocalApi(rpcClient: WsRpcClient): LocalApi {
       getHistorySyncConfig: rpcClient.server.getHistorySyncConfig,
       updateHistorySyncConfig: rpcClient.server.updateHistorySyncConfig,
       startHistorySyncInitialImport: rpcClient.server.startHistorySyncInitialImport,
+      restoreHistorySyncBackup: rpcClient.server.restoreHistorySyncBackup,
       testHistorySyncConnection: rpcClient.server.testHistorySyncConnection,
       getHistorySyncProjectMappings: rpcClient.server.getHistorySyncProjectMappings,
       applyHistorySyncProjectMappings: rpcClient.server.applyHistorySyncProjectMappings,

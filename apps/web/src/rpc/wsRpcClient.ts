@@ -126,6 +126,9 @@ export interface WsRpcClient {
     readonly startHistorySyncInitialImport: RpcUnaryNoArgMethod<
       typeof WS_METHODS.serverStartHistorySyncInitialImport
     >;
+    readonly restoreHistorySyncBackup: RpcUnaryNoArgMethod<
+      typeof WS_METHODS.serverRestoreHistorySyncBackup
+    >;
     readonly testHistorySyncConnection: (
       input: HistorySyncConnectionTestInput,
     ) => ReturnType<RpcUnaryMethod<typeof WS_METHODS.serverTestHistorySyncConnection>>;
@@ -246,6 +249,8 @@ export function createWsRpcClient(transport: WsTransport): WsRpcClient {
         transport.request((client) => client[WS_METHODS.serverUpdateHistorySyncConfig](input)),
       startHistorySyncInitialImport: () =>
         transport.request((client) => client[WS_METHODS.serverStartHistorySyncInitialImport]({})),
+      restoreHistorySyncBackup: () =>
+        transport.request((client) => client[WS_METHODS.serverRestoreHistorySyncBackup]({})),
       testHistorySyncConnection: (input) =>
         transport.request((client) => client[WS_METHODS.serverTestHistorySyncConnection](input)),
       getHistorySyncProjectMappings: () =>
