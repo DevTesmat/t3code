@@ -183,6 +183,106 @@ describe("MessagesTimeline", () => {
     expect(markup).not.toContain("C:/Users/mike/dev-stuff/t3code/apps/web/src/session-logic.ts");
   });
 
+  it("renders terminal command rows with a four-line output preview", async () => {
+    const { MessagesTimeline } = await import("./MessagesTimeline");
+    const markup = renderToStaticMarkup(
+      <MessagesTimeline
+        {...buildProps()}
+        timelineEntries={[
+          {
+            id: "entry-1",
+            kind: "work",
+            createdAt: "2026-03-17T19:12:28.000Z",
+            entry: {
+              id: "work-1",
+              createdAt: "2026-03-17T19:12:28.000Z",
+              label: "Ran command",
+              tone: "tool",
+              itemType: "command_execution",
+              command: "bun run lint",
+              outputPreview: {
+                lines: ["line one", "line two", "line three", "line four"],
+                stream: "stdout",
+                truncated: true,
+              },
+            },
+          },
+        ]}
+      />,
+    );
+
+    expect(markup).toContain("Ran command");
+    expect(markup).toContain("bun run lint");
+    expect(markup).toContain("line one");
+    expect(markup).toContain("line four");
+    expect(markup).toContain("whitespace-pre-wrap");
+    expect(markup).toContain("wrap-break-word");
+  });
+
+  it("renders stderr terminal previews with a subtle stream label", async () => {
+    const { MessagesTimeline } = await import("./MessagesTimeline");
+    const markup = renderToStaticMarkup(
+      <MessagesTimeline
+        {...buildProps()}
+        timelineEntries={[
+          {
+            id: "entry-1",
+            kind: "work",
+            createdAt: "2026-03-17T19:12:28.000Z",
+            entry: {
+              id: "work-1",
+              createdAt: "2026-03-17T19:12:28.000Z",
+              label: "Ran command",
+              tone: "tool",
+              itemType: "command_execution",
+              command: "bun run build",
+              outputPreview: {
+                lines: ["TypeError: nope"],
+                stream: "stderr",
+                truncated: false,
+              },
+            },
+          },
+        ]}
+      />,
+    );
+
+    expect(markup).toContain("stderr");
+    expect(markup).toContain("TypeError: nope");
+    expect(markup).toContain("border-destructive");
+  });
+
+  it("does not render terminal output preview styling for non-command tools", async () => {
+    const { MessagesTimeline } = await import("./MessagesTimeline");
+    const markup = renderToStaticMarkup(
+      <MessagesTimeline
+        {...buildProps()}
+        timelineEntries={[
+          {
+            id: "entry-1",
+            kind: "work",
+            createdAt: "2026-03-17T19:12:28.000Z",
+            entry: {
+              id: "work-1",
+              createdAt: "2026-03-17T19:12:28.000Z",
+              label: "Read file",
+              tone: "tool",
+              itemType: "dynamic_tool_call",
+              outputPreview: {
+                lines: ["should not render"],
+                stream: "stdout",
+                truncated: false,
+              },
+            },
+          },
+        ]}
+      />,
+    );
+
+    expect(markup).toContain("Read file");
+    expect(markup).not.toContain("should not render");
+  });
+
   it("does not render assistant changed files inside message content", async () => {
     const { MessagesTimeline } = await import("./MessagesTimeline");
     const assistantMessageId = MessageId.make("message-assistant-1");

@@ -1099,6 +1099,141 @@ describe("deriveWorkLogEntries", () => {
     expect(entry?.command).toBeUndefined();
   });
 
+  it("derives terminal output preview from normalized command payloads", () => {
+    const activities: OrchestrationThreadActivity[] = [
+      makeActivity({
+        id: "command-preview-normalized",
+        kind: "tool.updated",
+        summary: "Terminal output",
+        payload: {
+          itemType: "command_execution",
+          data: {
+            toolCallId: "tool-command-preview",
+            outputPreview: {
+              lines: ["one", "two", "three", "four"],
+              stream: "stdout",
+              truncated: false,
+            },
+          },
+        },
+      }),
+    ];
+
+    const [entry] = deriveWorkLogEntries(activities, undefined);
+    expect(entry?.outputPreview).toEqual({
+      lines: ["one", "two", "three", "four"],
+      stream: "stdout",
+      truncated: false,
+    });
+  });
+
+  it("derives fallback terminal output preview from raw stdout", () => {
+    const activities: OrchestrationThreadActivity[] = [
+      makeActivity({
+        id: "command-preview-stdout",
+        kind: "tool.completed",
+        summary: "Ran command",
+        payload: {
+          itemType: "command_execution",
+          data: {
+            rawOutput: {
+              stdout: "\nline1\nline2\nline3\nline4\nline5\n",
+              stderr: "",
+              exitCode: 0,
+            },
+          },
+        },
+      }),
+    ];
+
+    const [entry] = deriveWorkLogEntries(activities, undefined);
+    expect(entry?.outputPreview).toEqual({
+      lines: ["line2", "line3", "line4", "line5"],
+      stream: "stdout",
+      truncated: true,
+    });
+  });
+
+  it("prefers stderr preview for failed command raw output", () => {
+    const activities: OrchestrationThreadActivity[] = [
+      makeActivity({
+        id: "command-preview-stderr",
+        kind: "tool.completed",
+        summary: "Ran command",
+        payload: {
+          itemType: "command_execution",
+          status: "failed",
+          data: {
+            rawOutput: {
+              stdout: "success-looking output\n",
+              stderr: "actual failure\n",
+              exitCode: 1,
+            },
+          },
+        },
+      }),
+    ];
+
+    const [entry] = deriveWorkLogEntries(activities, undefined);
+    expect(entry?.outputPreview).toEqual({
+      lines: ["actual failure"],
+      stream: "stderr",
+      truncated: false,
+    });
+  });
+
+  it("collapses command lifecycle rows while keeping the latest output preview", () => {
+    const activities: OrchestrationThreadActivity[] = [
+      makeActivity({
+        id: "command-preview-update",
+        createdAt: "2026-02-23T00:00:01.000Z",
+        kind: "tool.updated",
+        summary: "Terminal output",
+        payload: {
+          itemType: "command_execution",
+          data: {
+            toolCallId: "tool-command-collapse-preview",
+            outputPreview: {
+              lines: ["first"],
+              stream: "unknown",
+              truncated: false,
+            },
+          },
+        },
+      }),
+      makeActivity({
+        id: "command-preview-complete",
+        createdAt: "2026-02-23T00:00:02.000Z",
+        kind: "tool.completed",
+        summary: "Ran command",
+        payload: {
+          itemType: "command_execution",
+          data: {
+            toolCallId: "tool-command-collapse-preview",
+            command: "bun run lint",
+            outputPreview: {
+              lines: ["latest"],
+              stream: "stdout",
+              truncated: false,
+            },
+          },
+        },
+      }),
+    ];
+
+    const entries = deriveWorkLogEntries(activities, undefined);
+    expect(entries).toHaveLength(1);
+    expect(entries[0]).toMatchObject({
+      id: "command-preview-complete",
+      command: "bun run lint",
+      outputPreview: {
+        lines: ["latest"],
+        stream: "stdout",
+        truncated: false,
+      },
+    });
+  });
+
   it("collapses legacy completed tool rows that are missing tool metadata", () => {
     const activities: OrchestrationThreadActivity[] = [
       makeActivity({

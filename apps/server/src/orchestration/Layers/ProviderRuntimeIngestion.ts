@@ -46,6 +46,23 @@ const BUFFERED_PROPOSED_PLAN_BY_ID_CACHE_CAPACITY = 10_000;
 const BUFFERED_PROPOSED_PLAN_BY_ID_TTL = Duration.minutes(120);
 const MAX_BUFFERED_ASSISTANT_CHARS = 24_000;
 const STRICT_PROVIDER_LIFECYCLE_GUARD = process.env.T3CODE_STRICT_PROVIDER_LIFECYCLE_GUARD !== "0";
+const TERMINAL_OUTPUT_PREVIEW_LINE_COUNT = 4;
+const TERMINAL_OUTPUT_PREVIEW_LINE_MAX_LENGTH = 240;
+
+type TerminalOutputPreviewStream = "stdout" | "stderr" | "mixed" | "unknown";
+
+interface TerminalOutputPreview {
+  lines: string[];
+  stream: TerminalOutputPreviewStream;
+  truncated: boolean;
+}
+
+interface TerminalOutputPreviewBuffer {
+  lines: string[];
+  pendingLine: string;
+  stream: TerminalOutputPreviewStream;
+  truncated: boolean;
+}
 
 type TurnStartRequestedDomainEvent = Extract<
   OrchestrationEvent,
@@ -79,6 +96,173 @@ function sameId(left: string | null | undefined, right: string | null | undefine
 
 function truncateDetail(value: string, limit = 180): string {
   return value.length > limit ? `${value.slice(0, limit - 3)}...` : value;
+}
+
+function truncateTerminalPreviewLine(value: string): { line: string; truncated: boolean } {
+  if (value.length <= TERMINAL_OUTPUT_PREVIEW_LINE_MAX_LENGTH) {
+    return { line: value, truncated: false };
+  }
+  return {
+    line: `${value.slice(0, TERMINAL_OUTPUT_PREVIEW_LINE_MAX_LENGTH - 1)}…`,
+    truncated: true,
+  };
+}
+
+function normalizeTerminalPreviewLine(value: string): { line: string | null; truncated: boolean } {
+  const trimmed = value.trim();
+  if (trimmed.length === 0) {
+    return { line: null, truncated: false };
+  }
+  const truncated = truncateTerminalPreviewLine(trimmed);
+  return { line: truncated.line, truncated: truncated.truncated };
+}
+
+function appendTerminalPreviewLine(
+  state: TerminalOutputPreviewBuffer,
+  value: string,
+): TerminalOutputPreviewBuffer {
+  const normalized = normalizeTerminalPreviewLine(value);
+  if (!normalized.line) {
+    return {
+      ...state,
+      truncated: state.truncated || normalized.truncated,
+    };
+  }
+
+  const lines = [...state.lines, normalized.line];
+  const droppedLines = lines.length > TERMINAL_OUTPUT_PREVIEW_LINE_COUNT;
+  return {
+    ...state,
+    lines: droppedLines ? lines.slice(-TERMINAL_OUTPUT_PREVIEW_LINE_COUNT) : lines,
+    truncated: state.truncated || normalized.truncated || droppedLines,
+  };
+}
+
+function appendTerminalOutputPreviewDelta(
+  existing: TerminalOutputPreviewBuffer | undefined,
+  delta: string,
+): TerminalOutputPreviewBuffer {
+  let state: TerminalOutputPreviewBuffer = existing ?? {
+    lines: [],
+    pendingLine: "",
+    stream: "unknown",
+    truncated: false,
+  };
+  const combined = `${state.pendingLine}${delta}`;
+  const parts = combined.split(/\r\n|\n|\r/u);
+  const endsWithNewline = /\r\n$|\n$|\r$/u.test(combined);
+  const completeParts = endsWithNewline ? parts : parts.slice(0, -1);
+  const pendingPart = endsWithNewline ? "" : (parts.at(-1) ?? "");
+
+  for (const part of completeParts) {
+    state = appendTerminalPreviewLine(state, part);
+  }
+
+  const pending = truncateTerminalPreviewLine(pendingPart);
+  return {
+    ...state,
+    pendingLine: pending.line,
+    truncated: state.truncated || pending.truncated,
+  };
+}
+
+function terminalOutputPreviewFromBuffer(
+  state: TerminalOutputPreviewBuffer | undefined,
+): TerminalOutputPreview | undefined {
+  if (!state) {
+    return undefined;
+  }
+  const pending = normalizeTerminalPreviewLine(state.pendingLine);
+  const lines = pending.line ? [...state.lines, pending.line] : state.lines;
+  const droppedLines = lines.length > TERMINAL_OUTPUT_PREVIEW_LINE_COUNT;
+  const previewLines = droppedLines ? lines.slice(-TERMINAL_OUTPUT_PREVIEW_LINE_COUNT) : lines;
+  if (previewLines.length === 0) {
+    return undefined;
+  }
+  return {
+    lines: previewLines,
+    stream: state.stream,
+    truncated: state.truncated || pending.truncated || droppedLines,
+  };
+}
+
+function asRecord(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === "object" ? (value as Record<string, unknown>) : null;
+}
+
+function asTrimmedString(value: unknown): string | null {
+  if (typeof value !== "string") {
+    return null;
+  }
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : null;
+}
+
+function asNumber(value: unknown): number | null {
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+function isFailedRawOutput(rawOutput: Record<string, unknown>): boolean {
+  const status = asTrimmedString(rawOutput.status)?.toLowerCase();
+  const exitCode = asNumber(rawOutput.exitCode);
+  return (
+    (typeof exitCode === "number" && exitCode !== 0) || status === "failed" || status === "error"
+  );
+}
+
+function terminalOutputPreviewFromText(
+  text: string,
+  stream: TerminalOutputPreviewStream,
+): TerminalOutputPreview | undefined {
+  const buffer = appendTerminalOutputPreviewDelta(undefined, text);
+  const preview = terminalOutputPreviewFromBuffer({ ...buffer, stream });
+  return preview;
+}
+
+function terminalOutputPreviewFromRawOutput(data: unknown): TerminalOutputPreview | undefined {
+  const rawOutput = asRecord(asRecord(data)?.rawOutput);
+  if (!rawOutput) {
+    return undefined;
+  }
+
+  const stdout = asTrimmedString(rawOutput.stdout);
+  const stderr = asTrimmedString(rawOutput.stderr);
+  if (stderr && (isFailedRawOutput(rawOutput) || !stdout)) {
+    return terminalOutputPreviewFromText(stderr, "stderr");
+  }
+  if (stdout && stderr) {
+    return terminalOutputPreviewFromText(`${stdout}\n${stderr}`, "mixed");
+  }
+  if (stdout) {
+    return terminalOutputPreviewFromText(stdout, "stdout");
+  }
+  return undefined;
+}
+
+function normalizedToolLifecycleData(
+  event: ProviderRuntimeEvent,
+  outputPreview: TerminalOutputPreview | undefined,
+): unknown {
+  const data = asRecord(
+    "payload" in event && "data" in event.payload ? event.payload.data : undefined,
+  );
+  if (!data && !outputPreview && !event.itemId) {
+    return "payload" in event && "data" in event.payload ? event.payload.data : undefined;
+  }
+  const nextData: Record<string, unknown> = data ? { ...data } : {};
+  if (
+    event.itemId &&
+    event.type !== "content.delta" &&
+    "itemType" in event.payload &&
+    event.payload.itemType === "command_execution" &&
+    typeof nextData.toolCallId !== "string"
+  ) {
+    nextData.toolCallId = event.itemId;
+  }
+  if (outputPreview) {
+    nextData.outputPreview = outputPreview;
+  }
+  return nextData;
 }
 
 function normalizeProposedPlanMarkdown(planMarkdown: string | undefined): string | undefined {
@@ -451,6 +635,11 @@ function runtimeEventToActivities(
       if (!isToolLifecycleItemType(event.payload.itemType)) {
         return [];
       }
+      const outputPreview =
+        event.payload.itemType === "command_execution"
+          ? terminalOutputPreviewFromRawOutput(event.payload.data)
+          : undefined;
+      const data = normalizedToolLifecycleData(event, outputPreview);
       return [
         {
           id: event.eventId,
@@ -462,7 +651,7 @@ function runtimeEventToActivities(
             itemType: event.payload.itemType,
             ...(event.payload.status ? { status: event.payload.status } : {}),
             ...(event.payload.detail ? { detail: truncateDetail(event.payload.detail) } : {}),
-            ...(event.payload.data !== undefined ? { data: event.payload.data } : {}),
+            ...(data !== undefined ? { data } : {}),
           },
           turnId: toTurnId(event.turnId) ?? null,
           ...maybeSequence,
@@ -474,6 +663,11 @@ function runtimeEventToActivities(
       if (!isToolLifecycleItemType(event.payload.itemType)) {
         return [];
       }
+      const outputPreview =
+        event.payload.itemType === "command_execution"
+          ? terminalOutputPreviewFromRawOutput(event.payload.data)
+          : undefined;
+      const data = normalizedToolLifecycleData(event, outputPreview);
       return [
         {
           id: event.eventId,
@@ -484,7 +678,7 @@ function runtimeEventToActivities(
           payload: {
             itemType: event.payload.itemType,
             ...(event.payload.detail ? { detail: truncateDetail(event.payload.detail) } : {}),
-            ...(event.payload.data !== undefined ? { data: event.payload.data } : {}),
+            ...(data !== undefined ? { data } : {}),
           },
           turnId: toTurnId(event.turnId) ?? null,
           ...maybeSequence,
@@ -552,6 +746,8 @@ const make = Effect.gen(function* () {
     timeToLive: BUFFERED_PROPOSED_PLAN_BY_ID_TTL,
     lookup: () => Effect.succeed({ text: "", createdAt: "" }),
   });
+
+  const commandOutputPreviewByItemKey = new Map<string, TerminalOutputPreviewBuffer>();
 
   const isGitRepoForThread = Effect.fn("isGitRepoForThread")(function* (threadId: ThreadId) {
     const readModel = yield* orchestrationEngine.getReadModel();
@@ -745,6 +941,52 @@ const make = Effect.gen(function* () {
 
   const clearBufferedProposedPlan = (planId: string) =>
     Cache.invalidate(bufferedProposedPlanById, planId);
+
+  const commandOutputPreviewKey = (
+    threadId: ThreadId,
+    turnId: TurnId | undefined,
+    itemId: string,
+  ) => `${threadId}:${turnId ?? ""}:${itemId}`;
+
+  const appendCommandOutputPreview = (input: {
+    threadId: ThreadId;
+    turnId?: TurnId;
+    itemId: string;
+    delta: string;
+  }) =>
+    Effect.sync(() => {
+      const key = commandOutputPreviewKey(input.threadId, input.turnId, input.itemId);
+      const next = appendTerminalOutputPreviewDelta(
+        commandOutputPreviewByItemKey.get(key),
+        input.delta,
+      );
+      commandOutputPreviewByItemKey.set(key, next);
+      return terminalOutputPreviewFromBuffer(next);
+    });
+
+  const getCommandOutputPreview = (input: {
+    threadId: ThreadId;
+    turnId?: TurnId;
+    itemId: string;
+  }) =>
+    Effect.sync(() =>
+      terminalOutputPreviewFromBuffer(
+        commandOutputPreviewByItemKey.get(
+          commandOutputPreviewKey(input.threadId, input.turnId, input.itemId),
+        ),
+      ),
+    );
+
+  const clearCommandOutputPreview = (input: {
+    threadId: ThreadId;
+    turnId?: TurnId;
+    itemId: string;
+  }) =>
+    Effect.sync(() => {
+      commandOutputPreviewByItemKey.delete(
+        commandOutputPreviewKey(input.threadId, input.turnId, input.itemId),
+      );
+    });
 
   const clearAssistantMessageState = (messageId: MessageId) =>
     clearBufferedAssistantText(messageId);
@@ -978,6 +1220,7 @@ const make = Effect.gen(function* () {
     Effect.gen(function* () {
       const prefix = `${threadId}:`;
       const proposedPlanPrefix = `plan:${threadId}:`;
+      const commandOutputPreviewPrefix = `${threadId}:`;
       const turnKeys = Array.from(yield* Cache.keys(turnMessageIdsByTurnKey));
       const assistantSegmentKeys = Array.from(yield* Cache.keys(assistantSegmentStateByTurnKey));
       const proposedPlanKeys = Array.from(yield* Cache.keys(bufferedProposedPlanById));
@@ -1016,6 +1259,11 @@ const make = Effect.gen(function* () {
             : Effect.void,
         { concurrency: 1 },
       ).pipe(Effect.asVoid);
+      for (const key of commandOutputPreviewByItemKey.keys()) {
+        if (key.startsWith(commandOutputPreviewPrefix)) {
+          commandOutputPreviewByItemKey.delete(key);
+        }
+      }
     });
 
   const getSourceProposedPlanReferenceForPendingTurnStart = Effect.fn(
@@ -1228,6 +1476,10 @@ const make = Effect.gen(function* () {
         event.type === "content.delta" && event.payload.streamKind === "assistant_text"
           ? event.payload.delta
           : undefined;
+      const commandOutputDelta =
+        event.type === "content.delta" && event.payload.streamKind === "command_output"
+          ? event.payload.delta
+          : undefined;
       const proposedPlanDelta =
         event.type === "turn.proposed.delta" ? event.payload.delta : undefined;
 
@@ -1268,6 +1520,45 @@ const make = Effect.gen(function* () {
             delta: assistantDelta,
             ...(turnId ? { turnId } : {}),
             createdAt: now,
+          });
+        }
+      }
+
+      if (commandOutputDelta && commandOutputDelta.length > 0 && event.itemId) {
+        const turnId = toTurnId(event.turnId);
+        const eventWithSequence = event as ProviderRuntimeEvent & { sessionSequence?: number };
+        const maybeCommandOutputSequence =
+          eventWithSequence.sessionSequence !== undefined
+            ? { sequence: eventWithSequence.sessionSequence }
+            : {};
+        const outputPreview = yield* appendCommandOutputPreview({
+          threadId: thread.id,
+          ...(turnId ? { turnId } : {}),
+          itemId: event.itemId,
+          delta: commandOutputDelta,
+        });
+        if (outputPreview) {
+          yield* orchestrationEngine.dispatch({
+            type: "thread.activity.append",
+            commandId: providerCommandId(event, "command-output-preview-update"),
+            threadId: thread.id,
+            activity: {
+              id: event.eventId,
+              createdAt: event.createdAt,
+              tone: "tool",
+              kind: "tool.updated",
+              summary: "Terminal output",
+              payload: {
+                itemType: "command_execution",
+                data: {
+                  toolCallId: event.itemId,
+                  outputPreview,
+                },
+              },
+              turnId: turnId ?? null,
+              ...maybeCommandOutputSequence,
+            },
+            createdAt: event.createdAt,
           });
         }
       }
@@ -1515,7 +1806,37 @@ const make = Effect.gen(function* () {
         }
       }
 
-      const activities = runtimeEventToActivities(event);
+      const eventForActivities =
+        event.type === "item.completed" && event.payload.itemType === "command_execution"
+          ? yield* Effect.gen(function* () {
+              if (!event.itemId) {
+                return event;
+              }
+              const turnId = toTurnId(event.turnId);
+              const outputPreview = yield* getCommandOutputPreview({
+                threadId: thread.id,
+                ...(turnId ? { turnId } : {}),
+                itemId: event.itemId,
+              });
+              yield* clearCommandOutputPreview({
+                threadId: thread.id,
+                ...(turnId ? { turnId } : {}),
+                itemId: event.itemId,
+              });
+              if (!outputPreview) {
+                return event;
+              }
+              return {
+                ...event,
+                payload: {
+                  ...event.payload,
+                  data: normalizedToolLifecycleData(event, outputPreview),
+                },
+              } satisfies ProviderRuntimeEvent;
+            })
+          : event;
+
+      const activities = runtimeEventToActivities(eventForActivities);
       yield* Effect.forEach(activities, (activity) =>
         orchestrationEngine.dispatch({
           type: "thread.activity.append",

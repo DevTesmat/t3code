@@ -836,6 +836,189 @@ describe("ProviderRuntimeIngestion", () => {
     expect(payload?.detail).toBe("bun run lint");
   });
 
+  it("projects command output deltas into a live terminal output preview", async () => {
+    const harness = await createHarness();
+    const now = new Date().toISOString();
+
+    for (const [index, delta] of ["line1\n", "line2\nline3\n", "line4\nline5\n"].entries()) {
+      harness.emit({
+        type: "content.delta",
+        eventId: asEventId(`evt-command-output-${index}`),
+        provider: ProviderDriverKind.make("codex"),
+        createdAt: now,
+        threadId: asThreadId("thread-1"),
+        turnId: asTurnId("turn-output-preview"),
+        itemId: asItemId("item-output-preview"),
+        payload: {
+          streamKind: "command_output",
+          delta,
+        },
+      });
+    }
+
+    const thread = await waitForThread(harness.engine, (entry) =>
+      entry.activities.some(
+        (activity: ProviderRuntimeTestActivity) => activity.id === "evt-command-output-2",
+      ),
+    );
+    const activity = thread.activities.find(
+      (entry: ProviderRuntimeTestActivity) => entry.id === "evt-command-output-2",
+    );
+    const data =
+      activity?.payload &&
+      typeof activity.payload === "object" &&
+      "data" in activity.payload &&
+      activity.payload.data &&
+      typeof activity.payload.data === "object"
+        ? (activity.payload.data as Record<string, unknown>)
+        : undefined;
+    const outputPreview = data?.outputPreview as Record<string, unknown> | undefined;
+
+    expect(activity?.kind).toBe("tool.updated");
+    expect(data?.toolCallId).toBe("item-output-preview");
+    expect(outputPreview?.lines).toEqual(["line2", "line3", "line4", "line5"]);
+    expect(outputPreview?.stream).toBe("unknown");
+    expect(outputPreview?.truncated).toBe(true);
+  });
+
+  it("preserves terminal output line continuity across command delta chunks", async () => {
+    const harness = await createHarness();
+    const now = new Date().toISOString();
+
+    harness.emit({
+      type: "content.delta",
+      eventId: asEventId("evt-command-output-partial-1"),
+      provider: ProviderDriverKind.make("codex"),
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("turn-output-partial"),
+      itemId: asItemId("item-output-partial"),
+      payload: {
+        streamKind: "command_output",
+        delta: "part",
+      },
+    });
+    harness.emit({
+      type: "content.delta",
+      eventId: asEventId("evt-command-output-partial-2"),
+      provider: ProviderDriverKind.make("codex"),
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("turn-output-partial"),
+      itemId: asItemId("item-output-partial"),
+      payload: {
+        streamKind: "command_output",
+        delta: "ial\nnext",
+      },
+    });
+
+    const thread = await waitForThread(harness.engine, (entry) =>
+      entry.activities.some(
+        (activity: ProviderRuntimeTestActivity) => activity.id === "evt-command-output-partial-2",
+      ),
+    );
+    const activity = thread.activities.find(
+      (entry: ProviderRuntimeTestActivity) => entry.id === "evt-command-output-partial-2",
+    );
+    const data =
+      activity?.payload &&
+      typeof activity.payload === "object" &&
+      "data" in activity.payload &&
+      activity.payload.data &&
+      typeof activity.payload.data === "object"
+        ? (activity.payload.data as Record<string, unknown>)
+        : undefined;
+    const outputPreview = data?.outputPreview as Record<string, unknown> | undefined;
+
+    expect(outputPreview?.lines).toEqual(["partial", "next"]);
+  });
+
+  it("keeps the final terminal output preview on completed command activities", async () => {
+    const harness = await createHarness();
+    const now = new Date().toISOString();
+
+    harness.emit({
+      type: "content.delta",
+      eventId: asEventId("evt-command-output-final-delta"),
+      provider: ProviderDriverKind.make("codex"),
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("turn-output-final"),
+      itemId: asItemId("item-output-final"),
+      payload: {
+        streamKind: "command_output",
+        delta: "build started\nbuild complete",
+      },
+    });
+    harness.emit({
+      type: "item.completed",
+      eventId: asEventId("evt-command-output-final-completed"),
+      provider: ProviderDriverKind.make("codex"),
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("turn-output-final"),
+      itemId: asItemId("item-output-final"),
+      payload: {
+        itemType: "command_execution",
+        status: "completed",
+        title: "Ran command",
+        data: {
+          command: "bun run build",
+        },
+      },
+    });
+
+    const thread = await waitForThread(harness.engine, (entry) =>
+      entry.activities.some(
+        (activity: ProviderRuntimeTestActivity) =>
+          activity.id === "evt-command-output-final-completed",
+      ),
+    );
+    const activity = thread.activities.find(
+      (entry: ProviderRuntimeTestActivity) => entry.id === "evt-command-output-final-completed",
+    );
+    const data =
+      activity?.payload &&
+      typeof activity.payload === "object" &&
+      "data" in activity.payload &&
+      activity.payload.data &&
+      typeof activity.payload.data === "object"
+        ? (activity.payload.data as Record<string, unknown>)
+        : undefined;
+    const outputPreview = data?.outputPreview as Record<string, unknown> | undefined;
+
+    expect(activity?.kind).toBe("tool.completed");
+    expect(outputPreview?.lines).toEqual(["build started", "build complete"]);
+  });
+
+  it("does not create standalone command output preview rows without an item id", async () => {
+    const harness = await createHarness();
+    const now = new Date().toISOString();
+
+    harness.emit({
+      type: "content.delta",
+      eventId: asEventId("evt-command-output-missing-item"),
+      provider: ProviderDriverKind.make("codex"),
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("turn-output-missing-item"),
+      payload: {
+        streamKind: "command_output",
+        delta: "orphan output\n",
+      },
+    });
+    await harness.drain();
+
+    const readModel = await Effect.runPromise(harness.engine.getReadModel());
+    const thread = readModel.threads.find((entry) => entry.id === "thread-1");
+    expect(
+      thread?.activities.some(
+        (activity: ProviderRuntimeTestActivity) =>
+          activity.id === "evt-command-output-missing-item",
+      ),
+    ).toBe(false);
+  });
+
   it("uses structured read-file paths when available", async () => {
     const harness = await createHarness();
     const now = new Date().toISOString();

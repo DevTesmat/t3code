@@ -784,6 +784,20 @@ function toolWorkEntryHeading(workEntry: TimelineWorkEntry): string {
   return capitalizePhrase(normalizeCompactToolLabel(workEntry.toolTitle));
 }
 
+function commandOutputPreviewLabel(workEntry: TimelineWorkEntry): string | null {
+  switch (workEntry.outputPreview?.stream) {
+    case "stderr":
+      return "stderr";
+    case "mixed":
+      return "mixed";
+    case "unknown":
+      return "output";
+    case "stdout":
+    default:
+      return null;
+  }
+}
+
 const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
   workEntry: TimelineWorkEntry;
   workspaceRoot: string | undefined;
@@ -803,6 +817,12 @@ const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
   const displayText = preview ? `${heading} - ${preview}` : heading;
   const hasChangedFiles = (workEntry.changedFiles?.length ?? 0) > 0;
   const previewIsChangedFiles = hasChangedFiles && !workEntry.command && !workEntry.detail;
+  const outputPreview =
+    (workEntry.itemType === "command_execution" || workEntry.command) &&
+    (workEntry.outputPreview?.lines.length ?? 0) > 0
+      ? workEntry.outputPreview
+      : null;
+  const outputPreviewLabel = commandOutputPreviewLabel(workEntry);
 
   return (
     <div className="rounded-lg px-1 py-1">
@@ -899,6 +919,34 @@ const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
               +{(workEntry.changedFiles?.length ?? 0) - 4}
             </span>
           )}
+        </div>
+      )}
+      {outputPreview && (
+        <div
+          className={cn(
+            "mt-1 ml-7 max-w-[calc(100%-1.75rem)] overflow-hidden rounded-md border px-2 py-1 font-mono text-[10.5px] leading-4 whitespace-pre-wrap wrap-break-word",
+            outputPreview.stream === "stderr"
+              ? "border-destructive/25 bg-destructive/5 text-destructive/85"
+              : "border-border/50 bg-background/55 text-muted-foreground/80",
+          )}
+        >
+          {outputPreviewLabel && (
+            <span
+              className={cn(
+                "mb-0.5 block text-[9px] leading-3 uppercase tracking-[0.12em]",
+                outputPreview.stream === "stderr"
+                  ? "text-destructive/65"
+                  : "text-muted-foreground/50",
+              )}
+            >
+              {outputPreviewLabel}
+            </span>
+          )}
+          {outputPreview.lines.slice(0, 4).map((line, index) => (
+            <div key={`${workEntry.id}:terminal-output:${index}`} className="min-w-0 max-w-full">
+              {line}
+            </div>
+          ))}
         </div>
       )}
     </div>

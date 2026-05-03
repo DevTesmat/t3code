@@ -239,7 +239,10 @@ function isRowUnchanged(a: MessagesTimelineRow, b: MessagesTimelineRow): boolean
       return a.proposedPlan === (b as typeof a).proposedPlan;
 
     case "work":
-      return a.groupedEntries === (b as typeof a).groupedEntries;
+      return (
+        a.createdAt === (b as typeof a).createdAt &&
+        areWorkEntryGroupsUnchanged(a.groupedEntries, (b as typeof a).groupedEntries)
+      );
 
     case "message": {
       const bm = b as typeof a;
@@ -253,4 +256,55 @@ function isRowUnchanged(a: MessagesTimelineRow, b: MessagesTimelineRow): boolean
       );
     }
   }
+}
+
+function areWorkEntryGroupsUnchanged(
+  a: ReadonlyArray<WorkLogEntry>,
+  b: ReadonlyArray<WorkLogEntry>,
+): boolean {
+  if (a === b) return true;
+  if (a.length !== b.length) return false;
+  return a.every((entry, index) => {
+    const other = b[index];
+    return other !== undefined && areWorkEntriesUnchanged(entry, other);
+  });
+}
+
+function areOptionalStringArraysUnchanged(
+  a: ReadonlyArray<string> | undefined,
+  b: ReadonlyArray<string> | undefined,
+): boolean {
+  if (a === b) return true;
+  if (!a || !b || a.length !== b.length) return false;
+  return a.every((entry, index) => entry === b[index]);
+}
+
+function areOutputPreviewsUnchanged(
+  a: WorkLogEntry["outputPreview"],
+  b: WorkLogEntry["outputPreview"],
+): boolean {
+  if (a === b) return true;
+  if (!a || !b) return false;
+  return (
+    a.stream === b.stream &&
+    a.truncated === b.truncated &&
+    areOptionalStringArraysUnchanged(a.lines, b.lines)
+  );
+}
+
+function areWorkEntriesUnchanged(a: WorkLogEntry, b: WorkLogEntry): boolean {
+  return (
+    a.id === b.id &&
+    a.createdAt === b.createdAt &&
+    a.label === b.label &&
+    a.detail === b.detail &&
+    a.command === b.command &&
+    a.rawCommand === b.rawCommand &&
+    a.tone === b.tone &&
+    a.toolTitle === b.toolTitle &&
+    a.itemType === b.itemType &&
+    a.requestKind === b.requestKind &&
+    areOptionalStringArraysUnchanged(a.changedFiles, b.changedFiles) &&
+    areOutputPreviewsUnchanged(a.outputPreview, b.outputPreview)
+  );
 }

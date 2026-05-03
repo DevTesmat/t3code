@@ -54,6 +54,11 @@ export interface WorkLogEntry {
   detail?: string;
   command?: string;
   rawCommand?: string;
+  outputPreview?: {
+    lines: string[];
+    stream: "stdout" | "stderr" | "mixed" | "unknown";
+    truncated: boolean;
+  };
   changedFiles?: ReadonlyArray<string>;
   tone: "thinking" | "tool" | "info" | "error";
   toolTitle?: string;
@@ -66,6 +71,8 @@ interface DerivedWorkLogEntry extends WorkLogEntry {
   collapseKey?: string;
   toolCallId?: string;
 }
+
+type TerminalOutputPreview = NonNullable<WorkLogEntry["outputPreview"]>;
 
 export interface PendingApproval {
   requestId: ApprovalRequestId;
@@ -177,6 +184,8 @@ export function formatThreadWorkDuration(durationMs: number): string {
 
 type LatestTurnTiming = Pick<OrchestrationLatestTurn, "turnId" | "startedAt" | "completedAt">;
 type SessionActivityState = Pick<ThreadSession, "orchestrationStatus" | "activeTurnId">;
+const TERMINAL_OUTPUT_PREVIEW_LINE_COUNT = 4;
+const TERMINAL_OUTPUT_PREVIEW_LINE_MAX_LENGTH = 240;
 
 export function isLatestTurnSettled(
   latestTurn: LatestTurnTiming | null,
@@ -579,6 +588,8 @@ function toDerivedWorkLogEntry(activity: OrchestrationThreadActivity): DerivedWo
   const commandPreview = extractToolCommand(payload);
   const changedFiles = extractChangedFiles(payload);
   const title = extractToolTitle(payload);
+  const itemType = extractWorkLogItemType(payload);
+  const outputPreview = extractCommandOutputPreview(payload, itemType);
   const isTaskActivity = activity.kind === "task.progress" || activity.kind === "task.completed";
   const taskSummary =
     isTaskActivity && typeof payload?.summary === "string" && payload.summary.length > 0
@@ -613,7 +624,6 @@ function toDerivedWorkLogEntry(activity: OrchestrationThreadActivity): DerivedWo
           : activity.tone,
     activityKind: activity.kind,
   };
-  const itemType = extractWorkLogItemType(payload);
   const requestKind = extractWorkLogRequestKind(payload);
   if (detail) {
     entry.detail = detail;
@@ -623,6 +633,9 @@ function toDerivedWorkLogEntry(activity: OrchestrationThreadActivity): DerivedWo
   }
   if (commandPreview.rawCommand) {
     entry.rawCommand = commandPreview.rawCommand;
+  }
+  if (outputPreview) {
+    entry.outputPreview = outputPreview;
   }
   if (changedFiles.length > 0) {
     entry.changedFiles = changedFiles;
@@ -694,6 +707,7 @@ function mergeDerivedWorkLogEntries(
   const detail = next.detail ?? previous.detail;
   const command = next.command ?? previous.command;
   const rawCommand = next.rawCommand ?? previous.rawCommand;
+  const outputPreview = next.outputPreview ?? previous.outputPreview;
   const toolTitle = next.toolTitle ?? previous.toolTitle;
   const itemType = next.itemType ?? previous.itemType;
   const requestKind = next.requestKind ?? previous.requestKind;
@@ -705,6 +719,7 @@ function mergeDerivedWorkLogEntries(
     ...(detail ? { detail } : {}),
     ...(command ? { command } : {}),
     ...(rawCommand ? { rawCommand } : {}),
+    ...(outputPreview ? { outputPreview } : {}),
     ...(changedFiles.length > 0 ? { changedFiles } : {}),
     ...(toolTitle ? { toolTitle } : {}),
     ...(itemType ? { itemType } : {}),
@@ -771,6 +786,138 @@ function asTrimmedString(value: unknown): string | null {
 
 function asNumber(value: unknown): number | null {
   return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+function isTerminalOutputPreviewStream(value: unknown): value is TerminalOutputPreview["stream"] {
+  return value === "stdout" || value === "stderr" || value === "mixed" || value === "unknown";
+}
+
+function normalizeTerminalOutputPreviewLine(value: string): {
+  line: string | null;
+  truncated: boolean;
+} {
+  const trimmed = value.trim();
+  if (trimmed.length === 0) {
+    return { line: null, truncated: false };
+  }
+  if (trimmed.length <= TERMINAL_OUTPUT_PREVIEW_LINE_MAX_LENGTH) {
+    return { line: trimmed, truncated: false };
+  }
+  return {
+    line: `${trimmed.slice(0, TERMINAL_OUTPUT_PREVIEW_LINE_MAX_LENGTH - 1)}…`,
+    truncated: true,
+  };
+}
+
+function outputPreviewFromText(
+  text: string,
+  stream: TerminalOutputPreview["stream"],
+): TerminalOutputPreview | null {
+  let truncated = false;
+  const lines = text
+    .split(/\r\n|\n|\r/u)
+    .map((line) => {
+      const normalized = normalizeTerminalOutputPreviewLine(line);
+      truncated = truncated || normalized.truncated;
+      return normalized.line;
+    })
+    .filter((line): line is string => line !== null);
+  if (lines.length === 0) {
+    return null;
+  }
+  const droppedLines = lines.length > TERMINAL_OUTPUT_PREVIEW_LINE_COUNT;
+  return {
+    lines: droppedLines ? lines.slice(-TERMINAL_OUTPUT_PREVIEW_LINE_COUNT) : lines,
+    stream,
+    truncated: truncated || droppedLines,
+  };
+}
+
+function outputPreviewFromNormalizedData(
+  data: Record<string, unknown> | null,
+): TerminalOutputPreview | null {
+  const preview = asRecord(data?.outputPreview);
+  if (!preview || !Array.isArray(preview.lines)) {
+    return null;
+  }
+  const lines: string[] = [];
+  let truncated = preview.truncated === true;
+  for (const entry of preview.lines) {
+    if (typeof entry !== "string") {
+      continue;
+    }
+    const normalized = normalizeTerminalOutputPreviewLine(entry);
+    truncated = truncated || normalized.truncated;
+    if (normalized.line) {
+      lines.push(normalized.line);
+    }
+  }
+  if (lines.length === 0) {
+    return null;
+  }
+  const droppedLines = lines.length > TERMINAL_OUTPUT_PREVIEW_LINE_COUNT;
+  return {
+    lines: droppedLines ? lines.slice(-TERMINAL_OUTPUT_PREVIEW_LINE_COUNT) : lines,
+    stream: isTerminalOutputPreviewStream(preview.stream) ? preview.stream : "unknown",
+    truncated: truncated || droppedLines,
+  };
+}
+
+function rawOutputIndicatesFailure(
+  payload: Record<string, unknown> | null,
+  rawOutput: Record<string, unknown>,
+): boolean {
+  const rawStatus = asTrimmedString(rawOutput.status)?.toLowerCase();
+  const payloadStatus = asTrimmedString(payload?.status)?.toLowerCase();
+  const exitCode = asNumber(rawOutput.exitCode);
+  const detailExitCode =
+    typeof payload?.detail === "string"
+      ? stripTrailingExitCode(payload.detail).exitCode
+      : undefined;
+  return (
+    (exitCode !== null && exitCode !== 0) ||
+    (detailExitCode !== undefined && detailExitCode !== 0) ||
+    rawStatus === "failed" ||
+    rawStatus === "error" ||
+    payloadStatus === "failed" ||
+    payloadStatus === "error"
+  );
+}
+
+function outputPreviewFromRawOutput(
+  payload: Record<string, unknown> | null,
+  data: Record<string, unknown> | null,
+): TerminalOutputPreview | null {
+  const rawOutput = asRecord(data?.rawOutput);
+  if (!rawOutput) {
+    return null;
+  }
+
+  const stdout = asTrimmedString(rawOutput.stdout);
+  const stderr = asTrimmedString(rawOutput.stderr);
+  if (stderr && (rawOutputIndicatesFailure(payload, rawOutput) || !stdout)) {
+    return outputPreviewFromText(stderr, "stderr");
+  }
+  if (stdout && stderr) {
+    return outputPreviewFromText(`${stdout}\n${stderr}`, "mixed");
+  }
+  if (stdout) {
+    return outputPreviewFromText(stdout, "stdout");
+  }
+  return null;
+}
+
+function extractCommandOutputPreview(
+  payload: Record<string, unknown> | null,
+  itemType: WorkLogEntry["itemType"] | undefined,
+): WorkLogEntry["outputPreview"] | undefined {
+  if (itemType !== "command_execution") {
+    return undefined;
+  }
+  const data = asRecord(payload?.data);
+  return (
+    outputPreviewFromNormalizedData(data) ?? outputPreviewFromRawOutput(payload, data) ?? undefined
+  );
 }
 
 function trimMatchingOuterQuotes(value: string): string {
