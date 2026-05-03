@@ -64,6 +64,38 @@ export const ORCHESTRATION_PROJECTOR_NAMES = {
 type ProjectorName =
   (typeof ORCHESTRATION_PROJECTOR_NAMES)[keyof typeof ORCHESTRATION_PROJECTOR_NAMES];
 
+export interface ProjectionBootstrapProgress {
+  readonly projector: ProjectorName;
+  readonly projectedCount: number;
+  readonly maxSequence: number;
+  readonly completed: boolean;
+}
+
+const projectionBootstrapProgressSubscribers = new Set<
+  (progress: ProjectionBootstrapProgress) => Effect.Effect<void>
+>();
+
+export function subscribeProjectionBootstrapProgress(
+  subscriber: (progress: ProjectionBootstrapProgress) => Effect.Effect<void>,
+): Effect.Effect<() => void> {
+  return Effect.sync(() => {
+    projectionBootstrapProgressSubscribers.add(subscriber);
+    return () => {
+      projectionBootstrapProgressSubscribers.delete(subscriber);
+    };
+  });
+}
+
+function publishProjectionBootstrapProgress(
+  progress: ProjectionBootstrapProgress,
+): Effect.Effect<void> {
+  return Effect.forEach(
+    [...projectionBootstrapProgressSubscribers],
+    (subscriber) => subscriber(progress),
+    { concurrency: "unbounded" },
+  ).pipe(Effect.asVoid);
+}
+
 interface ProjectorDefinition {
   readonly name: ProjectorName;
   readonly apply: (
@@ -1413,6 +1445,19 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
       },
     ];
 
+    const applyProjectorForEvent = Effect.fn("applyProjectorForEvent")(function* (
+      projector: ProjectorDefinition,
+      event: OrchestrationEvent,
+      attachmentSideEffects: AttachmentSideEffects,
+    ) {
+      yield* projector.apply(event, attachmentSideEffects);
+      yield* projectionStateRepository.upsert({
+        projector: projector.name,
+        lastAppliedSequence: event.sequence,
+        updatedAt: event.occurredAt,
+      });
+    });
+
     const runProjectorForEvent = Effect.fn("runProjectorForEvent")(function* (
       projector: ProjectorDefinition,
       event: OrchestrationEvent,
@@ -1422,17 +1467,7 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
         prunedThreadRelativePaths: new Map<string, Set<string>>(),
       };
 
-      yield* sql.withTransaction(
-        projector.apply(event, attachmentSideEffects).pipe(
-          Effect.flatMap(() =>
-            projectionStateRepository.upsert({
-              projector: projector.name,
-              lastAppliedSequence: event.sequence,
-              updatedAt: event.occurredAt,
-            }),
-          ),
-        ),
-      );
+      yield* sql.withTransaction(applyProjectorForEvent(projector, event, attachmentSideEffects));
 
       yield* runAttachmentSideEffects(attachmentSideEffects).pipe(
         Effect.catch((cause) =>
@@ -1447,20 +1482,75 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
     });
 
     const bootstrapProjector = (projector: ProjectorDefinition) =>
-      projectionStateRepository
-        .getByProjector({
+      Effect.gen(function* () {
+        const maxRows = yield* sql<{ readonly maxSequence: number | null }>`
+          SELECT MAX(sequence) AS "maxSequence" FROM orchestration_events
+        `;
+        const maxSequence = Number(maxRows[0]?.maxSequence ?? 0);
+        const stateRow = yield* projectionStateRepository.getByProjector({
           projector: projector.name,
-        })
-        .pipe(
-          Effect.flatMap((stateRow) =>
-            Stream.runForEach(
-              eventStore.readFromSequence(
-                Option.isSome(stateRow) ? stateRow.value.lastAppliedSequence : 0,
+        });
+        const fromSequence = Option.isSome(stateRow) ? stateRow.value.lastAppliedSequence : 0;
+        let projectedCount = 0;
+        const attachmentSideEffects: AttachmentSideEffects = {
+          deletedThreadIds: new Set<string>(),
+          prunedThreadRelativePaths: new Map<string, Set<string>>(),
+        };
+        console.info("[projection] bootstrap projector started", {
+          projector: projector.name,
+          fromSequence,
+          maxSequence,
+        });
+        yield* publishProjectionBootstrapProgress({
+          projector: projector.name,
+          projectedCount,
+          maxSequence,
+          completed: false,
+        });
+
+        yield* sql.withTransaction(
+          Stream.runForEach(
+            eventStore.readFromSequence(fromSequence, Number.MAX_SAFE_INTEGER),
+            (event) =>
+              applyProjectorForEvent(projector, event, attachmentSideEffects).pipe(
+                Effect.tap(() =>
+                  Effect.sync(() => {
+                    projectedCount += 1;
+                  }),
+                ),
+                Effect.tap(() =>
+                  projectedCount % 100 === 0 || event.sequence >= maxSequence
+                    ? publishProjectionBootstrapProgress({
+                        projector: projector.name,
+                        projectedCount,
+                        maxSequence,
+                        completed: false,
+                      })
+                    : Effect.void,
+                ),
               ),
-              (event) => runProjectorForEvent(projector, event),
-            ),
           ),
         );
+
+        yield* runAttachmentSideEffects(attachmentSideEffects).pipe(
+          Effect.catch((cause) =>
+            Effect.logWarning("failed to apply projected attachment side-effects", {
+              projector: projector.name,
+              cause,
+            }),
+          ),
+        );
+        console.info("[projection] bootstrap projector completed", {
+          projector: projector.name,
+          projectedCount,
+        });
+        yield* publishProjectionBootstrapProgress({
+          projector: projector.name,
+          projectedCount,
+          maxSequence,
+          completed: true,
+        });
+      });
 
     const projectEvent: OrchestrationProjectionPipelineShape["projectEvent"] = (event) =>
       Effect.forEach(projectors, (projector) => runProjectorForEvent(projector, event), {

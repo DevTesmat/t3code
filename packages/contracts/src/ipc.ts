@@ -30,6 +30,8 @@ import type {
   HistorySyncConfig,
   HistorySyncConnectionTestInput,
   HistorySyncConnectionTestResult,
+  HistorySyncProjectMappingPlan,
+  HistorySyncProjectMappingsApplyInput,
   HistorySyncUpdateConfigInput,
   ServerConfig,
   ServerProviderUpdatedPayload,
@@ -246,9 +248,14 @@ export interface LocalApi {
     updateSettings: (patch: ServerSettingsPatch) => Promise<ServerSettings>;
     getHistorySyncConfig: () => Promise<HistorySyncConfig>;
     updateHistorySyncConfig: (input: HistorySyncUpdateConfigInput) => Promise<HistorySyncConfig>;
+    startHistorySyncInitialImport: () => Promise<HistorySyncConfig>;
     testHistorySyncConnection: (
       input: HistorySyncConnectionTestInput,
     ) => Promise<HistorySyncConnectionTestResult>;
+    getHistorySyncProjectMappings: () => Promise<HistorySyncProjectMappingPlan>;
+    applyHistorySyncProjectMappings: (
+      input: HistorySyncProjectMappingsApplyInput,
+    ) => Promise<HistorySyncProjectMappingPlan>;
   };
 }
 

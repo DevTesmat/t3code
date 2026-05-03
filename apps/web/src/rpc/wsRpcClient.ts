@@ -7,6 +7,7 @@ import {
   type LocalApi,
   ORCHESTRATION_WS_METHODS,
   type HistorySyncConnectionTestInput,
+  type HistorySyncProjectMappingsApplyInput,
   type HistorySyncUpdateConfigInput,
   type ServerSettingsPatch,
   WS_METHODS,
@@ -122,9 +123,18 @@ export interface WsRpcClient {
     readonly updateHistorySyncConfig: (
       input: HistorySyncUpdateConfigInput,
     ) => ReturnType<RpcUnaryMethod<typeof WS_METHODS.serverUpdateHistorySyncConfig>>;
+    readonly startHistorySyncInitialImport: RpcUnaryNoArgMethod<
+      typeof WS_METHODS.serverStartHistorySyncInitialImport
+    >;
     readonly testHistorySyncConnection: (
       input: HistorySyncConnectionTestInput,
     ) => ReturnType<RpcUnaryMethod<typeof WS_METHODS.serverTestHistorySyncConnection>>;
+    readonly getHistorySyncProjectMappings: RpcUnaryNoArgMethod<
+      typeof WS_METHODS.serverGetHistorySyncProjectMappings
+    >;
+    readonly applyHistorySyncProjectMappings: (
+      input: HistorySyncProjectMappingsApplyInput,
+    ) => ReturnType<RpcUnaryMethod<typeof WS_METHODS.serverApplyHistorySyncProjectMappings>>;
     readonly subscribeConfig: RpcStreamMethod<typeof WS_METHODS.subscribeServerConfig>;
     readonly subscribeLifecycle: RpcStreamMethod<typeof WS_METHODS.subscribeServerLifecycle>;
     readonly subscribeAuthAccess: RpcStreamMethod<typeof WS_METHODS.subscribeAuthAccess>;
@@ -234,8 +244,16 @@ export function createWsRpcClient(transport: WsTransport): WsRpcClient {
         transport.request((client) => client[WS_METHODS.serverGetHistorySyncConfig]({})),
       updateHistorySyncConfig: (input) =>
         transport.request((client) => client[WS_METHODS.serverUpdateHistorySyncConfig](input)),
+      startHistorySyncInitialImport: () =>
+        transport.request((client) => client[WS_METHODS.serverStartHistorySyncInitialImport]({})),
       testHistorySyncConnection: (input) =>
         transport.request((client) => client[WS_METHODS.serverTestHistorySyncConnection](input)),
+      getHistorySyncProjectMappings: () =>
+        transport.request((client) => client[WS_METHODS.serverGetHistorySyncProjectMappings]({})),
+      applyHistorySyncProjectMappings: (input) =>
+        transport.request((client) =>
+          client[WS_METHODS.serverApplyHistorySyncProjectMappings](input),
+        ),
       subscribeConfig: (listener, options) =>
         transport.subscribe(
           (client) => client[WS_METHODS.subscribeServerConfig]({}),

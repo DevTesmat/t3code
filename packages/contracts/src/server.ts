@@ -173,6 +173,11 @@ export const HistorySyncStatus = Schema.Union([
     configured: Schema.Boolean,
   }),
   Schema.Struct({
+    state: Schema.Literal("needs-initial-sync"),
+    configured: Schema.Boolean,
+    lastSyncedAt: Schema.NullOr(IsoDateTime),
+  }),
+  Schema.Struct({
     state: Schema.Literal("idle"),
     configured: Schema.Boolean,
     lastSyncedAt: Schema.NullOr(IsoDateTime),
@@ -182,6 +187,14 @@ export const HistorySyncStatus = Schema.Union([
     configured: Schema.Boolean,
     startedAt: IsoDateTime,
     lastSyncedAt: Schema.NullOr(IsoDateTime),
+    progress: Schema.optionalKey(
+      Schema.Struct({
+        phase: TrimmedNonEmptyString,
+        label: TrimmedNonEmptyString,
+        current: NonNegativeInt,
+        total: NonNegativeInt,
+      }),
+    ),
   }),
   Schema.Struct({
     state: Schema.Literal("error"),
@@ -189,8 +202,81 @@ export const HistorySyncStatus = Schema.Union([
     message: TrimmedNonEmptyString,
     lastSyncedAt: Schema.NullOr(IsoDateTime),
   }),
+  Schema.Struct({
+    state: Schema.Literal("needs-project-mapping"),
+    configured: Schema.Boolean,
+    remoteMaxSequence: NonNegativeInt,
+    unresolvedProjectCount: NonNegativeInt,
+    lastSyncedAt: Schema.NullOr(IsoDateTime),
+  }),
 ]);
 export type HistorySyncStatus = typeof HistorySyncStatus.Type;
+
+export const HistorySyncProjectMappingCandidateStatus = Schema.Literals(["unresolved", "mapped"]);
+export type HistorySyncProjectMappingCandidateStatus =
+  typeof HistorySyncProjectMappingCandidateStatus.Type;
+
+export const HistorySyncProjectMappingSuggestionReason = Schema.Literals([
+  "exact-path",
+  "repo-identity",
+  "basename",
+]);
+export type HistorySyncProjectMappingSuggestionReason =
+  typeof HistorySyncProjectMappingSuggestionReason.Type;
+
+export const HistorySyncProjectMappingCandidate = Schema.Struct({
+  remoteProjectId: ProjectId,
+  remoteTitle: TrimmedNonEmptyString,
+  remoteWorkspaceRoot: TrimmedNonEmptyString,
+  threadCount: NonNegativeInt,
+  suggestedLocalProjectId: Schema.optionalKey(ProjectId),
+  suggestedLocalWorkspaceRoot: Schema.optionalKey(TrimmedNonEmptyString),
+  suggestionReason: Schema.optionalKey(HistorySyncProjectMappingSuggestionReason),
+  status: HistorySyncProjectMappingCandidateStatus,
+});
+export type HistorySyncProjectMappingCandidate = typeof HistorySyncProjectMappingCandidate.Type;
+
+export const HistorySyncProjectMappingLocalProject = Schema.Struct({
+  projectId: ProjectId,
+  title: TrimmedNonEmptyString,
+  workspaceRoot: TrimmedNonEmptyString,
+});
+export type HistorySyncProjectMappingLocalProject =
+  typeof HistorySyncProjectMappingLocalProject.Type;
+
+export const HistorySyncProjectMappingAction = Schema.Union([
+  Schema.Struct({
+    remoteProjectId: ProjectId,
+    action: Schema.Literal("map-existing"),
+    localProjectId: ProjectId,
+  }),
+  Schema.Struct({
+    remoteProjectId: ProjectId,
+    action: Schema.Literal("map-folder"),
+    workspaceRoot: TrimmedNonEmptyString,
+    title: Schema.optionalKey(TrimmedNonEmptyString),
+    createIfMissing: Schema.optionalKey(Schema.Boolean),
+  }),
+  Schema.Struct({
+    remoteProjectId: ProjectId,
+    action: Schema.Literal("skip"),
+  }),
+]);
+export type HistorySyncProjectMappingAction = typeof HistorySyncProjectMappingAction.Type;
+
+export const HistorySyncProjectMappingPlan = Schema.Struct({
+  syncId: TrimmedNonEmptyString,
+  remoteMaxSequence: NonNegativeInt,
+  candidates: Schema.Array(HistorySyncProjectMappingCandidate),
+  localProjects: Schema.Array(HistorySyncProjectMappingLocalProject),
+});
+export type HistorySyncProjectMappingPlan = typeof HistorySyncProjectMappingPlan.Type;
+
+export const HistorySyncProjectMappingsApplyInput = Schema.Struct({
+  syncId: TrimmedNonEmptyString,
+  actions: Schema.Array(HistorySyncProjectMappingAction),
+});
+export type HistorySyncProjectMappingsApplyInput = typeof HistorySyncProjectMappingsApplyInput.Type;
 
 export const HistorySyncConnectionSummary = Schema.Struct({
   host: TrimmedNonEmptyString,

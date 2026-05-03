@@ -1479,6 +1479,49 @@ const SidebarProjectItem = memo(function SidebarProjectItem(props: SidebarProjec
     [memberThreadCountByPhysicalKey, removeProject],
   );
 
+  const handleDevDeleteProjectHistory = useCallback(
+    async (member: SidebarProjectGroupMember) => {
+      if (!import.meta.env.DEV) return;
+      const api = readLocalApi();
+      if (!api) return;
+
+      const latestProjectThreads = selectSidebarThreadsForProjectRefs(useStore.getState(), [
+        scopeProjectRef(member.environmentId, member.id),
+      ]);
+      const confirmed = await api.dialogs.confirm(
+        [
+          `Delete project and history for "${member.name}"?`,
+          `Path: ${member.cwd}`,
+          ...(member.environmentLabel ? [`Environment: ${member.environmentLabel}`] : []),
+          `Threads: ${latestProjectThreads.length}`,
+          "Dev only: this force-removes the project entry and all projected thread history for it.",
+          "This action cannot be undone.",
+        ].join("\n"),
+      );
+      if (!confirmed) return;
+
+      try {
+        await removeProject(member, { force: true });
+      } catch (error) {
+        const message =
+          error instanceof Error ? error.message : "Unknown error deleting project history.";
+        console.error("Failed to delete project history", {
+          projectId: member.id,
+          environmentId: member.environmentId,
+          error,
+        });
+        toastManager.add(
+          stackedThreadToast({
+            type: "error",
+            title: `Failed to delete "${member.name}"`,
+            description: message,
+          }),
+        );
+      }
+    },
+    [removeProject],
+  );
+
   const handleProjectButtonContextMenu = useCallback(
     (event: React.MouseEvent<HTMLButtonElement>) => {
       event.preventDefault();
@@ -1489,7 +1532,7 @@ const SidebarProjectItem = memo(function SidebarProjectItem(props: SidebarProjec
 
         const actionHandlers = new Map<string, () => Promise<void> | void>();
         const makeLeaf = (
-          action: "rename" | "grouping" | "copy-path" | "delete",
+          action: "rename" | "grouping" | "copy-path" | "delete" | "delete-history",
           member: SidebarProjectGroupMember,
           options?: {
             destructive?: boolean;
@@ -1510,6 +1553,8 @@ const SidebarProjectItem = memo(function SidebarProjectItem(props: SidebarProjec
                 return;
               case "delete":
                 return handleRemoveProject(member);
+              case "delete-history":
+                return handleDevDeleteProjectHistory(member);
             }
           });
 
@@ -1522,7 +1567,7 @@ const SidebarProjectItem = memo(function SidebarProjectItem(props: SidebarProjec
         };
 
         const buildTargetedItem = (
-          action: "rename" | "grouping" | "copy-path" | "delete",
+          action: "rename" | "grouping" | "copy-path" | "delete" | "delete-history",
           label: string,
           options?: {
             destructive?: boolean;
@@ -1560,6 +1605,13 @@ const SidebarProjectItem = memo(function SidebarProjectItem(props: SidebarProjec
             buildTargetedItem("delete", "Remove project", {
               destructive: true,
             }),
+            ...(import.meta.env.DEV
+              ? [
+                  buildTargetedItem("delete-history", "Delete project and history", {
+                    destructive: true,
+                  }),
+                ]
+              : []),
           ],
           {
             x: event.clientX,
@@ -1576,6 +1628,7 @@ const SidebarProjectItem = memo(function SidebarProjectItem(props: SidebarProjec
     },
     [
       copyPathToClipboard,
+      handleDevDeleteProjectHistory,
       handleRemoveProject,
       openProjectGroupingDialog,
       openProjectRenameDialog,

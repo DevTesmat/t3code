@@ -6,6 +6,7 @@ import {
   type DesktopServerExposureState,
   type EnvironmentId,
   type HistorySyncConfig,
+  type HistorySyncProjectMappingPlan,
 } from "@t3tools/contracts";
 import { DateTime } from "effect";
 
@@ -57,8 +58,14 @@ import {
   type ServerClientSessionRecord,
   type ServerPairingLinkRecord,
 } from "~/environments/primary";
+import {
+  buildHistorySyncProjectMappingActions,
+  draftFromPlanCandidate,
+  type HistorySyncMappingDraft,
+} from "../../historySyncProjectMapping";
 import type { WsRpcClient } from "~/rpc/wsRpcClient";
 import { ensureLocalApi } from "../../localApi";
+import { useServerConfig } from "../../rpc/serverState";
 import {
   type SavedEnvironmentRecord,
   type SavedEnvironmentRuntimeState,
@@ -799,11 +806,19 @@ function historySyncFormFromConfig(config: HistorySyncConfig): HistorySyncFormSt
 }
 
 function HistorySyncSettingsSection() {
+  const liveHistorySyncStatus = useServerConfig()?.historySync ?? null;
   const [config, setConfig] = useState<HistorySyncConfig | null>(null);
   const [form, setForm] = useState<HistorySyncFormState>(emptyHistorySyncForm);
   const [error, setError] = useState<string | null>(null);
   const [isSaving, setIsSaving] = useState(false);
+  const [isStartingInitialSync, setIsStartingInitialSync] = useState(false);
   const [isTesting, setIsTesting] = useState(false);
+  const [mappingPlan, setMappingPlan] = useState<HistorySyncProjectMappingPlan | null>(null);
+  const [mappingDraftByProjectId, setMappingDraftByProjectId] = useState<
+    Record<string, HistorySyncMappingDraft>
+  >({});
+  const [isLoadingMappings, setIsLoadingMappings] = useState(false);
+  const [isApplyingMappings, setIsApplyingMappings] = useState(false);
 
   const loadConfig = useCallback(async () => {
     try {
@@ -819,6 +834,32 @@ function HistorySyncSettingsSection() {
   useEffect(() => {
     void loadConfig();
   }, [loadConfig]);
+
+  const loadMappingPlan = useCallback(async () => {
+    setIsLoadingMappings(true);
+    try {
+      const next = await ensureLocalApi().server.getHistorySyncProjectMappings();
+      setMappingPlan(next);
+      setMappingDraftByProjectId(
+        Object.fromEntries(
+          next.candidates
+            .filter((candidate) => candidate.status === "unresolved")
+            .map((candidate) => [candidate.remoteProjectId, draftFromPlanCandidate(candidate)]),
+        ),
+      );
+      setError(null);
+    } catch (loadError) {
+      setError(loadError instanceof Error ? loadError.message : "Failed to load project mappings.");
+    } finally {
+      setIsLoadingMappings(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (config?.status.state === "needs-project-mapping") {
+      void loadMappingPlan();
+    }
+  }, [config?.status.state, loadMappingPlan]);
 
   const buildMysql = useCallback(() => {
     const port = Number(form.port);
@@ -906,11 +947,79 @@ function HistorySyncSettingsSection() {
     }
   }, []);
 
-  const statusText = config
-    ? config.status.state === "error"
-      ? config.status.message
-      : config.status.state
-    : "Loading...";
+  const handleStartInitialSync = useCallback(async () => {
+    setIsStartingInitialSync(true);
+    setError(null);
+    try {
+      const next = await ensureLocalApi().server.startHistorySyncInitialImport();
+      setConfig(next);
+      setForm(historySyncFormFromConfig(next));
+      toastManager.add({ type: "success", title: "History sync started" });
+    } catch (startError) {
+      setError(startError instanceof Error ? startError.message : "Failed to start history sync.");
+    } finally {
+      setIsStartingInitialSync(false);
+    }
+  }, []);
+
+  const handlePickMappingFolder = useCallback(
+    async (remoteProjectId: string) => {
+      const folder = await ensureLocalApi().dialogs.pickFolder();
+      if (!folder) return;
+      const candidate = mappingPlan?.candidates.find(
+        (entry) => entry.remoteProjectId === remoteProjectId,
+      );
+      setMappingDraftByProjectId((current) => ({
+        ...current,
+        [remoteProjectId]: {
+          action: "map-folder",
+          workspaceRoot: folder,
+          title: candidate?.remoteTitle ?? "",
+        },
+      }));
+    },
+    [mappingPlan],
+  );
+
+  const handleApplyMappings = useCallback(async () => {
+    if (!mappingPlan) return;
+    setIsApplyingMappings(true);
+    setError(null);
+    try {
+      const actions = buildHistorySyncProjectMappingActions(mappingPlan, mappingDraftByProjectId);
+      const next = await ensureLocalApi().server.applyHistorySyncProjectMappings({
+        syncId: mappingPlan.syncId,
+        actions,
+      });
+      setMappingPlan(next);
+      await loadConfig();
+      toastManager.add({ type: "success", title: "Project mappings saved" });
+    } catch (applyError) {
+      setError(
+        applyError instanceof Error ? applyError.message : "Failed to apply project mappings.",
+      );
+    } finally {
+      setIsApplyingMappings(false);
+    }
+  }, [loadConfig, mappingDraftByProjectId, mappingPlan]);
+
+  const effectiveHistorySyncStatus = liveHistorySyncStatus ?? config?.status ?? null;
+  const statusText =
+    effectiveHistorySyncStatus === null
+      ? "Loading..."
+      : effectiveHistorySyncStatus.state === "error"
+        ? effectiveHistorySyncStatus.message
+        : effectiveHistorySyncStatus.state === "needs-project-mapping"
+          ? `${effectiveHistorySyncStatus.unresolvedProjectCount} project mapping${effectiveHistorySyncStatus.unresolvedProjectCount === 1 ? "" : "s"} needed`
+          : effectiveHistorySyncStatus.state === "needs-initial-sync"
+            ? "Ready to start"
+            : effectiveHistorySyncStatus.state;
+  const syncProgress =
+    effectiveHistorySyncStatus?.state === "syncing" ? effectiveHistorySyncStatus.progress : null;
+  const unresolvedMappingCandidates =
+    mappingPlan?.candidates.filter((candidate) => candidate.status === "unresolved") ?? [];
+  const showInitialSyncAction =
+    config?.configured === true && effectiveHistorySyncStatus?.state === "needs-initial-sync";
 
   return (
     <SettingsSection title="History Sync">
@@ -922,7 +1031,11 @@ function HistorySyncSettingsSection() {
             : "Configure and save a MySQL connection first."
         }
         status={
-          <span className={config?.status.state === "error" ? "text-destructive" : undefined}>
+          <span
+            className={
+              effectiveHistorySyncStatus?.state === "error" ? "text-destructive" : undefined
+            }
+          >
             {statusText}
           </span>
         }
@@ -935,6 +1048,196 @@ function HistorySyncSettingsSection() {
           />
         }
       />
+      {showInitialSyncAction ? (
+        <div className={ITEM_ROW_CLASSNAME}>
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+            <div className="min-w-0">
+              <h3 className="text-sm font-medium text-foreground">Initial history sync</h3>
+              <p className="mt-1 text-xs text-muted-foreground">
+                Back up local threads, import the MySQL history, then merge the local threads back.
+              </p>
+            </div>
+            <Button
+              size="xs"
+              disabled={isStartingInitialSync || isSaving || isTesting || !config.configured}
+              onClick={() => void handleStartInitialSync()}
+            >
+              {isStartingInitialSync ? "Starting..." : "Start history sync"}
+            </Button>
+          </div>
+        </div>
+      ) : null}
+      {syncProgress ? (
+        <div className={ITEM_ROW_CLASSNAME}>
+          <div className="space-y-2">
+            <div className="flex items-center justify-between gap-3 text-xs">
+              <span className="truncate text-muted-foreground">{syncProgress.label}</span>
+              <span className="shrink-0 tabular-nums text-muted-foreground">
+                {syncProgress.current}/{syncProgress.total}
+              </span>
+            </div>
+            <div className="h-1.5 overflow-hidden rounded-full bg-muted">
+              <div
+                className="h-full rounded-full bg-foreground transition-[width] duration-300"
+                style={{
+                  width: `${Math.min(
+                    100,
+                    Math.max(0, (syncProgress.current / Math.max(1, syncProgress.total)) * 100),
+                  )}%`,
+                }}
+              />
+            </div>
+          </div>
+        </div>
+      ) : null}
+      {effectiveHistorySyncStatus?.state === "needs-project-mapping" ? (
+        <div className={ITEM_ROW_CLASSNAME}>
+          <div className="space-y-4">
+            <div className="flex items-center justify-between gap-3">
+              <div className="min-w-0">
+                <h3 className="text-sm font-medium text-foreground">Map synced projects</h3>
+                <p className="mt-1 text-xs text-muted-foreground">
+                  Choose the local folder or project that matches each remote project.
+                </p>
+              </div>
+              <Button
+                size="xs"
+                variant="outline"
+                disabled={isLoadingMappings}
+                onClick={() => void loadMappingPlan()}
+              >
+                {isLoadingMappings ? "Loading..." : "Refresh"}
+              </Button>
+            </div>
+            {unresolvedMappingCandidates.map((candidate) => {
+              const draft =
+                mappingDraftByProjectId[candidate.remoteProjectId] ??
+                draftFromPlanCandidate(candidate);
+              return (
+                <div
+                  key={candidate.remoteProjectId}
+                  className="space-y-3 rounded-lg border border-border/60 bg-muted/20 p-3"
+                >
+                  <div className="min-w-0">
+                    <div className="truncate text-sm font-medium text-foreground">
+                      {candidate.remoteTitle}
+                    </div>
+                    <div className="mt-1 truncate text-xs text-muted-foreground">
+                      {candidate.remoteWorkspaceRoot}
+                    </div>
+                    <div className="mt-1 text-[11px] text-muted-foreground">
+                      {candidate.threadCount} thread{candidate.threadCount === 1 ? "" : "s"}
+                      {candidate.suggestionReason
+                        ? ` - suggested by ${candidate.suggestionReason.replace("-", " ")}`
+                        : ""}
+                    </div>
+                  </div>
+                  <div className="grid gap-2 sm:grid-cols-[10rem_1fr_auto]">
+                    <select
+                      className="h-8 rounded-md border border-input bg-background px-2 text-xs text-foreground"
+                      value={draft.action}
+                      disabled={isApplyingMappings}
+                      onChange={(event) => {
+                        const action = event.currentTarget
+                          .value as HistorySyncMappingDraft["action"];
+                        setMappingDraftByProjectId((current) => ({
+                          ...current,
+                          [candidate.remoteProjectId]:
+                            action === "map-existing"
+                              ? {
+                                  action,
+                                  localProjectId:
+                                    candidate.suggestedLocalProjectId ??
+                                    mappingPlan?.localProjects[0]?.projectId ??
+                                    "",
+                                }
+                              : action === "skip"
+                                ? { action }
+                                : {
+                                    action,
+                                    workspaceRoot: "",
+                                    title: candidate.remoteTitle,
+                                  },
+                        }));
+                      }}
+                    >
+                      <option value="map-existing">Existing project</option>
+                      <option value="map-folder">New folder</option>
+                      <option value="skip">Skip</option>
+                    </select>
+                    {draft.action === "map-existing" ? (
+                      <select
+                        className="h-8 rounded-md border border-input bg-background px-2 text-xs text-foreground"
+                        value={draft.localProjectId}
+                        disabled={isApplyingMappings}
+                        onChange={(event) =>
+                          setMappingDraftByProjectId((current) => ({
+                            ...current,
+                            [candidate.remoteProjectId]: {
+                              action: "map-existing",
+                              localProjectId: event.currentTarget.value,
+                            },
+                          }))
+                        }
+                      >
+                        {mappingPlan?.localProjects.map((project) => (
+                          <option key={project.projectId} value={project.projectId}>
+                            {project.title} - {project.workspaceRoot}
+                          </option>
+                        ))}
+                      </select>
+                    ) : draft.action === "map-folder" ? (
+                      <Input
+                        value={draft.workspaceRoot}
+                        placeholder="Local folder"
+                        disabled={isApplyingMappings}
+                        onChange={(event) =>
+                          setMappingDraftByProjectId((current) => ({
+                            ...current,
+                            [candidate.remoteProjectId]: {
+                              ...draft,
+                              workspaceRoot: event.currentTarget.value,
+                            },
+                          }))
+                        }
+                      />
+                    ) : (
+                      <div className="flex h-8 items-center text-xs text-muted-foreground">
+                        This project will stay only in MySQL for now.
+                      </div>
+                    )}
+                    {draft.action === "map-folder" ? (
+                      <Button
+                        size="xs"
+                        variant="outline"
+                        disabled={isApplyingMappings}
+                        onClick={() => void handlePickMappingFolder(candidate.remoteProjectId)}
+                      >
+                        Browse
+                      </Button>
+                    ) : (
+                      <span />
+                    )}
+                  </div>
+                </div>
+              );
+            })}
+            <div className="flex justify-end">
+              <Button
+                size="xs"
+                disabled={
+                  isApplyingMappings ||
+                  isLoadingMappings ||
+                  unresolvedMappingCandidates.length === 0
+                }
+                onClick={() => void handleApplyMappings()}
+              >
+                {isApplyingMappings ? "Applying..." : "Apply mappings"}
+              </Button>
+            </div>
+          </div>
+        </div>
+      ) : null}
       <div className={ITEM_ROW_CLASSNAME}>
         <div className="grid gap-3 sm:grid-cols-2">
           <Input

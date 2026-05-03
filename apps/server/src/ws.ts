@@ -9,6 +9,7 @@ import {
   type GitManagerServiceError,
   OrchestrationDispatchCommandError,
   type OrchestrationEvent,
+  type OrchestrationShellSnapshot,
   type OrchestrationShellStreamEvent,
   type ServerConfigStreamEvent,
   OrchestrationGetFullThreadDiffError,
@@ -48,8 +49,11 @@ import { ServerLifecycleEvents } from "./serverLifecycleEvents.ts";
 import { ServerRuntimeStartup } from "./serverRuntimeStartup.ts";
 import { redactServerSettingsForClient, ServerSettingsService } from "./serverSettings.ts";
 import {
+  applyHistorySyncProjectMappings,
   getHistorySyncConfig,
+  getHistorySyncProjectMappings,
   readHistorySyncStatus,
+  startHistorySyncInitialImport,
   subscribeHistorySyncStatus,
   testHistorySyncConnection,
   updateHistorySyncConfig,
@@ -692,13 +696,39 @@ const makeWsRpcLayer = (currentSessionId: AuthSessionId) =>
                   Option.isSome(event) ? Stream.succeed(event.value) : Stream.empty,
                 ),
               );
+              const historySyncSnapshotStream = Stream.callback<{
+                readonly kind: "snapshot";
+                readonly snapshot: OrchestrationShellSnapshot;
+              }>((queue) =>
+                Effect.acquireRelease(
+                  subscribeHistorySyncStatus((historySync) => {
+                    if (historySync.state !== "idle") {
+                      return Effect.void;
+                    }
+                    return projectionSnapshotQuery.getShellSnapshot().pipe(
+                      Effect.flatMap((snapshot) =>
+                        Queue.offer(queue, {
+                          kind: "snapshot" as const,
+                          snapshot,
+                        }).pipe(Effect.asVoid),
+                      ),
+                      Effect.catch((cause) =>
+                        Effect.logWarning("failed to load shell snapshot after history sync", {
+                          cause,
+                        }),
+                      ),
+                    );
+                  }),
+                  (unsubscribe) => Effect.sync(unsubscribe),
+                ),
+              );
 
               return Stream.concat(
                 Stream.make({
                   kind: "snapshot" as const,
                   snapshot,
                 }),
-                liveStream,
+                Stream.merge(liveStream, historySyncSnapshotStream),
               );
             }),
             { "rpc.aggregate": "orchestration" },
@@ -805,10 +835,34 @@ const makeWsRpcLayer = (currentSessionId: AuthSessionId) =>
               "rpc.aggregate": "server",
             },
           ),
+        [WS_METHODS.serverStartHistorySyncInitialImport]: (_input) =>
+          observeRpcEffect(
+            WS_METHODS.serverStartHistorySyncInitialImport,
+            startHistorySyncInitialImport,
+            {
+              "rpc.aggregate": "server",
+            },
+          ),
         [WS_METHODS.serverTestHistorySyncConnection]: (input) =>
           observeRpcEffect(
             WS_METHODS.serverTestHistorySyncConnection,
             testHistorySyncConnection(input.mysql),
+            {
+              "rpc.aggregate": "server",
+            },
+          ),
+        [WS_METHODS.serverGetHistorySyncProjectMappings]: (_input) =>
+          observeRpcEffect(
+            WS_METHODS.serverGetHistorySyncProjectMappings,
+            getHistorySyncProjectMappings,
+            {
+              "rpc.aggregate": "server",
+            },
+          ),
+        [WS_METHODS.serverApplyHistorySyncProjectMappings]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.serverApplyHistorySyncProjectMappings,
+            applyHistorySyncProjectMappings(input),
             {
               "rpc.aggregate": "server",
             },

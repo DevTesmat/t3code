@@ -117,7 +117,10 @@ export function createLocalApi(rpcClient: WsRpcClient): LocalApi {
       updateSettings: rpcClient.server.updateSettings,
       getHistorySyncConfig: rpcClient.server.getHistorySyncConfig,
       updateHistorySyncConfig: rpcClient.server.updateHistorySyncConfig,
+      startHistorySyncInitialImport: rpcClient.server.startHistorySyncInitialImport,
       testHistorySyncConnection: rpcClient.server.testHistorySyncConnection,
+      getHistorySyncProjectMappings: rpcClient.server.getHistorySyncProjectMappings,
+      applyHistorySyncProjectMappings: rpcClient.server.applyHistorySyncProjectMappings,
     },
   };
 }

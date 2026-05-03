@@ -75,6 +75,8 @@ import {
   HistorySyncConfigError,
   HistorySyncConnectionTestInput,
   HistorySyncConnectionTestResult,
+  HistorySyncProjectMappingPlan,
+  HistorySyncProjectMappingsApplyInput,
   HistorySyncUpdateConfigInput,
   ServerLifecycleStreamEvent,
   ServerProviderUpdatedPayload,
@@ -126,7 +128,10 @@ export const WS_METHODS = {
   serverUpdateSettings: "server.updateSettings",
   serverGetHistorySyncConfig: "server.getHistorySyncConfig",
   serverUpdateHistorySyncConfig: "server.updateHistorySyncConfig",
+  serverStartHistorySyncInitialImport: "server.startHistorySyncInitialImport",
   serverTestHistorySyncConnection: "server.testHistorySyncConnection",
+  serverGetHistorySyncProjectMappings: "server.getHistorySyncProjectMappings",
+  serverApplyHistorySyncProjectMappings: "server.applyHistorySyncProjectMappings",
 
   // Streaming subscriptions
   subscribeGitStatus: "subscribeGitStatus",
@@ -188,11 +193,38 @@ export const WsServerUpdateHistorySyncConfigRpc = Rpc.make(
   },
 );
 
+export const WsServerStartHistorySyncInitialImportRpc = Rpc.make(
+  WS_METHODS.serverStartHistorySyncInitialImport,
+  {
+    payload: Schema.Struct({}),
+    success: HistorySyncConfig,
+    error: Schema.Union([ServerSettingsError, HistorySyncConfigError]),
+  },
+);
+
 export const WsServerTestHistorySyncConnectionRpc = Rpc.make(
   WS_METHODS.serverTestHistorySyncConnection,
   {
     payload: HistorySyncConnectionTestInput,
     success: HistorySyncConnectionTestResult,
+    error: HistorySyncConfigError,
+  },
+);
+
+export const WsServerGetHistorySyncProjectMappingsRpc = Rpc.make(
+  WS_METHODS.serverGetHistorySyncProjectMappings,
+  {
+    payload: Schema.Struct({}),
+    success: HistorySyncProjectMappingPlan,
+    error: HistorySyncConfigError,
+  },
+);
+
+export const WsServerApplyHistorySyncProjectMappingsRpc = Rpc.make(
+  WS_METHODS.serverApplyHistorySyncProjectMappings,
+  {
+    payload: HistorySyncProjectMappingsApplyInput,
+    success: HistorySyncProjectMappingPlan,
     error: HistorySyncConfigError,
   },
 );
@@ -404,7 +436,10 @@ export const WsRpcGroup = RpcGroup.make(
   WsServerUpdateSettingsRpc,
   WsServerGetHistorySyncConfigRpc,
   WsServerUpdateHistorySyncConfigRpc,
+  WsServerStartHistorySyncInitialImportRpc,
   WsServerTestHistorySyncConnectionRpc,
+  WsServerGetHistorySyncProjectMappingsRpc,
+  WsServerApplyHistorySyncProjectMappingsRpc,
   WsProjectsSearchEntriesRpc,
   WsProjectsWriteFileRpc,
   WsShellOpenInEditorRpc,

@@ -984,6 +984,9 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
                   { concurrency: repositoryIdentityResolutionConcurrency },
                 ),
               );
+              const activeThreadProjectIds = new Set(
+                threadRows.filter((row) => row.deletedAt === null).map((row) => row.projectId),
+              );
 
               const projects: ReadonlyArray<OrchestrationProject> = projectRows.map((row) => ({
                 id: row.projectId,
@@ -994,7 +997,10 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
                 scripts: row.scripts,
                 createdAt: row.createdAt,
                 updatedAt: row.updatedAt,
-                deletedAt: row.deletedAt,
+                deletedAt:
+                  row.deletedAt !== null && activeThreadProjectIds.has(row.projectId)
+                    ? null
+                    : row.deletedAt,
               }));
 
               const threads: ReadonlyArray<OrchestrationThread> = threadRows.map((row) => ({
@@ -1140,13 +1146,21 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
                 sessionRows.map((row) => [row.threadId, mapSessionRow(row)] as const),
               );
               const workDurationByThread = buildWorkDurationByThread(workDurationRows);
+              const activeThreadProjectIds = new Set(
+                threadRows.filter((row) => row.deletedAt === null).map((row) => row.projectId),
+              );
 
               const snapshot = {
                 snapshotSequence: computeSnapshotSequence(stateRows),
                 projects: projectRows
-                  .filter((row) => row.deletedAt === null)
+                  .filter(
+                    (row) => row.deletedAt === null || activeThreadProjectIds.has(row.projectId),
+                  )
                   .map((row) =>
-                    mapProjectShellRow(row, repositoryIdentities.get(row.projectId) ?? null),
+                    mapProjectShellRow(
+                      activeThreadProjectIds.has(row.projectId) ? { ...row, deletedAt: null } : row,
+                      repositoryIdentities.get(row.projectId) ?? null,
+                    ),
                   ),
                 threads: threadRows
                   .filter((row) => row.deletedAt === null)
