@@ -54,6 +54,7 @@ import {
   getHistorySyncProjectMappings,
   readHistorySyncStatus,
   restoreHistorySyncBackup,
+  runHistorySync,
   startHistorySyncInitialImport,
   subscribeHistorySyncStatus,
   testHistorySyncConnection,
@@ -876,6 +877,10 @@ const makeWsRpcLayer = (currentSessionId: AuthSessionId) =>
               "rpc.aggregate": "server",
             },
           ),
+        [WS_METHODS.serverRunHistorySync]: (_input) =>
+          observeRpcEffect(WS_METHODS.serverRunHistorySync, runHistorySync, {
+            "rpc.aggregate": "server",
+          }),
         [WS_METHODS.serverStartHistorySyncInitialImport]: (_input) =>
           observeRpcEffect(
             WS_METHODS.serverStartHistorySyncInitialImport,

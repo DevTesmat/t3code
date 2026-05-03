@@ -773,7 +773,6 @@ type HistorySyncFormState = {
   username: string;
   password: string;
   tlsEnabled: boolean;
-  intervalMs: string;
   shutdownFlushTimeoutMs: string;
   statusIndicatorEnabled: boolean;
 };
@@ -786,7 +785,6 @@ const emptyHistorySyncForm: HistorySyncFormState = {
   username: "",
   password: "",
   tlsEnabled: false,
-  intervalMs: "120000",
   shutdownFlushTimeoutMs: "5000",
   statusIndicatorEnabled: true,
 };
@@ -800,7 +798,6 @@ function historySyncFormFromConfig(config: HistorySyncConfig): HistorySyncFormSt
     username: config.connectionSummary?.username ?? "",
     password: "",
     tlsEnabled: config.connectionSummary?.tlsEnabled ?? false,
-    intervalMs: String(config.intervalMs),
     shutdownFlushTimeoutMs: String(config.shutdownFlushTimeoutMs),
     statusIndicatorEnabled: config.statusIndicatorEnabled,
   };
@@ -812,6 +809,7 @@ function HistorySyncSettingsSection() {
   const [form, setForm] = useState<HistorySyncFormState>(emptyHistorySyncForm);
   const [error, setError] = useState<string | null>(null);
   const [isSaving, setIsSaving] = useState(false);
+  const [isRunningSync, setIsRunningSync] = useState(false);
   const [isStartingInitialSync, setIsStartingInitialSync] = useState(false);
   const [isRestoringBackup, setIsRestoringBackup] = useState(false);
   const [isTesting, setIsTesting] = useState(false);
@@ -898,7 +896,6 @@ function HistorySyncSettingsSection() {
     setIsSaving(true);
     setError(null);
     try {
-      const intervalMs = Number(form.intervalMs);
       const shutdownFlushTimeoutMs = Number(form.shutdownFlushTimeoutMs);
       const summaryChanged =
         config?.connectionSummary?.host !== form.host.trim() ||
@@ -916,7 +913,6 @@ function HistorySyncSettingsSection() {
       const next = await ensureLocalApi().server.updateHistorySyncConfig({
         settings: {
           enabled: form.enabled,
-          intervalMs,
           shutdownFlushTimeoutMs,
           statusIndicatorEnabled: form.statusIndicatorEnabled,
         },
@@ -961,6 +957,21 @@ function HistorySyncSettingsSection() {
       setError(startError instanceof Error ? startError.message : "Failed to start history sync.");
     } finally {
       setIsStartingInitialSync(false);
+    }
+  }, []);
+
+  const handleRunSync = useCallback(async () => {
+    setIsRunningSync(true);
+    setError(null);
+    try {
+      const next = await ensureLocalApi().server.runHistorySync();
+      setConfig(next);
+      setForm(historySyncFormFromConfig(next));
+      toastManager.add({ type: "success", title: "History sync started" });
+    } catch (syncError) {
+      setError(syncError instanceof Error ? syncError.message : "Failed to sync history.");
+    } finally {
+      setIsRunningSync(false);
     }
   }, []);
 
@@ -1041,6 +1052,7 @@ function HistorySyncSettingsSection() {
     mappingPlan?.candidates.filter((candidate) => candidate.status === "unresolved") ?? [];
   const showInitialSyncAction =
     config?.configured === true && effectiveHistorySyncStatus?.state === "needs-initial-sync";
+  const showSyncAction = config?.configured === true;
   const showBackupRestoreAction = Boolean(config?.backup) && !isHistorySyncing;
 
   return (
@@ -1070,7 +1082,7 @@ function HistorySyncSettingsSection() {
           />
         }
       />
-      {showInitialSyncAction || showBackupRestoreAction ? (
+      {showSyncAction || showBackupRestoreAction ? (
         <div className={ITEM_ROW_CLASSNAME}>
           <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
             {showInitialSyncAction ? (
@@ -1083,9 +1095,9 @@ function HistorySyncSettingsSection() {
               </div>
             ) : (
               <div className="min-w-0">
-                <h3 className="text-sm font-medium text-foreground">History sync backup</h3>
+                <h3 className="text-sm font-medium text-foreground">History sync</h3>
                 <p className="mt-1 text-xs text-muted-foreground">
-                  Restore the local history snapshot saved before the last initial sync.
+                  Fast-forward from MySQL, then persist safe local thread updates.
                 </p>
               </div>
             )}
@@ -1094,7 +1106,13 @@ function HistorySyncSettingsSection() {
                 <Button
                   size="xs"
                   variant="outline"
-                  disabled={isRestoringBackup || isStartingInitialSync || isSaving || isTesting}
+                  disabled={
+                    isRestoringBackup ||
+                    isStartingInitialSync ||
+                    isRunningSync ||
+                    isSaving ||
+                    isTesting
+                  }
                   onClick={() => void handleRestoreBackup()}
                 >
                   {isRestoringBackup ? "Restoring..." : "Restore backup"}
@@ -1106,6 +1124,7 @@ function HistorySyncSettingsSection() {
                   disabled={
                     isStartingInitialSync ||
                     isRestoringBackup ||
+                    isRunningSync ||
                     isSaving ||
                     isTesting ||
                     !config.configured
@@ -1113,6 +1132,21 @@ function HistorySyncSettingsSection() {
                   onClick={() => void handleStartInitialSync()}
                 >
                   {isStartingInitialSync ? "Starting..." : "Start history sync"}
+                </Button>
+              ) : showSyncAction ? (
+                <Button
+                  size="xs"
+                  disabled={
+                    isRunningSync ||
+                    isHistorySyncing ||
+                    isStartingInitialSync ||
+                    isRestoringBackup ||
+                    isSaving ||
+                    isTesting
+                  }
+                  onClick={() => void handleRunSync()}
+                >
+                  {isRunningSync || isHistorySyncing ? "Syncing..." : "Sync now"}
                 </Button>
               ) : null}
             </div>
@@ -1326,11 +1360,14 @@ function HistorySyncSettingsSection() {
             }
           />
           <Input
-            value={form.intervalMs}
-            placeholder="Sync interval (ms)"
+            value={form.shutdownFlushTimeoutMs}
+            placeholder="Shutdown flush timeout (ms)"
             inputMode="numeric"
             onChange={(event) =>
-              setForm((current) => ({ ...current, intervalMs: event.target.value }))
+              setForm((current) => ({
+                ...current,
+                shutdownFlushTimeoutMs: event.target.value,
+              }))
             }
           />
         </div>

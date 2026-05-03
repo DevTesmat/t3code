@@ -2,15 +2,21 @@ import { describe, expect, test } from "vitest";
 
 import {
   buildFirstSyncRescueEvents,
+  buildPushedEventReceiptRows,
   buildFirstSyncClientMergeEvents,
   chunkHistorySyncEvents,
   collectProjectCandidates,
   countActiveThreadCreates,
   computeThreadUserSequenceHash,
+  filterAlreadyImportedRemoteDeltaEvents,
+  filterPushableLocalEvents,
+  filterUnpushedLocalEvents,
   isRemoteBehindLocal,
   normalizeRemoteEventForLocalImport,
   rewriteRemoteEventsForLocalMappings,
+  selectRemoteDeltaEvents,
   selectRemoteBehindLocalEvents,
+  selectPushedReceiptSeedEvents,
   shouldRunAutomaticHistorySync,
   shouldImportRemoteIntoEmptyLocal,
   shouldPushLocalHistoryOnFirstSync,
@@ -87,7 +93,167 @@ function messageSent(
   });
 }
 
+function turnStartRequested(sequence: number, threadId: string, turnId: string) {
+  return event(sequence, threadId, "thread.turn-start-requested", {
+    threadId,
+    messageId: `${threadId}-message-${sequence}`,
+    turnId,
+    runtimeMode: "full-access",
+    interactionMode: "default",
+    createdAt: baseEvent.occurredAt,
+  });
+}
+
+function turnDiffCompleted(
+  sequence: number,
+  threadId: string,
+  turnId: string,
+  status: "ready" | "missing" | "error" = "ready",
+) {
+  return event(sequence, threadId, "thread.turn-diff-completed", {
+    threadId,
+    turnId,
+    checkpointTurnCount: 1,
+    checkpointRef: `${threadId}-checkpoint-${sequence}`,
+    status,
+    files: [],
+    assistantMessageId: null,
+    completedAt: baseEvent.occurredAt,
+  });
+}
+
 describe("history sync first-sync rescue", () => {
+  test("remote delta selection uses the last synced remote sequence", () => {
+    const remote = [
+      projectCreated(1, "project-a"),
+      threadCreated(2, "thread-a"),
+      messageSent(3, "thread-a", "remote"),
+    ];
+
+    expect(selectRemoteDeltaEvents(remote, 1).map((event) => event.sequence)).toEqual([2, 3]);
+    expect(selectRemoteDeltaEvents(remote, 3)).toEqual([]);
+  });
+
+  test("remote delta import skips rows already present locally with the same event id", () => {
+    const alreadyImported = messageSent(3, "thread-a", "remote");
+    const remote = [alreadyImported, messageSent(4, "thread-a", "new remote")];
+    const local = [projectCreated(1, "project-a"), threadCreated(2, "thread-a"), alreadyImported];
+
+    expect(
+      filterAlreadyImportedRemoteDeltaEvents(remote, local).map((event) => event.sequence),
+    ).toEqual([4]);
+  });
+
+  test("unpushed local events exclude pushed receipts by sequence", () => {
+    const local = [
+      projectCreated(1, "project-a"),
+      threadCreated(2, "thread-a"),
+      messageSent(3, "thread-a", "local"),
+    ];
+
+    expect(
+      filterUnpushedLocalEvents(local, new Set([1, 3])).map((event) => event.sequence),
+    ).toEqual([2]);
+  });
+
+  test("running thread events are not pushable", () => {
+    const local = [
+      threadCreated(1, "thread-running"),
+      turnStartRequested(2, "thread-running", "turn-1"),
+      messageSent(3, "thread-running", "working"),
+    ];
+
+    expect(filterPushableLocalEvents(local).map((event) => event.sequence)).toEqual([]);
+  });
+
+  test("terminal thread events are pushable for ready missing and error checkpoint outcomes", () => {
+    for (const status of ["ready", "missing", "error"] as const) {
+      const local = [
+        threadCreated(1, `thread-${status}`),
+        turnStartRequested(2, `thread-${status}`, "turn-1"),
+        turnDiffCompleted(3, `thread-${status}`, "turn-1", status),
+      ];
+
+      expect(filterPushableLocalEvents(local).map((event) => event.sequence)).toEqual([1, 2, 3]);
+    }
+  });
+
+  test("active thread does not block completed unrelated thread", () => {
+    const local = [
+      threadCreated(1, "thread-running"),
+      turnStartRequested(2, "thread-running", "turn-running"),
+      threadCreated(3, "thread-done"),
+      turnStartRequested(4, "thread-done", "turn-done"),
+      turnDiffCompleted(5, "thread-done", "turn-done"),
+    ];
+
+    expect(filterPushableLocalEvents(local).map((event) => event.sequence)).toEqual([3, 4, 5]);
+  });
+
+  test("pushed receipt rows capture successfully pushed event identity", () => {
+    const pushedAt = "2026-01-01T00:00:01.000Z";
+    const rows = buildPushedEventReceiptRows(
+      [threadCreated(2, "thread-a"), messageSent(3, "thread-a", "hello")],
+      pushedAt,
+    );
+
+    expect(rows).toEqual([
+      {
+        sequence: 2,
+        eventId: "thread-a:2",
+        streamId: "thread-a",
+        eventType: "thread.created",
+        pushedAt,
+      },
+      {
+        sequence: 3,
+        eventId: "thread-a:3",
+        streamId: "thread-a",
+        eventType: "thread.message-sent",
+        pushedAt,
+      },
+    ]);
+  });
+
+  test("completed migrated sync seeds receipts only through the old synced sequence cursor", () => {
+    const local = [
+      projectCreated(1, "project-a"),
+      threadCreated(2, "thread-a"),
+      messageSent(3, "thread-a", "already synced"),
+      messageSent(4, "thread-a", "new local"),
+    ];
+
+    expect(
+      selectPushedReceiptSeedEvents({
+        events: local,
+        hasCompletedInitialSync: true,
+        hasExistingReceipts: false,
+        lastSyncedRemoteSequence: 3,
+      }).map((event) => event.sequence),
+    ).toEqual([1, 2, 3]);
+  });
+
+  test("receipt seeding is skipped before initial sync or after receipts exist", () => {
+    const local = [projectCreated(1, "project-a")];
+
+    expect(
+      selectPushedReceiptSeedEvents({
+        events: local,
+        hasCompletedInitialSync: false,
+        hasExistingReceipts: false,
+        lastSyncedRemoteSequence: 1,
+      }),
+    ).toEqual([]);
+    expect(
+      selectPushedReceiptSeedEvents({
+        events: local,
+        hasCompletedInitialSync: true,
+        hasExistingReceipts: true,
+        lastSyncedRemoteSequence: 1,
+      }),
+    ).toEqual([]);
+  });
+
   test("startup automation waits for explicit initial sync", () => {
     expect(
       shouldRunAutomaticHistorySync({
