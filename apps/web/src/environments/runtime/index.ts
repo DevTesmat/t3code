@@ -18,6 +18,7 @@ export {
   addSavedEnvironment,
   disconnectSavedEnvironment,
   ensureEnvironmentConnectionBootstrapped,
+  refreshPrimaryEnvironmentProjectionSnapshot,
   getPrimaryEnvironmentConnection,
   readEnvironmentConnection,
   reconnectSavedEnvironment,

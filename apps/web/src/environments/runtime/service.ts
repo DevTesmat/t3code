@@ -1083,6 +1083,12 @@ export async function reconnectSavedEnvironment(environmentId: EnvironmentId): P
   }
 }
 
+export async function refreshPrimaryEnvironmentProjectionSnapshot(): Promise<void> {
+  const connection = getPrimaryEnvironmentConnection();
+  lastAppliedProjectionVersionByEnvironment.delete(connection.environmentId);
+  await connection.reconnect();
+}
+
 export async function removeSavedEnvironment(environmentId: EnvironmentId): Promise<void> {
   useSavedEnvironmentRegistryStore.getState().remove(environmentId);
   await removeSavedEnvironmentBearerToken(environmentId);

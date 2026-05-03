@@ -772,6 +772,46 @@ const makeWsRpcLayer = (currentSessionId: AuthSessionId) =>
                   event,
                 })),
               );
+              const historySyncSnapshotStream = Stream.callback<{
+                readonly kind: "snapshot";
+                readonly snapshot: {
+                  readonly snapshotSequence: number;
+                  readonly thread: NonNullable<typeof threadDetail.value>;
+                };
+              }>((queue) =>
+                Effect.acquireRelease(
+                  subscribeHistorySyncStatus((historySync) => {
+                    if (historySync.state !== "idle") {
+                      return Effect.void;
+                    }
+                    return Effect.all([
+                      projectionSnapshotQuery.getThreadDetailById(input.threadId),
+                      orchestrationEngine
+                        .getReadModel()
+                        .pipe(Effect.map((readModel) => readModel.snapshotSequence)),
+                    ]).pipe(
+                      Effect.flatMap(([nextThreadDetail, nextSnapshotSequence]) =>
+                        Option.isSome(nextThreadDetail)
+                          ? Queue.offer(queue, {
+                              kind: "snapshot" as const,
+                              snapshot: {
+                                snapshotSequence: nextSnapshotSequence,
+                                thread: nextThreadDetail.value,
+                              },
+                            }).pipe(Effect.asVoid)
+                          : Effect.void,
+                      ),
+                      Effect.catch((cause) =>
+                        Effect.logWarning("failed to load thread snapshot after history sync", {
+                          threadId: input.threadId,
+                          cause,
+                        }),
+                      ),
+                    );
+                  }),
+                  (unsubscribe) => Effect.sync(unsubscribe),
+                ),
+              );
 
               return Stream.concat(
                 Stream.make({
@@ -781,7 +821,7 @@ const makeWsRpcLayer = (currentSessionId: AuthSessionId) =>
                     thread: threadDetail.value,
                   },
                 }),
-                liveStream,
+                Stream.merge(liveStream, historySyncSnapshotStream),
               );
             }),
             { "rpc.aggregate": "orchestration" },

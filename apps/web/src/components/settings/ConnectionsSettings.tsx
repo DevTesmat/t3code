@@ -73,6 +73,7 @@ import {
   useSavedEnvironmentRuntimeStore,
   addSavedEnvironment,
   getPrimaryEnvironmentConnection,
+  refreshPrimaryEnvironmentProjectionSnapshot,
   reconnectSavedEnvironment,
   removeSavedEnvironment,
 } from "~/environments/runtime";
@@ -970,6 +971,7 @@ function HistorySyncSettingsSection() {
       const next = await ensureLocalApi().server.restoreHistorySyncBackup();
       setConfig(next);
       setForm(historySyncFormFromConfig(next));
+      await refreshPrimaryEnvironmentProjectionSnapshot();
       toastManager.add({ type: "success", title: "History sync backup restored" });
     } catch (restoreError) {
       setError(
