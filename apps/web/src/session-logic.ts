@@ -222,6 +222,7 @@ export function deriveThreadWorkDurationMs(input: {
   latestTurn: LatestTurnTiming | null;
   session: SessionActivityState | null;
   sendStartedAt: string | null;
+  activities?: ReadonlyArray<OrchestrationThreadActivity>;
   nowMs: number;
 }): { durationMs: number; ticking: boolean } {
   const persistedDurationMs = Math.max(0, Math.floor(input.totalWorkDurationMs));
@@ -239,10 +240,133 @@ export function deriveThreadWorkDurationMs(input: {
     return { durationMs: persistedDurationMs, ticking: false };
   }
 
+  const pauseState = deriveUserInputPauseDurationMs(
+    input.activities ?? [],
+    activeWorkStartedAt,
+    input.nowMs,
+  );
+  const liveDurationMs = Math.max(
+    0,
+    input.nowMs - activeWorkStartedAtMs - pauseState.pausedDurationMs,
+  );
+
   return {
-    durationMs: persistedDurationMs + input.nowMs - activeWorkStartedAtMs,
-    ticking: true,
+    durationMs: persistedDurationMs + liveDurationMs,
+    ticking: !pauseState.hasOpenPause,
   };
+}
+
+export function deriveUserInputPauseDurationMs(
+  activities: ReadonlyArray<OrchestrationThreadActivity>,
+  activeStartIso: string,
+  activeEndMs: number,
+): { pausedDurationMs: number; hasOpenPause: boolean } {
+  const activeStartMs = Date.parse(activeStartIso);
+  if (
+    !Number.isFinite(activeStartMs) ||
+    !Number.isFinite(activeEndMs) ||
+    activeEndMs <= activeStartMs
+  ) {
+    return { pausedDurationMs: 0, hasOpenPause: false };
+  }
+
+  const openByRequestId = new Map<ApprovalRequestId, number>();
+  const pauseIntervals: Array<{ startMs: number; endMs: number }> = [];
+  const ordered = [...activities].toSorted(compareActivitiesByOrder);
+
+  const closePauseWindow = (requestId: ApprovalRequestId, closedAtIso: string) => {
+    const openedAtMs = openByRequestId.get(requestId);
+    if (openedAtMs === undefined) {
+      return;
+    }
+    openByRequestId.delete(requestId);
+
+    const closedAtMs = Date.parse(closedAtIso);
+    if (!Number.isFinite(openedAtMs) || !Number.isFinite(closedAtMs)) {
+      return;
+    }
+    const overlapStartMs = Math.max(openedAtMs, activeStartMs);
+    const overlapEndMs = Math.min(closedAtMs, activeEndMs);
+    if (overlapEndMs > overlapStartMs) {
+      pauseIntervals.push({ startMs: overlapStartMs, endMs: overlapEndMs });
+    }
+  };
+
+  for (const activity of ordered) {
+    const payload =
+      activity.payload && typeof activity.payload === "object"
+        ? (activity.payload as Record<string, unknown>)
+        : null;
+    const requestId =
+      payload && typeof payload.requestId === "string"
+        ? ApprovalRequestId.make(payload.requestId)
+        : null;
+    const detail = payload && typeof payload.detail === "string" ? payload.detail : undefined;
+
+    if (activity.kind === "user-input.requested" && requestId) {
+      openByRequestId.set(requestId, Date.parse(activity.createdAt));
+      continue;
+    }
+
+    if (activity.kind === "user-input.resolved" && requestId) {
+      closePauseWindow(requestId, activity.createdAt);
+      continue;
+    }
+
+    if (
+      activity.kind === "provider.user-input.respond.failed" &&
+      requestId &&
+      isStalePendingRequestFailureDetail(detail)
+    ) {
+      closePauseWindow(requestId, activity.createdAt);
+    }
+  }
+
+  for (const openedAtMs of openByRequestId.values()) {
+    if (!Number.isFinite(openedAtMs)) {
+      continue;
+    }
+    const overlapStartMs = Math.max(openedAtMs, activeStartMs);
+    if (activeEndMs > overlapStartMs) {
+      pauseIntervals.push({ startMs: overlapStartMs, endMs: activeEndMs });
+    }
+  }
+
+  const pausedDurationMs = sumMergedIntervalsMs(pauseIntervals);
+  return { pausedDurationMs, hasOpenPause: openByRequestId.size > 0 };
+}
+
+function sumMergedIntervalsMs(
+  intervals: ReadonlyArray<{ startMs: number; endMs: number }>,
+): number {
+  const ordered = [...intervals].toSorted((left, right) => left.startMs - right.startMs);
+  let totalMs = 0;
+  let currentStartMs: number | null = null;
+  let currentEndMs: number | null = null;
+
+  for (const interval of ordered) {
+    if (interval.endMs <= interval.startMs) {
+      continue;
+    }
+    if (currentStartMs === null || currentEndMs === null) {
+      currentStartMs = interval.startMs;
+      currentEndMs = interval.endMs;
+      continue;
+    }
+    if (interval.startMs <= currentEndMs) {
+      currentEndMs = Math.max(currentEndMs, interval.endMs);
+      continue;
+    }
+    totalMs += currentEndMs - currentStartMs;
+    currentStartMs = interval.startMs;
+    currentEndMs = interval.endMs;
+  }
+
+  if (currentStartMs !== null && currentEndMs !== null) {
+    totalMs += currentEndMs - currentStartMs;
+  }
+
+  return totalMs;
 }
 
 function requestKindFromRequestType(requestType: unknown): PendingApproval["requestKind"] | null {

@@ -1852,6 +1852,20 @@ describe("deriveActiveWorkStartedAt", () => {
 });
 
 describe("deriveThreadWorkDurationMs", () => {
+  const userInputQuestions = [
+    {
+      id: "next_step",
+      header: "Next",
+      question: "What should happen next?",
+      options: [
+        {
+          label: "Continue",
+          description: "Continue the turn",
+        },
+      ],
+    },
+  ];
+
   it("adds live running duration to persisted work time", () => {
     const result = deriveThreadWorkDurationMs({
       totalWorkDurationMs: 4_000,
@@ -1869,6 +1883,130 @@ describe("deriveThreadWorkDurationMs", () => {
     });
 
     expect(result).toEqual({ durationMs: 7_000, ticking: true });
+  });
+
+  it("continues ticking while post-model tool work is active", () => {
+    const result = deriveThreadWorkDurationMs({
+      totalWorkDurationMs: 4_000,
+      latestTurn: {
+        turnId: TurnId.make("turn-1"),
+        startedAt: "2026-02-27T21:10:00.000Z",
+        completedAt: "2026-02-27T21:10:03.000Z",
+      },
+      session: {
+        orchestrationStatus: "running",
+        activeTurnId: TurnId.make("turn-1"),
+      },
+      sendStartedAt: null,
+      activities: [
+        makeActivity({
+          id: "tool-active",
+          createdAt: "2026-02-27T21:10:04.000Z",
+          kind: "tool.started",
+        }),
+      ],
+      nowMs: Date.parse("2026-02-27T21:10:06.000Z"),
+    });
+
+    expect(result).toEqual({ durationMs: 10_000, ticking: true });
+  });
+
+  it("pauses while a user-input request is open", () => {
+    const result = deriveThreadWorkDurationMs({
+      totalWorkDurationMs: 4_000,
+      latestTurn: {
+        turnId: TurnId.make("turn-1"),
+        startedAt: "2026-02-27T21:10:00.000Z",
+        completedAt: null,
+      },
+      session: {
+        orchestrationStatus: "running",
+        activeTurnId: TurnId.make("turn-1"),
+      },
+      sendStartedAt: null,
+      activities: [
+        makeActivity({
+          id: "user-input-open",
+          createdAt: "2026-02-27T21:10:03.000Z",
+          kind: "user-input.requested",
+          payload: {
+            requestId: "req-user-input-1",
+            questions: userInputQuestions,
+          },
+        }),
+      ],
+      nowMs: Date.parse("2026-02-27T21:10:08.000Z"),
+    });
+
+    expect(result).toEqual({ durationMs: 7_000, ticking: false });
+  });
+
+  it("subtracts completed user-input pause intervals after resolution", () => {
+    const result = deriveThreadWorkDurationMs({
+      totalWorkDurationMs: 4_000,
+      latestTurn: {
+        turnId: TurnId.make("turn-1"),
+        startedAt: "2026-02-27T21:10:00.000Z",
+        completedAt: null,
+      },
+      session: {
+        orchestrationStatus: "running",
+        activeTurnId: TurnId.make("turn-1"),
+      },
+      sendStartedAt: null,
+      activities: [
+        makeActivity({
+          id: "user-input-open",
+          createdAt: "2026-02-27T21:10:03.000Z",
+          kind: "user-input.requested",
+          payload: {
+            requestId: "req-user-input-1",
+            questions: userInputQuestions,
+          },
+        }),
+        makeActivity({
+          id: "user-input-resolved",
+          createdAt: "2026-02-27T21:10:07.000Z",
+          kind: "user-input.resolved",
+          payload: {
+            requestId: "req-user-input-1",
+          },
+        }),
+      ],
+      nowMs: Date.parse("2026-02-27T21:10:10.000Z"),
+    });
+
+    expect(result).toEqual({ durationMs: 10_000, ticking: true });
+  });
+
+  it("does not pause for approval requests", () => {
+    const result = deriveThreadWorkDurationMs({
+      totalWorkDurationMs: 4_000,
+      latestTurn: {
+        turnId: TurnId.make("turn-1"),
+        startedAt: "2026-02-27T21:10:00.000Z",
+        completedAt: null,
+      },
+      session: {
+        orchestrationStatus: "running",
+        activeTurnId: TurnId.make("turn-1"),
+      },
+      sendStartedAt: null,
+      activities: [
+        makeActivity({
+          id: "approval-open",
+          createdAt: "2026-02-27T21:10:03.000Z",
+          kind: "approval.requested",
+          payload: {
+            requestId: "req-approval-1",
+            requestKind: "command",
+          },
+        }),
+      ],
+      nowMs: Date.parse("2026-02-27T21:10:08.000Z"),
+    });
+
+    expect(result).toEqual({ durationMs: 12_000, ticking: true });
   });
 
   it("does not double-count settled latest turns", () => {
@@ -1900,5 +2038,54 @@ describe("deriveThreadWorkDurationMs", () => {
     });
 
     expect(result).toEqual({ durationMs: 6_000, ticking: true });
+  });
+
+  it("resumes when a done task is continued via a new send", () => {
+    const result = deriveThreadWorkDurationMs({
+      totalWorkDurationMs: 4_000,
+      latestTurn: {
+        turnId: TurnId.make("turn-1"),
+        startedAt: "2026-02-27T21:10:00.000Z",
+        completedAt: "2026-02-27T21:10:03.000Z",
+      },
+      session: {
+        orchestrationStatus: "ready",
+        activeTurnId: undefined,
+      },
+      sendStartedAt: "2026-02-27T21:11:00.000Z",
+      nowMs: Date.parse("2026-02-27T21:11:05.000Z"),
+    });
+
+    expect(result).toEqual({ durationMs: 9_000, ticking: true });
+  });
+
+  it("does not produce negative duration for invalid pause timestamps", () => {
+    const result = deriveThreadWorkDurationMs({
+      totalWorkDurationMs: 4_000,
+      latestTurn: {
+        turnId: TurnId.make("turn-1"),
+        startedAt: "2026-02-27T21:10:00.000Z",
+        completedAt: null,
+      },
+      session: {
+        orchestrationStatus: "running",
+        activeTurnId: TurnId.make("turn-1"),
+      },
+      sendStartedAt: null,
+      activities: [
+        makeActivity({
+          id: "user-input-open",
+          createdAt: "not-a-date",
+          kind: "user-input.requested",
+          payload: {
+            requestId: "req-user-input-1",
+            questions: userInputQuestions,
+          },
+        }),
+      ],
+      nowMs: Date.parse("2026-02-27T21:10:08.000Z"),
+    });
+
+    expect(result).toEqual({ durationMs: 12_000, ticking: false });
   });
 });

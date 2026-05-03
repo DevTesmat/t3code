@@ -3838,6 +3838,7 @@ export default function ChatView(props: ChatViewProps) {
                   latestTurn={activeLatestTurn}
                   session={activeThread.session}
                   sendStartedAt={localDispatchStartedAt}
+                  activities={threadActivities}
                 />
               ) : null}
               <ComposerChangedFilesBar
@@ -4028,6 +4029,7 @@ function ComposerThreadWorkLabel(props: {
   latestTurn: Thread["latestTurn"] | null;
   session: Thread["session"] | null;
   sendStartedAt: string | null;
+  activities: ReadonlyArray<OrchestrationThreadActivity>;
 }) {
   const [nowMs, setNowMs] = useState(() => Date.now());
   const workDuration = deriveThreadWorkDurationMs({
@@ -4035,6 +4037,7 @@ function ComposerThreadWorkLabel(props: {
     latestTurn: props.latestTurn,
     session: props.session,
     sendStartedAt: props.sendStartedAt,
+    activities: props.activities,
     nowMs,
   });
 
