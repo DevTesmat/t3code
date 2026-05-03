@@ -3728,9 +3728,9 @@ export default function ChatView(props: ChatViewProps) {
           "border-b border-border",
           isElectron
             ? cn(
-                "app-topbar-main drag-region fixed top-0 right-0 left-0 z-30 flex h-[52px] items-center bg-background px-3 pl-[104px] sm:px-5 sm:pl-[104px] wco:h-[env(titlebar-area-height)] wco:pl-[calc(env(titlebar-area-x)+env(titlebar-area-width)+1em)] desktop-fullscreen:pl-3 desktop-fullscreen:sm:pl-5 desktop-fullscreen:wco:pl-3 desktop-fullscreen:wco:sm:pl-5",
+                "app-topbar-main drag-region fixed top-0 right-0 left-0 z-30 flex h-[52px] items-center bg-background px-3 pl-[104px] sm:px-5 sm:pl-[104px] wco:h-[env(titlebar-area-height)] wco:pl-[calc(env(titlebar-area-x)+1em)] desktop-fullscreen:pl-3 desktop-fullscreen:sm:pl-5 desktop-fullscreen:wco:pl-3 desktop-fullscreen:wco:sm:pl-5",
                 reserveTitleBarControlInset &&
-                  "wco:pr-[calc(100vw-env(titlebar-area-width)-env(titlebar-area-x)+1em)]",
+                  "wco:pr-[calc(100vw-env(titlebar-area-x)-env(titlebar-area-width)+1em)]",
               )
             : "app-topbar-main fixed top-0 right-0 left-0 z-30 bg-background pb-2 pl-[calc(env(safe-area-inset-left)+0.75rem)] pr-[calc(env(safe-area-inset-right)+0.75rem)] pt-2 sm:pb-3 sm:pl-[calc(env(safe-area-inset-left)+1.25rem)] sm:pr-[calc(env(safe-area-inset-right)+1.25rem)] sm:pt-3",
         )}

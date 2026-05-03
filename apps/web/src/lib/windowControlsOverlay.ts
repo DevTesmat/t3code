@@ -24,19 +24,80 @@ export function syncDocumentWindowControlsOverlayClass(): () => void {
     return () => {};
   }
 
-  const overlay = getWindowControlsOverlay();
   const update = () => {
+    const overlay = getWindowControlsOverlay();
     document.documentElement.classList.toggle(WCO_CLASS_NAME, overlay !== null && overlay.visible);
   };
 
+  const animationFrameIds: number[] = [];
+  const timeoutIds: ReturnType<typeof setTimeout>[] = [];
+
+  const scheduleAnimationFrameUpdate = () => {
+    if (typeof requestAnimationFrame !== "function") {
+      return;
+    }
+
+    animationFrameIds.push(requestAnimationFrame(update));
+  };
+
+  const scheduleTimeoutUpdate = (delayMs: number) => {
+    timeoutIds.push(setTimeout(update, delayMs));
+  };
+
+  const onVisibilityChange = () => {
+    if (document.visibilityState === "visible") {
+      update();
+      scheduleAnimationFrameUpdate();
+    }
+  };
+
+  const onWindowFocus = () => {
+    update();
+    scheduleAnimationFrameUpdate();
+  };
+
   update();
+  scheduleAnimationFrameUpdate();
+  scheduleTimeoutUpdate(50);
+
+  document.addEventListener("visibilitychange", onVisibilityChange);
+  if (typeof window !== "undefined") {
+    window.addEventListener("focus", onWindowFocus);
+  }
+
+  const overlay = getWindowControlsOverlay();
   if (!overlay) {
-    return () => {};
+    return () => {
+      document.removeEventListener("visibilitychange", onVisibilityChange);
+      if (typeof window !== "undefined") {
+        window.removeEventListener("focus", onWindowFocus);
+      }
+      if (typeof cancelAnimationFrame === "function") {
+        for (const animationFrameId of animationFrameIds) {
+          cancelAnimationFrame(animationFrameId);
+        }
+      }
+      for (const timeoutId of timeoutIds) {
+        clearTimeout(timeoutId);
+      }
+    };
   }
 
   overlay.addEventListener("geometrychange", update);
   return () => {
     overlay.removeEventListener("geometrychange", update);
+    document.removeEventListener("visibilitychange", onVisibilityChange);
+    if (typeof window !== "undefined") {
+      window.removeEventListener("focus", onWindowFocus);
+    }
+    if (typeof cancelAnimationFrame === "function") {
+      for (const animationFrameId of animationFrameIds) {
+        cancelAnimationFrame(animationFrameId);
+      }
+    }
+    for (const timeoutId of timeoutIds) {
+      clearTimeout(timeoutId);
+    }
   };
 }
 

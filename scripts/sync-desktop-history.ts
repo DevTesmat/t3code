@@ -297,7 +297,7 @@ function formatTimestamp(date: Date) {
 }
 
 function usage() {
-  return `Usage: node scripts/sync-desktop-history.ts [options]
+  return `Usage: bun scripts/sync-desktop-history.ts [options]
 
 Options:
   --base-dir <path>    Base T3Code dir. Defaults to T3CODE_HOME or ~/.t3.

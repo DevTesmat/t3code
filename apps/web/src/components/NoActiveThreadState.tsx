@@ -12,7 +12,7 @@ export function NoActiveThreadState() {
           className={cn(
             "app-topbar-main fixed top-0 right-0 left-0 z-30 border-b border-border bg-background",
             isElectron
-              ? "drag-region flex h-[52px] items-center px-3 pl-[104px] sm:px-5 sm:pl-[104px] wco:h-[env(titlebar-area-height)] wco:pl-[calc(env(titlebar-area-x)+env(titlebar-area-width)+1em)] desktop-fullscreen:pl-3 desktop-fullscreen:sm:pl-5 desktop-fullscreen:wco:pl-3 desktop-fullscreen:wco:sm:pl-5"
+              ? "drag-region flex h-[52px] items-center px-3 pl-[104px] sm:px-5 sm:pl-[104px] wco:h-[env(titlebar-area-height)] wco:pl-[calc(env(titlebar-area-x)+1em)] desktop-fullscreen:pl-3 desktop-fullscreen:sm:pl-5 desktop-fullscreen:wco:pl-3 desktop-fullscreen:wco:sm:pl-5"
               : "px-3 py-2 sm:px-5 sm:py-3",
           )}
         >
@@ -21,7 +21,7 @@ export function NoActiveThreadState() {
               className={cn(
                 "flex min-w-0 flex-1 items-center gap-2 overflow-hidden sm:gap-3",
                 isElectron &&
-                  "wco:pr-[calc(100vw-env(titlebar-area-width)-env(titlebar-area-x)+1em)]",
+                  "wco:pr-[calc(100vw-env(titlebar-area-x)-env(titlebar-area-width)+1em)]",
               )}
             >
               <SidebarTrigger className="size-7 shrink-0 md:hidden" />
