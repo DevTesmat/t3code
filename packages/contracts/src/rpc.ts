@@ -71,6 +71,11 @@ import {
 import {
   ServerConfigStreamEvent,
   ServerConfig,
+  HistorySyncConfig,
+  HistorySyncConfigError,
+  HistorySyncConnectionTestInput,
+  HistorySyncConnectionTestResult,
+  HistorySyncUpdateConfigInput,
   ServerLifecycleStreamEvent,
   ServerProviderUpdatedPayload,
   ServerUpsertKeybindingInput,
@@ -119,6 +124,9 @@ export const WS_METHODS = {
   serverUpsertKeybinding: "server.upsertKeybinding",
   serverGetSettings: "server.getSettings",
   serverUpdateSettings: "server.updateSettings",
+  serverGetHistorySyncConfig: "server.getHistorySyncConfig",
+  serverUpdateHistorySyncConfig: "server.updateHistorySyncConfig",
+  serverTestHistorySyncConnection: "server.testHistorySyncConnection",
 
   // Streaming subscriptions
   subscribeGitStatus: "subscribeGitStatus",
@@ -164,6 +172,30 @@ export const WsServerUpdateSettingsRpc = Rpc.make(WS_METHODS.serverUpdateSetting
   success: ServerSettings,
   error: ServerSettingsError,
 });
+
+export const WsServerGetHistorySyncConfigRpc = Rpc.make(WS_METHODS.serverGetHistorySyncConfig, {
+  payload: Schema.Struct({}),
+  success: HistorySyncConfig,
+  error: Schema.Union([ServerSettingsError, HistorySyncConfigError]),
+});
+
+export const WsServerUpdateHistorySyncConfigRpc = Rpc.make(
+  WS_METHODS.serverUpdateHistorySyncConfig,
+  {
+    payload: HistorySyncUpdateConfigInput,
+    success: HistorySyncConfig,
+    error: Schema.Union([ServerSettingsError, HistorySyncConfigError]),
+  },
+);
+
+export const WsServerTestHistorySyncConnectionRpc = Rpc.make(
+  WS_METHODS.serverTestHistorySyncConnection,
+  {
+    payload: HistorySyncConnectionTestInput,
+    success: HistorySyncConnectionTestResult,
+    error: HistorySyncConfigError,
+  },
+);
 
 export const WsProjectsSearchEntriesRpc = Rpc.make(WS_METHODS.projectsSearchEntries, {
   payload: ProjectSearchEntriesInput,
@@ -370,6 +402,9 @@ export const WsRpcGroup = RpcGroup.make(
   WsServerUpsertKeybindingRpc,
   WsServerGetSettingsRpc,
   WsServerUpdateSettingsRpc,
+  WsServerGetHistorySyncConfigRpc,
+  WsServerUpdateHistorySyncConfigRpc,
+  WsServerTestHistorySyncConnectionRpc,
   WsProjectsSearchEntriesRpc,
   WsProjectsWriteFileRpc,
   WsShellOpenInEditorRpc,

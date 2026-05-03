@@ -64,6 +64,7 @@ import {
 } from "./auth/http.ts";
 import { ServerSecretStoreLive } from "./auth/Layers/ServerSecretStore.ts";
 import { ServerAuthLive } from "./auth/Layers/ServerAuth.ts";
+import { HistorySyncService, HistorySyncServiceLive } from "./historySync.ts";
 import { OrchestrationLayerLive } from "./orchestration/runtimeLayer.ts";
 import {
   clearPersistedServerRuntimeState,
@@ -191,12 +192,19 @@ const AuthLayerLive = ServerAuthLive.pipe(
   Layer.provide(ServerSecretStoreLive),
 );
 
+const HistorySyncLayerLive = Layer.effectDiscard(
+  Effect.gen(function* () {
+    const historySync = yield* HistorySyncService;
+    yield* historySync.start;
+  }),
+).pipe(Layer.provideMerge(HistorySyncServiceLive.pipe(Layer.provide(ServerSecretStoreLive))));
+
 const ProviderRuntimeLayerLive = ProviderSessionReaperLive.pipe(
   Layer.provideMerge(ProviderLayerLive),
   Layer.provideMerge(OrchestrationLayerLive),
 );
 
-const RuntimeDependenciesLive = ReactorLayerLive.pipe(
+const RuntimeDependenciesBaseLive = ReactorLayerLive.pipe(
   // Core Services
   Layer.provideMerge(CheckpointingLayerLive),
   Layer.provideMerge(GitLayerLive),
@@ -238,7 +246,7 @@ const RuntimeDependenciesLive = ReactorLayerLive.pipe(
 );
 
 const RuntimeServicesLive = ServerRuntimeStartupLive.pipe(
-  Layer.provideMerge(RuntimeDependenciesLive),
+  Layer.provideMerge(RuntimeDependenciesBaseLive),
 );
 
 export const makeRoutesLayer = Layer.mergeAll(
@@ -303,6 +311,7 @@ export const makeServerLayer = Layer.unwrap(
       }),
       httpListeningLayer,
       runtimeStateLayer,
+      HistorySyncLayerLive,
     );
 
     return serverApplicationLayer.pipe(

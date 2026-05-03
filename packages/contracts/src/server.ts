@@ -167,6 +167,95 @@ export const ServerObservability = Schema.Struct({
 });
 export type ServerObservability = typeof ServerObservability.Type;
 
+export const HistorySyncStatus = Schema.Union([
+  Schema.Struct({
+    state: Schema.Literal("disabled"),
+    configured: Schema.Boolean,
+  }),
+  Schema.Struct({
+    state: Schema.Literal("idle"),
+    configured: Schema.Boolean,
+    lastSyncedAt: Schema.NullOr(IsoDateTime),
+  }),
+  Schema.Struct({
+    state: Schema.Literal("syncing"),
+    configured: Schema.Boolean,
+    startedAt: IsoDateTime,
+    lastSyncedAt: Schema.NullOr(IsoDateTime),
+  }),
+  Schema.Struct({
+    state: Schema.Literal("error"),
+    configured: Schema.Boolean,
+    message: TrimmedNonEmptyString,
+    lastSyncedAt: Schema.NullOr(IsoDateTime),
+  }),
+]);
+export type HistorySyncStatus = typeof HistorySyncStatus.Type;
+
+export const HistorySyncConnectionSummary = Schema.Struct({
+  host: TrimmedNonEmptyString,
+  port: Schema.Number,
+  database: TrimmedNonEmptyString,
+  username: TrimmedNonEmptyString,
+  tlsEnabled: Schema.Boolean,
+});
+export type HistorySyncConnectionSummary = typeof HistorySyncConnectionSummary.Type;
+
+export const HistorySyncMysqlFields = Schema.Struct({
+  host: TrimmedNonEmptyString,
+  port: Schema.Number,
+  database: TrimmedNonEmptyString,
+  username: TrimmedNonEmptyString,
+  password: Schema.String,
+  tlsEnabled: Schema.Boolean,
+});
+export type HistorySyncMysqlFields = typeof HistorySyncMysqlFields.Type;
+
+export const HistorySyncConfig = Schema.Struct({
+  enabled: Schema.Boolean,
+  configured: Schema.Boolean,
+  status: HistorySyncStatus,
+  intervalMs: Schema.Number,
+  shutdownFlushTimeoutMs: Schema.Number,
+  statusIndicatorEnabled: Schema.Boolean,
+  connectionSummary: Schema.optionalKey(HistorySyncConnectionSummary),
+});
+export type HistorySyncConfig = typeof HistorySyncConfig.Type;
+
+export const HistorySyncSettingsPatch = Schema.Struct({
+  enabled: Schema.optionalKey(Schema.Boolean),
+  intervalMs: Schema.optionalKey(Schema.Number),
+  shutdownFlushTimeoutMs: Schema.optionalKey(Schema.Number),
+  statusIndicatorEnabled: Schema.optionalKey(Schema.Boolean),
+});
+export type HistorySyncSettingsPatch = typeof HistorySyncSettingsPatch.Type;
+
+export const HistorySyncUpdateConfigInput = Schema.Struct({
+  settings: Schema.optionalKey(HistorySyncSettingsPatch),
+  mysql: Schema.optionalKey(HistorySyncMysqlFields),
+  clearConnection: Schema.optionalKey(Schema.Boolean),
+});
+export type HistorySyncUpdateConfigInput = typeof HistorySyncUpdateConfigInput.Type;
+
+export const HistorySyncConnectionTestInput = Schema.Struct({
+  mysql: HistorySyncMysqlFields,
+});
+export type HistorySyncConnectionTestInput = typeof HistorySyncConnectionTestInput.Type;
+
+export const HistorySyncConnectionTestResult = Schema.Struct({
+  success: Schema.Boolean,
+  message: Schema.optionalKey(TrimmedNonEmptyString),
+});
+export type HistorySyncConnectionTestResult = typeof HistorySyncConnectionTestResult.Type;
+
+export class HistorySyncConfigError extends Schema.TaggedErrorClass<HistorySyncConfigError>()(
+  "HistorySyncConfigError",
+  {
+    message: TrimmedNonEmptyString,
+    cause: Schema.optional(Schema.Defect),
+  },
+) {}
+
 export const ServerConfig = Schema.Struct({
   environment: ExecutionEnvironmentDescriptor,
   auth: ServerAuthDescriptor,
@@ -177,6 +266,9 @@ export const ServerConfig = Schema.Struct({
   providers: ServerProviders,
   availableEditors: Schema.Array(EditorId),
   observability: ServerObservability,
+  historySync: Schema.optionalKey(HistorySyncStatus).pipe(
+    Schema.withDecodingDefault(Effect.succeed({ state: "disabled", configured: false })),
+  ),
   settings: ServerSettings,
 });
 export type ServerConfig = typeof ServerConfig.Type;
@@ -214,6 +306,11 @@ export const ServerConfigSettingsUpdatedPayload = Schema.Struct({
 });
 export type ServerConfigSettingsUpdatedPayload = typeof ServerConfigSettingsUpdatedPayload.Type;
 
+export const ServerConfigHistorySyncStatusPayload = Schema.Struct({
+  historySync: HistorySyncStatus,
+});
+export type ServerConfigHistorySyncStatusPayload = typeof ServerConfigHistorySyncStatusPayload.Type;
+
 export const ServerConfigStreamSnapshotEvent = Schema.Struct({
   version: Schema.Literal(1),
   type: Schema.Literal("snapshot"),
@@ -245,11 +342,20 @@ export const ServerConfigStreamSettingsUpdatedEvent = Schema.Struct({
 export type ServerConfigStreamSettingsUpdatedEvent =
   typeof ServerConfigStreamSettingsUpdatedEvent.Type;
 
+export const ServerConfigStreamHistorySyncStatusEvent = Schema.Struct({
+  version: Schema.Literal(1),
+  type: Schema.Literal("historySyncStatus"),
+  payload: ServerConfigHistorySyncStatusPayload,
+});
+export type ServerConfigStreamHistorySyncStatusEvent =
+  typeof ServerConfigStreamHistorySyncStatusEvent.Type;
+
 export const ServerConfigStreamEvent = Schema.Union([
   ServerConfigStreamSnapshotEvent,
   ServerConfigStreamKeybindingsUpdatedEvent,
   ServerConfigStreamProviderStatusesEvent,
   ServerConfigStreamSettingsUpdatedEvent,
+  ServerConfigStreamHistorySyncStatusEvent,
 ]);
 export type ServerConfigStreamEvent = typeof ServerConfigStreamEvent.Type;
 

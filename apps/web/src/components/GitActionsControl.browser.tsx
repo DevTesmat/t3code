@@ -28,6 +28,7 @@ const {
   gitQuickActionPreferenceRef,
   hasServerThreadRef,
   invalidateGitQueriesSpy,
+  pullMutateAsyncSpy,
   refreshGitStatusSpy,
   runStackedActionMutateAsyncSpy,
   setDraftThreadContextSpy,
@@ -42,6 +43,13 @@ const {
   gitQuickActionPreferenceRef: { current: "commit_push_pr" as "commit_push" | "commit_push_pr" },
   hasServerThreadRef: { current: true },
   invalidateGitQueriesSpy: vi.fn(() => Promise.resolve()),
+  pullMutateAsyncSpy: vi.fn(() =>
+    Promise.resolve({
+      status: "skipped_up_to_date",
+      branch: BRANCH_NAME,
+      upstreamBranch: `origin/${BRANCH_NAME}`,
+    }),
+  ),
   refreshGitStatusSpy: vi.fn(() => Promise.resolve(null)),
   runStackedActionMutateAsyncSpy: vi.fn(() => activeRunStackedActionDeferredRef.current.promise),
   setDraftThreadContextSpy: vi.fn(),
@@ -69,7 +77,7 @@ vi.mock("@tanstack/react-query", async () => {
 
       if (options.__kind === "pull") {
         return {
-          mutateAsync: vi.fn(),
+          mutateAsync: pullMutateAsyncSpy,
           isPending: false,
         };
       }
@@ -247,6 +255,7 @@ vi.mock("~/terminal-links", () => ({
 }));
 
 vi.mock("~/hooks/useSettings", () => ({
+  getClientSettings: () => ({ gitQuickActionPreference: gitQuickActionPreferenceRef.current }),
   useSettings: (
     selector: (settings: { gitQuickActionPreference: "commit_push" | "commit_push_pr" }) => unknown,
   ) => selector({ gitQuickActionPreference: gitQuickActionPreferenceRef.current }),
@@ -258,6 +267,10 @@ function findButtonByText(text: string): HTMLButtonElement | null {
   return (Array.from(document.querySelectorAll("button")).find((button) =>
     button.textContent?.includes(text),
   ) ?? null) as HTMLButtonElement | null;
+}
+
+function findButtonByLabel(label: string): HTMLButtonElement | null {
+  return document.querySelector(`button[aria-label="${label}"]`);
 }
 
 function Harness() {
@@ -394,6 +407,65 @@ describe("GitActionsControl thread-scoped progress toast", () => {
         Object.defineProperty(document, "visibilityState", originalVisibilityState);
       }
       vi.useRealTimers();
+      await screen.unmount();
+      host.remove();
+    }
+  });
+
+  it("runs pull from the dedicated pull button when the branch is not behind", async () => {
+    const host = document.createElement("div");
+    document.body.append(host);
+    const screen = await render(
+      <GitActionsControl
+        gitCwd={GIT_CWD}
+        activeThreadRef={scopeThreadRef(ENVIRONMENT_A, SHARED_THREAD_ID)}
+      />,
+      {
+        container: host,
+      },
+    );
+
+    try {
+      const pullButton = findButtonByLabel("Pull");
+      expect(pullButton, 'Unable to find button with label "Pull"').toBeTruthy();
+      if (!(pullButton instanceof HTMLButtonElement)) {
+        throw new Error('Unable to find button with label "Pull"');
+      }
+
+      pullButton.click();
+      await Promise.resolve();
+
+      expect(pullMutateAsyncSpy).toHaveBeenCalledTimes(1);
+      expect(toastPromiseSpy).toHaveBeenCalledWith(
+        expect.any(Promise),
+        expect.objectContaining({
+          loading: {
+            title: "Pulling...",
+            data: { threadRef: scopeThreadRef(ENVIRONMENT_A, SHARED_THREAD_ID) },
+          },
+          success: expect.any(Function),
+          error: expect.any(Function),
+        }),
+      );
+
+      const toastOptions = toastPromiseSpy.mock.lastCall?.[1];
+      expect(
+        toastOptions?.success?.({
+          status: "skipped_up_to_date",
+          branch: BRANCH_NAME,
+          upstreamBranch: `origin/${BRANCH_NAME}`,
+        }),
+      ).toEqual({
+        title: "Already up to date",
+        description: `${BRANCH_NAME} is already synchronized.`,
+        data: { threadRef: scopeThreadRef(ENVIRONMENT_A, SHARED_THREAD_ID) },
+      });
+      expect(toastOptions?.error?.(new Error("network unavailable"))).toEqual({
+        title: "Pull failed",
+        description: "network unavailable",
+        data: { threadRef: scopeThreadRef(ENVIRONMENT_A, SHARED_THREAD_ID) },
+      });
+    } finally {
       await screen.unmount();
       host.remove();
     }

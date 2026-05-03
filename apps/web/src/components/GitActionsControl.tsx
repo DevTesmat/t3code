@@ -7,7 +7,13 @@ import type {
 } from "@t3tools/contracts";
 import { useIsMutating, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useCallback, useEffect, useEffectEvent, useMemo, useRef, useState } from "react";
-import { ChevronDownIcon, CloudUploadIcon, GitCommitIcon, InfoIcon } from "lucide-react";
+import {
+  ChevronDownIcon,
+  CloudDownloadIcon,
+  CloudUploadIcon,
+  GitCommitIcon,
+  InfoIcon,
+} from "lucide-react";
 import { GitHubIcon } from "./Icons";
 import {
   buildGitActionProgressStages,
@@ -778,33 +784,37 @@ export default function GitActionsControl({
     });
   };
 
+  const runPullAction = useCallback(() => {
+    const promise = pullMutation.mutateAsync();
+    void toastManager.promise<
+      Awaited<ReturnType<typeof pullMutation.mutateAsync>>,
+      ThreadToastData
+    >(promise, {
+      loading: { title: "Pulling...", data: threadToastData },
+      success: (result) => ({
+        title: result.status === "pulled" ? "Pulled" : "Already up to date",
+        description:
+          result.status === "pulled"
+            ? `Updated ${result.branch} from ${result.upstreamBranch ?? "upstream"}`
+            : `${result.branch} is already synchronized.`,
+        data: threadToastData,
+      }),
+      error: (err) => ({
+        title: "Pull failed",
+        description: err instanceof Error ? err.message : "An error occurred.",
+        data: threadToastData,
+      }),
+    });
+    void promise.catch(() => undefined);
+  }, [pullMutation, threadToastData]);
+
   const runQuickAction = () => {
     if (quickAction.kind === "open_pr") {
       void openExistingPr();
       return;
     }
     if (quickAction.kind === "run_pull") {
-      const promise = pullMutation.mutateAsync();
-      void toastManager.promise<
-        Awaited<ReturnType<typeof pullMutation.mutateAsync>>,
-        ThreadToastData
-      >(promise, {
-        loading: { title: "Pulling...", data: threadToastData },
-        success: (result) => ({
-          title: result.status === "pulled" ? "Pulled" : "Already up to date",
-          description:
-            result.status === "pulled"
-              ? `Updated ${result.branch} from ${result.upstreamBranch ?? "upstream"}`
-              : `${result.branch} is already synchronized.`,
-          data: threadToastData,
-        }),
-        error: (err) => ({
-          title: "Pull failed",
-          description: err instanceof Error ? err.message : "An error occurred.",
-          data: threadToastData,
-        }),
-      });
-      void promise.catch(() => undefined);
+      runPullAction();
       return;
     }
     if (quickAction.kind === "show_hint") {
@@ -930,6 +940,16 @@ export default function GitActionsControl({
               </span>
             </Button>
           )}
+          <GroupSeparator className="hidden @3xl/header-actions:block" />
+          <Button
+            aria-label="Pull"
+            variant="outline"
+            size="icon-xs"
+            disabled={isGitActionRunning}
+            onClick={runPullAction}
+          >
+            <CloudDownloadIcon aria-hidden="true" className="size-4" />
+          </Button>
           <GroupSeparator className="hidden @3xl/header-actions:block" />
           <Menu
             onOpenChange={(open) => {

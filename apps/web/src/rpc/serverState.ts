@@ -79,6 +79,7 @@ export function getServerConfigUpdatedNotification(): ServerConfigUpdatedNotific
 }
 
 export function setServerConfigSnapshot(config: ServerConfig): void {
+  logHistorySyncStatusForDev("snapshot", config.historySync);
   resolveServerConfig(config);
   emitProvidersUpdated({ providers: config.providers });
   emitServerConfigUpdated(toServerConfigUpdatedPayload(config), "snapshot");
@@ -112,6 +113,10 @@ export function applyServerConfigEvent(event: ServerConfigStreamEvent): void {
       applySettingsUpdated(event.payload.settings);
       return;
     }
+    case "historySyncStatus": {
+      applyHistorySyncStatusUpdated(event.payload.historySync);
+      return;
+    }
   }
 }
 
@@ -143,6 +148,37 @@ export function applySettingsUpdated(settings: ServerSettings): void {
   } satisfies ServerConfig;
   resolveServerConfig(nextConfig);
   emitServerConfigUpdated(toServerConfigUpdatedPayload(nextConfig), "settingsUpdated");
+}
+
+export function applyHistorySyncStatusUpdated(
+  historySync: NonNullable<ServerConfig["historySync"]>,
+): void {
+  logHistorySyncStatusForDev("stream", historySync);
+  const latestServerConfig = getServerConfig();
+  if (!latestServerConfig) {
+    return;
+  }
+
+  resolveServerConfig({
+    ...latestServerConfig,
+    historySync,
+  } satisfies ServerConfig);
+}
+
+function logHistorySyncStatusForDev(
+  source: "snapshot" | "stream",
+  historySync: ServerConfig["historySync"],
+): void {
+  if (!import.meta.env.DEV || !historySync) {
+    return;
+  }
+
+  if (historySync.state === "error") {
+    console.error("[history-sync:web]", source, historySync);
+    return;
+  }
+
+  console.info("[history-sync:web]", source, historySync);
 }
 
 export function emitWelcome(payload: ServerLifecycleWelcomePayload): void {

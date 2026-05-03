@@ -27,6 +27,10 @@ import type {
 } from "./project.ts";
 import type { ProviderInstanceId } from "./providerInstance.ts";
 import type {
+  HistorySyncConfig,
+  HistorySyncConnectionTestInput,
+  HistorySyncConnectionTestResult,
+  HistorySyncUpdateConfigInput,
   ServerConfig,
   ServerProviderUpdatedPayload,
   ServerUpsertKeybindingResult,
@@ -240,6 +244,11 @@ export interface LocalApi {
     upsertKeybinding: (input: ServerUpsertKeybindingInput) => Promise<ServerUpsertKeybindingResult>;
     getSettings: () => Promise<ServerSettings>;
     updateSettings: (patch: ServerSettingsPatch) => Promise<ServerSettings>;
+    getHistorySyncConfig: () => Promise<HistorySyncConfig>;
+    updateHistorySyncConfig: (input: HistorySyncUpdateConfigInput) => Promise<HistorySyncConfig>;
+    testHistorySyncConnection: (
+      input: HistorySyncConnectionTestInput,
+    ) => Promise<HistorySyncConnectionTestResult>;
   };
 }
 

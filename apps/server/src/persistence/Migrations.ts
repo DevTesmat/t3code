@@ -44,6 +44,7 @@ import Migration0028 from "./Migrations/028_ProjectionThreadSessionInstanceId.ts
 import Migration0029 from "./Migrations/029_ProjectionThreadsLatestPendingUserInputAt.ts";
 import Migration0030 from "./Migrations/030_ProjectionThreadsPinnedAt.ts";
 import Migration0031 from "./Migrations/031_ProjectionThreadMessageSource.ts";
+import Migration0032 from "./Migrations/032_HistorySyncState.ts";
 
 /**
  * Migration loader with all migrations defined inline.
@@ -87,6 +88,7 @@ export const migrationEntries = [
   [29, "ProjectionThreadsLatestPendingUserInputAt", Migration0029],
   [30, "ProjectionThreadsPinnedAt", Migration0030],
   [31, "ProjectionThreadMessageSource", Migration0031],
+  [32, "HistorySyncState", Migration0032],
 ] as const;
 
 export const makeMigrationLoader = (throughId?: number) =>

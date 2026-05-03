@@ -20,6 +20,7 @@ import type { Effect, Stream } from "effect";
 
 import type { OrchestrationDispatchError } from "../Errors.ts";
 import type { OrchestrationEventStoreError } from "../../persistence/Errors.ts";
+import type { ProjectionRepositoryError } from "../../persistence/Errors.ts";
 
 /**
  * OrchestrationEngineShape - Service API for orchestration command and event flow.
@@ -31,6 +32,17 @@ export interface OrchestrationEngineShape {
    * @returns Effect containing the latest read model.
    */
   readonly getReadModel: () => Effect.Effect<OrchestrationReadModel, never, never>;
+
+  /**
+   * Rebuild projections and the in-memory read model from persisted storage.
+   *
+   * Used after history sync replaces local event storage from the remote
+   * source of truth.
+   */
+  readonly reloadFromStorage?: () => Effect.Effect<
+    OrchestrationReadModel,
+    ProjectionRepositoryError
+  >;
 
   /**
    * Replay persisted orchestration events from an exclusive sequence cursor.

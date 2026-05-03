@@ -144,6 +144,25 @@ export const ObservabilitySettings = Schema.Struct({
 });
 export type ObservabilitySettings = typeof ObservabilitySettings.Type;
 
+export const HistorySyncSettings = Schema.Struct({
+  enabled: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
+  intervalMs: Schema.Number.pipe(Schema.withDecodingDefault(Effect.succeed(120_000))),
+  shutdownFlushTimeoutMs: Schema.Number.pipe(Schema.withDecodingDefault(Effect.succeed(5_000))),
+  statusIndicatorEnabled: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(true))),
+  connectionSummary: Schema.optionalKey(
+    Schema.NullOr(
+      Schema.Struct({
+        host: TrimmedNonEmptyString,
+        port: Schema.Number,
+        database: TrimmedNonEmptyString,
+        username: TrimmedNonEmptyString,
+        tlsEnabled: Schema.Boolean,
+      }),
+    ),
+  ),
+});
+export type HistorySyncSettings = typeof HistorySyncSettings.Type;
+
 export const ServerSettings = Schema.Struct({
   enableAssistantStreaming: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
   defaultThreadEnvMode: ThreadEnvMode.pipe(
@@ -180,6 +199,7 @@ export const ServerSettings = Schema.Struct({
     Schema.withDecodingDefault(Effect.succeed({})),
   ),
   observability: ObservabilitySettings.pipe(Schema.withDecodingDefault(Effect.succeed({}))),
+  historySync: HistorySyncSettings.pipe(Schema.withDecodingDefault(Effect.succeed({}))),
 });
 export type ServerSettings = typeof ServerSettings.Type;
 
@@ -255,6 +275,25 @@ export const ServerSettingsPatch = Schema.Struct({
     Schema.Struct({
       otlpTracesUrl: Schema.optionalKey(Schema.String),
       otlpMetricsUrl: Schema.optionalKey(Schema.String),
+    }),
+  ),
+  historySync: Schema.optionalKey(
+    Schema.Struct({
+      enabled: Schema.optionalKey(Schema.Boolean),
+      intervalMs: Schema.optionalKey(Schema.Number),
+      shutdownFlushTimeoutMs: Schema.optionalKey(Schema.Number),
+      statusIndicatorEnabled: Schema.optionalKey(Schema.Boolean),
+      connectionSummary: Schema.optionalKey(
+        Schema.NullOr(
+          Schema.Struct({
+            host: TrimmedNonEmptyString,
+            port: Schema.Number,
+            database: TrimmedNonEmptyString,
+            username: TrimmedNonEmptyString,
+            tlsEnabled: Schema.Boolean,
+          }),
+        ),
+      ),
     }),
   ),
   providers: Schema.optionalKey(

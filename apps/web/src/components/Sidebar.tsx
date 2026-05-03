@@ -5,6 +5,7 @@ import {
   CloudIcon,
   GitPullRequestIcon,
   FolderPlusIcon,
+  LoaderCircleIcon,
   PinIcon,
   SearchIcon,
   SettingsIcon,
@@ -166,7 +167,7 @@ import { useCopyToClipboard } from "~/hooks/useCopyToClipboard";
 import { CommandDialogTrigger } from "./ui/command";
 import { readEnvironmentApi } from "../environmentApi";
 import { useSettings, useUpdateSettings } from "~/hooks/useSettings";
-import { useServerKeybindings } from "../rpc/serverState";
+import { useServerConfig, useServerKeybindings } from "../rpc/serverState";
 import {
   derivePhysicalProjectKey,
   deriveProjectGroupingOverrideKey,
@@ -977,6 +978,19 @@ const SidebarProjectItem = memo(function SidebarProjectItem(props: SidebarProjec
   const defaultThreadEnvMode = useSettings<ThreadEnvMode>(
     (settings) => settings.defaultThreadEnvMode,
   );
+  const primaryEnvironmentId = usePrimaryEnvironmentId();
+  const primaryServerConfig = useServerConfig();
+  const savedEnvironmentRuntimeById = useSavedEnvironmentRuntimeStore((state) => state.byId);
+  const isHistorySyncing = project.memberProjectRefs.some((projectRef) => {
+    const serverConfig =
+      projectRef.environmentId === primaryEnvironmentId
+        ? primaryServerConfig
+        : savedEnvironmentRuntimeById[projectRef.environmentId]?.serverConfig;
+    return (
+      serverConfig?.settings.historySync.statusIndicatorEnabled === true &&
+      serverConfig.historySync?.state === "syncing"
+    );
+  });
   const projectGroupingSettings = useSettings((settings) => ({
     sidebarProjectGroupingMode: settings.sidebarProjectGroupingMode,
     sidebarProjectGroupingOverrides: settings.sidebarProjectGroupingOverrides,
@@ -2087,6 +2101,12 @@ const SidebarProjectItem = memo(function SidebarProjectItem(props: SidebarProjec
               <span className="shrink-0 text-[10px] text-muted-foreground/60">
                 {project.groupedProjectCount} projects
               </span>
+            ) : null}
+            {isHistorySyncing ? (
+              <LoaderCircleIcon
+                aria-label="History sync in progress"
+                className="size-3 shrink-0 animate-spin text-muted-foreground/70"
+              />
             ) : null}
           </span>
         </SidebarMenuButton>

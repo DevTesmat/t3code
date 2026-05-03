@@ -5,6 +5,7 @@ import {
   type AuthPairingLink,
   type DesktopServerExposureState,
   type EnvironmentId,
+  type HistorySyncConfig,
 } from "@t3tools/contracts";
 import { DateTime } from "effect";
 
@@ -57,6 +58,7 @@ import {
   type ServerPairingLinkRecord,
 } from "~/environments/primary";
 import type { WsRpcClient } from "~/rpc/wsRpcClient";
+import { ensureLocalApi } from "../../localApi";
 import {
   type SavedEnvironmentRecord,
   type SavedEnvironmentRuntimeState,
@@ -755,6 +757,275 @@ function SavedBackendListRow({
   );
 }
 
+type HistorySyncFormState = {
+  enabled: boolean;
+  host: string;
+  port: string;
+  database: string;
+  username: string;
+  password: string;
+  tlsEnabled: boolean;
+  intervalMs: string;
+  shutdownFlushTimeoutMs: string;
+  statusIndicatorEnabled: boolean;
+};
+
+const emptyHistorySyncForm: HistorySyncFormState = {
+  enabled: false,
+  host: "",
+  port: "3306",
+  database: "",
+  username: "",
+  password: "",
+  tlsEnabled: false,
+  intervalMs: "120000",
+  shutdownFlushTimeoutMs: "5000",
+  statusIndicatorEnabled: true,
+};
+
+function historySyncFormFromConfig(config: HistorySyncConfig): HistorySyncFormState {
+  return {
+    enabled: config.enabled,
+    host: config.connectionSummary?.host ?? "",
+    port: String(config.connectionSummary?.port ?? 3306),
+    database: config.connectionSummary?.database ?? "",
+    username: config.connectionSummary?.username ?? "",
+    password: "",
+    tlsEnabled: config.connectionSummary?.tlsEnabled ?? false,
+    intervalMs: String(config.intervalMs),
+    shutdownFlushTimeoutMs: String(config.shutdownFlushTimeoutMs),
+    statusIndicatorEnabled: config.statusIndicatorEnabled,
+  };
+}
+
+function HistorySyncSettingsSection() {
+  const [config, setConfig] = useState<HistorySyncConfig | null>(null);
+  const [form, setForm] = useState<HistorySyncFormState>(emptyHistorySyncForm);
+  const [error, setError] = useState<string | null>(null);
+  const [isSaving, setIsSaving] = useState(false);
+  const [isTesting, setIsTesting] = useState(false);
+
+  const loadConfig = useCallback(async () => {
+    try {
+      const next = await ensureLocalApi().server.getHistorySyncConfig();
+      setConfig(next);
+      setForm(historySyncFormFromConfig(next));
+      setError(null);
+    } catch (loadError) {
+      setError(loadError instanceof Error ? loadError.message : "Failed to load history sync.");
+    }
+  }, []);
+
+  useEffect(() => {
+    void loadConfig();
+  }, [loadConfig]);
+
+  const buildMysql = useCallback(() => {
+    const port = Number(form.port);
+    return {
+      host: form.host.trim(),
+      port,
+      database: form.database.trim(),
+      username: form.username.trim(),
+      password: form.password,
+      tlsEnabled: form.tlsEnabled,
+    };
+  }, [form]);
+
+  const handleTest = useCallback(async () => {
+    setIsTesting(true);
+    setError(null);
+    try {
+      const result = await ensureLocalApi().server.testHistorySyncConnection({
+        mysql: buildMysql(),
+      });
+      if (!result.success) {
+        setError(result.message ?? "Connection test failed.");
+        return;
+      }
+      toastManager.add({ type: "success", title: "Connection verified" });
+    } catch (testError) {
+      setError(testError instanceof Error ? testError.message : "Connection test failed.");
+    } finally {
+      setIsTesting(false);
+    }
+  }, [buildMysql]);
+
+  const handleSave = useCallback(async () => {
+    setIsSaving(true);
+    setError(null);
+    try {
+      const intervalMs = Number(form.intervalMs);
+      const shutdownFlushTimeoutMs = Number(form.shutdownFlushTimeoutMs);
+      const summaryChanged =
+        config?.connectionSummary?.host !== form.host.trim() ||
+        String(config?.connectionSummary?.port ?? 3306) !== form.port ||
+        config?.connectionSummary?.database !== form.database.trim() ||
+        config?.connectionSummary?.username !== form.username.trim() ||
+        (config?.connectionSummary?.tlsEnabled ?? false) !== form.tlsEnabled;
+      const shouldSendMysql = form.password.length > 0 || !config?.configured || summaryChanged;
+      if (form.enabled && !config?.configured && form.password.length === 0) {
+        throw new Error("Save a verified MySQL connection before enabling history sync.");
+      }
+      if (shouldSendMysql && form.password.length === 0) {
+        throw new Error("Password is required when creating or changing the MySQL connection.");
+      }
+      const next = await ensureLocalApi().server.updateHistorySyncConfig({
+        settings: {
+          enabled: form.enabled,
+          intervalMs,
+          shutdownFlushTimeoutMs,
+          statusIndicatorEnabled: form.statusIndicatorEnabled,
+        },
+        ...(shouldSendMysql ? { mysql: buildMysql() } : {}),
+      });
+      setConfig(next);
+      setForm(historySyncFormFromConfig(next));
+      toastManager.add({ type: "success", title: "History sync saved" });
+    } catch (saveError) {
+      setError(saveError instanceof Error ? saveError.message : "Failed to save history sync.");
+    } finally {
+      setIsSaving(false);
+    }
+  }, [buildMysql, config, form]);
+
+  const handleClear = useCallback(async () => {
+    setIsSaving(true);
+    setError(null);
+    try {
+      const next = await ensureLocalApi().server.updateHistorySyncConfig({
+        settings: { enabled: false },
+        clearConnection: true,
+      });
+      setConfig(next);
+      setForm(historySyncFormFromConfig(next));
+    } catch (clearError) {
+      setError(clearError instanceof Error ? clearError.message : "Failed to clear connection.");
+    } finally {
+      setIsSaving(false);
+    }
+  }, []);
+
+  const statusText = config
+    ? config.status.state === "error"
+      ? config.status.message
+      : config.status.state
+    : "Loading...";
+
+  return (
+    <SettingsSection title="History Sync">
+      <SettingsRow
+        title="Enable sync"
+        description={
+          config?.configured
+            ? "Sync history with the configured MySQL database."
+            : "Configure and save a MySQL connection first."
+        }
+        status={
+          <span className={config?.status.state === "error" ? "text-destructive" : undefined}>
+            {statusText}
+          </span>
+        }
+        control={
+          <Switch
+            checked={form.enabled}
+            disabled={!config}
+            onCheckedChange={(enabled) => setForm((current) => ({ ...current, enabled }))}
+            aria-label="Enable history sync"
+          />
+        }
+      />
+      <div className={ITEM_ROW_CLASSNAME}>
+        <div className="grid gap-3 sm:grid-cols-2">
+          <Input
+            value={form.host}
+            placeholder="Host"
+            onChange={(event) => setForm((current) => ({ ...current, host: event.target.value }))}
+          />
+          <Input
+            value={form.port}
+            placeholder="3306"
+            inputMode="numeric"
+            onChange={(event) => setForm((current) => ({ ...current, port: event.target.value }))}
+          />
+          <Input
+            value={form.database}
+            placeholder="Database"
+            onChange={(event) =>
+              setForm((current) => ({ ...current, database: event.target.value }))
+            }
+          />
+          <Input
+            value={form.username}
+            placeholder="Username"
+            onChange={(event) =>
+              setForm((current) => ({ ...current, username: event.target.value }))
+            }
+          />
+          <Input
+            value={form.password}
+            placeholder={config?.configured ? "Password unchanged" : "Password"}
+            type="password"
+            onChange={(event) =>
+              setForm((current) => ({ ...current, password: event.target.value }))
+            }
+          />
+          <Input
+            value={form.intervalMs}
+            placeholder="Sync interval (ms)"
+            inputMode="numeric"
+            onChange={(event) =>
+              setForm((current) => ({ ...current, intervalMs: event.target.value }))
+            }
+          />
+        </div>
+        <div className="mt-4 flex flex-wrap items-center gap-4">
+          <label className="flex items-center gap-2 text-xs text-muted-foreground">
+            <Switch
+              checked={form.tlsEnabled}
+              onCheckedChange={(tlsEnabled) => setForm((current) => ({ ...current, tlsEnabled }))}
+              aria-label="Enable MySQL TLS"
+            />
+            TLS
+          </label>
+          <label className="flex items-center gap-2 text-xs text-muted-foreground">
+            <Switch
+              checked={form.statusIndicatorEnabled}
+              onCheckedChange={(statusIndicatorEnabled) =>
+                setForm((current) => ({ ...current, statusIndicatorEnabled }))
+              }
+              aria-label="Show sync status indicator"
+            />
+            Status indicator
+          </label>
+          <div className="ml-auto flex gap-2">
+            <Button
+              size="xs"
+              variant="outline"
+              disabled={isTesting || isSaving}
+              onClick={() => void handleTest()}
+            >
+              {isTesting ? "Testing..." : "Test connection"}
+            </Button>
+            <Button
+              size="xs"
+              variant="outline"
+              disabled={isSaving || !config?.configured}
+              onClick={() => void handleClear()}
+            >
+              Clear connection
+            </Button>
+            <Button size="xs" disabled={isSaving || !config} onClick={() => void handleSave()}>
+              {isSaving ? "Saving..." : "Save"}
+            </Button>
+          </div>
+        </div>
+        {error ? <p className="mt-3 text-xs text-destructive">{error}</p> : null}
+      </div>
+    </SettingsSection>
+  );
+}
+
 export function ConnectionsSettings() {
   const desktopBridge = window.desktopBridge;
   const [currentSessionRole, setCurrentSessionRole] = useState<"owner" | "client" | null>(
@@ -1131,6 +1402,8 @@ export function ConnectionsSettings() {
   );
   return (
     <SettingsPageContainer>
+      <HistorySyncSettingsSection />
+
       {canManageLocalBackend ? (
         <>
           <SettingsSection title="Manage local backend">

@@ -10,6 +10,7 @@ import {
   OrchestrationDispatchCommandError,
   type OrchestrationEvent,
   type OrchestrationShellStreamEvent,
+  type ServerConfigStreamEvent,
   OrchestrationGetFullThreadDiffError,
   OrchestrationGetSnapshotError,
   OrchestrationGetTurnDiffError,
@@ -46,6 +47,13 @@ import { ProviderRegistry } from "./provider/Services/ProviderRegistry.ts";
 import { ServerLifecycleEvents } from "./serverLifecycleEvents.ts";
 import { ServerRuntimeStartup } from "./serverRuntimeStartup.ts";
 import { redactServerSettingsForClient, ServerSettingsService } from "./serverSettings.ts";
+import {
+  getHistorySyncConfig,
+  readHistorySyncStatus,
+  subscribeHistorySyncStatus,
+  testHistorySyncConnection,
+  updateHistorySyncConfig,
+} from "./historySync.ts";
 import { TerminalManager } from "./terminal/Services/Manager.ts";
 import { WorkspaceEntries } from "./workspace/Services/WorkspaceEntries.ts";
 import { WorkspaceFileSystem } from "./workspace/Services/WorkspaceFileSystem.ts";
@@ -513,6 +521,7 @@ const makeWsRpcLayer = (currentSessionId: AuthSessionId) =>
         const keybindingsConfig = yield* keybindings.loadConfigState;
         const providers = yield* providerRegistry.getProviders;
         const settings = redactServerSettingsForClient(yield* serverSettings.getSettings);
+        const historySyncStatus = readHistorySyncStatus();
         const environment = yield* serverEnvironment.getDescriptor;
         const auth = yield* serverAuth.getDescriptor();
 
@@ -535,6 +544,7 @@ const makeWsRpcLayer = (currentSessionId: AuthSessionId) =>
               : {}),
             otlpMetricsEnabled: config.otlpMetricsUrl !== undefined,
           },
+          historySync: historySyncStatus,
           settings,
         };
       });
@@ -783,6 +793,26 @@ const makeWsRpcLayer = (currentSessionId: AuthSessionId) =>
               "rpc.aggregate": "server",
             },
           ),
+        [WS_METHODS.serverGetHistorySyncConfig]: (_input) =>
+          observeRpcEffect(WS_METHODS.serverGetHistorySyncConfig, getHistorySyncConfig, {
+            "rpc.aggregate": "server",
+          }),
+        [WS_METHODS.serverUpdateHistorySyncConfig]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.serverUpdateHistorySyncConfig,
+            updateHistorySyncConfig(input),
+            {
+              "rpc.aggregate": "server",
+            },
+          ),
+        [WS_METHODS.serverTestHistorySyncConnection]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.serverTestHistorySyncConnection,
+            testHistorySyncConnection(input.mysql),
+            {
+              "rpc.aggregate": "server",
+            },
+          ),
         [WS_METHODS.projectsSearchEntries]: (input) =>
           observeRpcEffect(
             WS_METHODS.projectsSearchEntries,
@@ -995,14 +1025,30 @@ const makeWsRpcLayer = (currentSessionId: AuthSessionId) =>
                   payload: { settings },
                 })),
               );
-
+              const historySyncStatusUpdates = Stream.callback<
+                Extract<ServerConfigStreamEvent, { type: "historySyncStatus" }>
+              >((queue) =>
+                Effect.acquireRelease(
+                  subscribeHistorySyncStatus((historySync) =>
+                    Queue.offer(queue, {
+                      version: 1 as const,
+                      type: "historySyncStatus" as const,
+                      payload: { historySync },
+                    }).pipe(Effect.asVoid),
+                  ),
+                  (unsubscribe) => Effect.sync(unsubscribe),
+                ),
+              );
               yield* providerRegistry
                 .refresh()
                 .pipe(Effect.ignoreCause({ log: true }), Effect.forkScoped);
 
               const liveUpdates = Stream.merge(
                 keybindingsUpdates,
-                Stream.merge(providerStatuses, settingsUpdates),
+                Stream.merge(
+                  providerStatuses,
+                  Stream.merge(settingsUpdates, historySyncStatusUpdates),
+                ),
               );
 
               return Stream.concat(

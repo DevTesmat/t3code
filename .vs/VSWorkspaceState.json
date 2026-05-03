@@ -1,0 +1,13 @@
+{
+  "ExpandedNodes": [
+    "",
+    "\\apps",
+    "\\apps\\server",
+    "\\apps\\server\\src",
+    "\\apps\\web",
+    "\\apps\\web\\src",
+    "\\apps\\web\\src\\rpc"
+  ],
+  "SelectedNode": "\\apps\\server\\src\\historySync.ts",
+  "PreviewInSolutionExplorer": false
+}

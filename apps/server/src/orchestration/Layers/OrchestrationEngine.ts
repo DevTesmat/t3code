@@ -281,6 +281,13 @@ const makeOrchestrationEngine = Effect.gen(function* () {
   const getReadModel: OrchestrationEngineShape["getReadModel"] = () =>
     Effect.sync((): OrchestrationReadModel => readModel);
 
+  const reloadFromStorage = () =>
+    Effect.gen(function* () {
+      yield* projectionPipeline.bootstrap;
+      readModel = yield* projectionSnapshotQuery.getSnapshot();
+      return readModel;
+    });
+
   const readEvents: OrchestrationEngineShape["readEvents"] = (fromSequenceExclusive) =>
     eventStore.readFromSequence(fromSequenceExclusive);
 
@@ -293,6 +300,7 @@ const makeOrchestrationEngine = Effect.gen(function* () {
 
   return {
     getReadModel,
+    reloadFromStorage,
     readEvents,
     dispatch,
     // Each access creates a fresh PubSub subscription so that multiple
