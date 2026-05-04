@@ -66,6 +66,7 @@ import { type ComposerCommandItem, ComposerCommandMenu } from "./ComposerCommand
 import { ComposerPendingApprovalActions } from "./ComposerPendingApprovalActions";
 import { CompactComposerControlsMenu } from "./CompactComposerControlsMenu";
 import { ComposerPrimaryActions } from "./ComposerPrimaryActions";
+import { ComposerAttachMenu } from "./ComposerAttachMenu";
 import { ComposerPendingApprovalPanel } from "./ComposerPendingApprovalPanel";
 import { ComposerPendingUserInputPanel } from "./ComposerPendingUserInputPanel";
 import { ComposerPlanFollowUpBanner } from "./ComposerPlanFollowUpBanner";
@@ -449,6 +450,7 @@ export interface ChatComposerProps {
   onSend: (e?: { preventDefault: () => void }) => void;
   onInterrupt: () => void;
   onImplementPlanInNewThread: () => void;
+  onImportPlanMarkdown: (planMarkdown: string) => Promise<void>;
   onRespondToApproval: (
     requestId: ApprovalRequestId,
     decision: ProviderApprovalDecision,
@@ -532,6 +534,7 @@ export const ChatComposer = memo(
       onSend,
       onInterrupt,
       onImplementPlanInNewThread,
+      onImportPlanMarkdown,
       onRespondToApproval,
       onSelectActivePendingUserInputOption,
       onAdvanceActivePendingUserInput,
@@ -556,6 +559,17 @@ export const ChatComposer = memo(
     const composerImages = composerDraft.images;
     const composerTerminalContexts = composerDraft.terminalContexts;
     const nonPersistedComposerImageIds = composerDraft.nonPersistedImageIds;
+    const attachMenuFlowDisabled =
+      isConnecting ||
+      isSendBusy ||
+      phase === "running" ||
+      activePendingApproval !== null ||
+      pendingUserInputs.length > 0;
+    const attachPlanImportDisabledReason = !activeThread
+      ? "Open a thread before importing"
+      : !_isServerThread && !_isLocalDraftThread
+        ? "Open a thread before importing"
+        : null;
 
     const setComposerDraftPrompt = useComposerDraftStore((store) => store.setPrompt);
     const addComposerDraftImage = useComposerDraftStore((store) => store.addImage);
@@ -2145,6 +2159,13 @@ export const ChatComposer = memo(
                   }
                   className="flex shrink-0 flex-nowrap items-center justify-end gap-2"
                 >
+                  {!attachMenuFlowDisabled ? (
+                    <ComposerAttachMenu
+                      disabled={attachMenuFlowDisabled}
+                      importDisabledReason={attachPlanImportDisabledReason}
+                      onImportPlanMarkdown={onImportPlanMarkdown}
+                    />
+                  ) : null}
                   <ComposerFooterPrimaryActions
                     compact={isComposerPrimaryActionsCompact}
                     activeContextWindow={activeContextWindow}

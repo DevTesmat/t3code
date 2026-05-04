@@ -194,6 +194,7 @@ export function isLatestTurnSettled(
   latestTurn: LatestTurnTiming | null,
   session: SessionActivityState | null,
 ): boolean {
+  if (!latestTurn) return session?.orchestrationStatus !== "running";
   if (!latestTurn?.startedAt) return false;
   if (!latestTurn.completedAt) return false;
   if (!session) return true;
@@ -675,6 +676,20 @@ export function hasActionableProposedPlan(
   proposedPlan: LatestProposedPlanState | Pick<ProposedPlan, "implementedAt"> | null,
 ): boolean {
   return proposedPlan !== null && proposedPlan.implementedAt === null;
+}
+
+export function shouldShowPlanFollowUpPrompt(input: {
+  pendingApprovalCount: number;
+  pendingUserInputCount: number;
+  latestTurnSettled: boolean;
+  proposedPlan: LatestProposedPlanState | Pick<ProposedPlan, "implementedAt"> | null;
+}): boolean {
+  return (
+    input.pendingApprovalCount === 0 &&
+    input.pendingUserInputCount === 0 &&
+    input.latestTurnSettled &&
+    hasActionableProposedPlan(input.proposedPlan)
+  );
 }
 
 export function deriveWorkLogEntries(

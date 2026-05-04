@@ -1,6 +1,7 @@
 import { scopeThreadRef } from "@t3tools/client-runtime";
 import {
   CheckpointRef,
+  CommandId,
   DEFAULT_MODEL,
   EnvironmentId,
   EventId,
@@ -626,6 +627,110 @@ describe("incremental orchestration updates", () => {
     );
 
     expect(localEnvironmentStateOf(next).bootstrapComplete).toBe(false);
+  });
+
+  it("projects imported proposed plan upserts onto the thread", () => {
+    const thread = makeThread();
+    const state = makeState(thread);
+    const createdAt = "2026-02-27T00:00:01.000Z";
+
+    const next = applyOrchestrationEvent(
+      state,
+      makeEvent("thread.proposed-plan-upserted", {
+        threadId: thread.id,
+        proposedPlan: {
+          id: "plan-imported",
+          turnId: null,
+          planMarkdown: "# Imported plan\n\n- Step",
+          implementedAt: null,
+          implementationThreadId: null,
+          createdAt,
+          updatedAt: createdAt,
+        },
+      }),
+      localEnvironmentId,
+    );
+
+    const projectedThread = selectThreadByRef(
+      next,
+      scopeThreadRef(thread.environmentId, thread.id),
+    );
+    expect(projectedThread?.proposedPlans).toEqual([
+      {
+        id: "plan-imported",
+        turnId: null,
+        planMarkdown: "# Imported plan\n\n- Step",
+        implementedAt: null,
+        implementationThreadId: null,
+        createdAt,
+        updatedAt: createdAt,
+      },
+    ]);
+  });
+
+  it("applies replayed draft import events before any snapshot refresh", () => {
+    const state = makeState(makeThread({ id: ThreadId.make("existing-thread") }));
+    const threadId = ThreadId.make("thread-imported-draft");
+    const projectId = ProjectId.make("project-1");
+    const createdAt = "2026-02-27T00:00:01.000Z";
+
+    const next = applyOrchestrationEvents(
+      state,
+      [
+        makeEvent(
+          "thread.created",
+          {
+            threadId,
+            projectId,
+            title: "Imported plan",
+            modelSelection: {
+              instanceId: ProviderInstanceId.make("codex"),
+              model: "gpt-5-codex",
+            },
+            runtimeMode: DEFAULT_RUNTIME_MODE,
+            interactionMode: "default",
+            branch: null,
+            worktreePath: null,
+            pinnedAt: null,
+            createdAt,
+            updatedAt: createdAt,
+          },
+          {
+            sequence: 2,
+            commandId: CommandId.make("cmd-import-thread-create"),
+          },
+        ),
+        makeEvent(
+          "thread.proposed-plan-upserted",
+          {
+            threadId,
+            proposedPlan: {
+              id: "plan-imported-draft",
+              turnId: null,
+              planMarkdown: "# Imported draft plan",
+              implementedAt: null,
+              implementationThreadId: null,
+              createdAt,
+              updatedAt: createdAt,
+            },
+          },
+          {
+            sequence: 3,
+            commandId: CommandId.make("cmd-import-plan"),
+          },
+        ),
+      ],
+      localEnvironmentId,
+    );
+
+    const projectedThread = selectThreadByRef(next, scopeThreadRef(localEnvironmentId, threadId));
+    expect(projectedThread?.proposedPlans).toEqual([
+      expect.objectContaining({
+        id: "plan-imported-draft",
+        planMarkdown: "# Imported draft plan",
+        implementedAt: null,
+      }),
+    ]);
   });
 
   it("preserves state identity for no-op project and thread deletes", () => {

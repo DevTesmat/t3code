@@ -42,6 +42,93 @@ describe("decider project scripts", () => {
     expect((event.payload as { scripts: unknown[] }).scripts).toEqual([]);
   });
 
+  it("imports proposed plan markdown as an actionable thread plan", async () => {
+    const now = "2026-01-01T00:00:00.000Z";
+    const initial = createEmptyReadModel(now);
+    const withProject = await Effect.runPromise(
+      projectEvent(initial, {
+        sequence: 1,
+        eventId: asEventId("evt-import-project"),
+        aggregateKind: "project",
+        aggregateId: asProjectId("project-import"),
+        type: "project.created",
+        occurredAt: now,
+        commandId: CommandId.make("cmd-import-project"),
+        causationEventId: null,
+        correlationId: CommandId.make("cmd-import-project"),
+        metadata: {},
+        payload: {
+          projectId: asProjectId("project-import"),
+          title: "Project",
+          workspaceRoot: "/tmp/project",
+          defaultModelSelection: null,
+          scripts: [],
+          createdAt: now,
+          updatedAt: now,
+        },
+      }),
+    );
+    const readModel = await Effect.runPromise(
+      projectEvent(withProject, {
+        sequence: 2,
+        eventId: asEventId("evt-import-thread"),
+        aggregateKind: "thread",
+        aggregateId: ThreadId.make("thread-import"),
+        type: "thread.created",
+        occurredAt: now,
+        commandId: CommandId.make("cmd-import-thread"),
+        causationEventId: null,
+        correlationId: CommandId.make("cmd-import-thread"),
+        metadata: {},
+        payload: {
+          threadId: ThreadId.make("thread-import"),
+          projectId: asProjectId("project-import"),
+          title: "Thread",
+          modelSelection: {
+            instanceId: ProviderInstanceId.make("codex"),
+            model: "gpt-5-codex",
+          },
+          interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+          runtimeMode: "approval-required",
+          branch: null,
+          worktreePath: null,
+          createdAt: now,
+          updatedAt: now,
+        },
+      }),
+    );
+
+    const result = await Effect.runPromise(
+      decideOrchestrationCommand({
+        command: {
+          type: "thread.proposed-plan.import",
+          commandId: CommandId.make("cmd-import-plan"),
+          threadId: ThreadId.make("thread-import"),
+          planId: "plan-imported",
+          planMarkdown: "# Imported plan\n\n- Step",
+          createdAt: now,
+        },
+        readModel,
+      }),
+    );
+
+    const event = Array.isArray(result) ? result[0] : result;
+    expect(event.type).toBe("thread.proposed-plan-upserted");
+    expect(event.payload).toMatchObject({
+      threadId: "thread-import",
+      proposedPlan: {
+        id: "plan-imported",
+        turnId: null,
+        planMarkdown: "# Imported plan\n\n- Step",
+        implementedAt: null,
+        implementationThreadId: null,
+        createdAt: now,
+        updatedAt: now,
+      },
+    });
+    expect((event.payload as { proposedPlan: { id: string } }).proposedPlan.id).toBeTruthy();
+  });
+
   it("propagates scripts in project.meta.update payload", async () => {
     const now = new Date().toISOString();
     const initial = createEmptyReadModel(now);

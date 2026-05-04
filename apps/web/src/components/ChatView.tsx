@@ -1,5 +1,6 @@
 import {
   type ApprovalRequestId,
+  type CommandId,
   DEFAULT_MODEL,
   defaultInstanceIdForDriver,
   type EnvironmentId,
@@ -20,6 +21,7 @@ import {
   ProviderDriverKind,
   RuntimeMode,
   TerminalOpenInput,
+  type OrchestrationEvent,
 } from "@t3tools/contracts";
 import {
   parseScopedThreadKey,
@@ -61,9 +63,9 @@ import {
   findSidebarProposedPlan,
   findLatestProposedPlan,
   deriveWorkLogEntries,
-  hasActionableProposedPlan,
   hasToolActivityForTurn,
   isLatestTurnSettled,
+  shouldShowPlanFollowUpPrompt,
   formatElapsed,
   formatThreadWorkDuration,
 } from "../session-logic";
@@ -118,6 +120,7 @@ import {
   nextProjectScriptId,
   projectScriptIdFromCommand,
 } from "~/projectScripts";
+
 import { newCommandId, newDraftId, newMessageId, newThreadId } from "~/lib/utils";
 import { getProviderModelCapabilities, resolveSelectableProvider } from "../providerModels";
 import { useSettings } from "../hooks/useSettings";
@@ -199,6 +202,43 @@ const EMPTY_PROVIDERS: ServerProvider[] = [];
 const EMPTY_PENDING_USER_INPUT_ANSWERS: Record<string, PendingUserInputDraftAnswer> = {};
 
 type QueuedComposerFlushReason = "agent-finished" | "empty-enter-force";
+
+async function dispatchAndApplyCommittedEvents(input: {
+  api: NonNullable<ReturnType<typeof readEnvironmentApi>>;
+  command: Parameters<
+    NonNullable<ReturnType<typeof readEnvironmentApi>>["orchestration"]["dispatchCommand"]
+  >[0];
+  environmentId: EnvironmentId;
+}): Promise<ReadonlyArray<OrchestrationEvent>> {
+  const { api, command, environmentId } = input;
+  const result = await api.orchestration.dispatchCommand(command);
+  const events = await replayCommittedCommandEvents({
+    api,
+    commandId: command.commandId,
+    sequence: result.sequence,
+  });
+  if (events.length > 0) {
+    useStore.getState().applyOrchestrationEvents(events, environmentId);
+  }
+  return events;
+}
+
+async function replayCommittedCommandEvents(input: {
+  api: NonNullable<ReturnType<typeof readEnvironmentApi>>;
+  commandId: CommandId;
+  sequence: number;
+}): Promise<ReadonlyArray<OrchestrationEvent>> {
+  const narrowEvents = await input.api.orchestration.replayEvents({
+    fromSequenceExclusive: Math.max(0, input.sequence - 1),
+  });
+  const matchingNarrowEvents = narrowEvents.filter((event) => event.commandId === input.commandId);
+  if (matchingNarrowEvents.length > 0) {
+    return matchingNarrowEvents;
+  }
+
+  const allEvents = await input.api.orchestration.replayEvents({ fromSequenceExclusive: 0 });
+  return allEvents.filter((event) => event.commandId === input.commandId);
+}
 
 interface QueuedComposerMessage {
   id: string;
@@ -1233,11 +1273,12 @@ export default function ChatView(props: ChatViewProps) {
     [activeLatestTurn?.turnId, threadActivities],
   );
   const planSidebarLabel = sidebarProposedPlan || interactionMode === "plan" ? "Plan" : "Tasks";
-  const showPlanFollowUpPrompt =
-    pendingUserInputs.length === 0 &&
-    interactionMode === "plan" &&
-    latestTurnSettled &&
-    hasActionableProposedPlan(activeProposedPlan);
+  const showPlanFollowUpPrompt = shouldShowPlanFollowUpPrompt({
+    pendingApprovalCount: pendingApprovals.length,
+    pendingUserInputCount: pendingUserInputs.length,
+    latestTurnSettled,
+    proposedPlan: activeProposedPlan,
+  });
   const activePendingApproval = pendingApprovals[0] ?? null;
   const {
     beginLocalDispatch,
@@ -3590,6 +3631,127 @@ export default function ChatView(props: ChatViewProps) {
     environmentId,
   ]);
 
+  const onImportPlanMarkdown = useCallback(
+    async (planMarkdown: string) => {
+      const api = readEnvironmentApi(environmentId);
+      if (!api || !activeThread || isConnecting || isSendBusy || sendInFlightRef.current) {
+        throw new Error("Open a settled server thread before importing a plan.");
+      }
+
+      const createdAt = new Date().toISOString();
+      if (isLocalDraftThread) {
+        if (!activeProject) {
+          throw new Error("Select a project before importing a plan.");
+        }
+
+        const sendCtx = composerRef.current?.getSendContext();
+        if (!sendCtx) {
+          throw new Error("Select a model before importing a plan.");
+        }
+        const { selectedModelSelection: ctxSelectedModelSelection } = sendCtx;
+
+        const threadIdForSend = activeThread.id;
+        const threadTitle = truncate(buildPlanImplementationThreadTitle(planMarkdown));
+
+        sendInFlightRef.current = true;
+        beginLocalDispatch({ preparingWorktree: false });
+        setThreadError(threadIdForSend, null);
+
+        let createdThread = false;
+        try {
+          const createCommandId = newCommandId();
+          await dispatchAndApplyCommittedEvents({
+            api,
+            environmentId,
+            command: {
+              type: "thread.create",
+              commandId: createCommandId,
+              threadId: threadIdForSend,
+              projectId: activeProject.id,
+              title: threadTitle,
+              modelSelection: ctxSelectedModelSelection,
+              runtimeMode,
+              interactionMode: "default",
+              branch: activeThreadBranch,
+              worktreePath: activeThread.worktreePath,
+              createdAt: activeThread.createdAt,
+            },
+          });
+          createdThread = true;
+
+          const importCommandId = newCommandId();
+          await dispatchAndApplyCommittedEvents({
+            api,
+            environmentId,
+            command: {
+              type: "thread.proposed-plan.import",
+              commandId: importCommandId,
+              threadId: threadIdForSend,
+              planMarkdown,
+              createdAt,
+            },
+          });
+
+          resetLocalDispatch();
+          await navigate({
+            to: "/$environmentId/$threadId",
+            params: {
+              environmentId: activeThread.environmentId,
+              threadId: threadIdForSend,
+            },
+          });
+        } catch (error) {
+          if (createdThread) {
+            await api.orchestration
+              .dispatchCommand({
+                type: "thread.delete",
+                commandId: newCommandId(),
+                threadId: threadIdForSend,
+              })
+              .catch(() => undefined);
+          }
+          resetLocalDispatch();
+          throw error;
+        } finally {
+          sendInFlightRef.current = false;
+        }
+        return;
+      }
+
+      if (!isServerThread) {
+        throw new Error("Open a settled server thread before importing a plan.");
+      }
+
+      const importCommandId = newCommandId();
+      await dispatchAndApplyCommittedEvents({
+        api,
+        environmentId,
+        command: {
+          type: "thread.proposed-plan.import",
+          commandId: importCommandId,
+          threadId: activeThread.id,
+          planMarkdown,
+          createdAt,
+        },
+      });
+    },
+    [
+      activeProject,
+      activeThread,
+      activeThreadBranch,
+      beginLocalDispatch,
+      environmentId,
+      isConnecting,
+      isLocalDraftThread,
+      isSendBusy,
+      isServerThread,
+      navigate,
+      resetLocalDispatch,
+      runtimeMode,
+      setThreadError,
+    ],
+  );
+
   const onProviderModelSelect = useCallback(
     (instanceId: ProviderInstanceId, model: string) => {
       if (!activeThread) return;
@@ -3902,6 +4064,7 @@ export default function ChatView(props: ChatViewProps) {
                 onSend={onSend}
                 onInterrupt={onInterrupt}
                 onImplementPlanInNewThread={onImplementPlanInNewThread}
+                onImportPlanMarkdown={onImportPlanMarkdown}
                 onRespondToApproval={onRespondToApproval}
                 onSelectActivePendingUserInputOption={onSelectActivePendingUserInputOption}
                 onAdvanceActivePendingUserInput={onAdvanceActivePendingUserInput}

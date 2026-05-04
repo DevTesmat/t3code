@@ -22,6 +22,7 @@ import {
   hasActionableProposedPlan,
   hasToolActivityForTurn,
   isLatestTurnSettled,
+  shouldShowPlanFollowUpPrompt,
 } from "./session-logic";
 import type { ChatMessage, ThreadSession } from "./types";
 
@@ -468,6 +469,29 @@ describe("findLatestProposedPlan", () => {
 
     expect(latestPlan?.planMarkdown).toBe("# Latest");
   });
+
+  it("makes no-turn imported proposed plans actionable when no session is running", () => {
+    const latestTurnSettled = isLatestTurnSettled(null, null);
+    const activeProposedPlan = latestTurnSettled
+      ? findLatestProposedPlan(
+          [
+            {
+              id: "plan-imported",
+              turnId: null,
+              planMarkdown: "# Imported plan",
+              implementedAt: null,
+              implementationThreadId: null,
+              createdAt: "2026-02-23T00:00:01.000Z",
+              updatedAt: "2026-02-23T00:00:01.000Z",
+            },
+          ],
+          null,
+        )
+      : null;
+
+    expect(latestTurnSettled).toBe(true);
+    expect(hasActionableProposedPlan(activeProposedPlan)).toBe(true);
+  });
 });
 
 describe("hasActionableProposedPlan", () => {
@@ -495,6 +519,48 @@ describe("hasActionableProposedPlan", () => {
         implementationThreadId: ThreadId.make("thread-implement"),
         createdAt: "2026-02-23T00:00:00.000Z",
         updatedAt: "2026-02-23T00:00:02.000Z",
+      }),
+    ).toBe(false);
+  });
+});
+
+describe("shouldShowPlanFollowUpPrompt", () => {
+  const proposedPlan = {
+    id: "plan-imported",
+    turnId: null,
+    planMarkdown: "# Imported plan",
+    implementedAt: null,
+    implementationThreadId: null,
+    createdAt: "2026-02-23T00:00:01.000Z",
+    updatedAt: "2026-02-23T00:00:01.000Z",
+  };
+
+  it("shows for settled no-turn imported plans without requiring plan interaction mode", () => {
+    expect(
+      shouldShowPlanFollowUpPrompt({
+        pendingApprovalCount: 0,
+        pendingUserInputCount: 0,
+        latestTurnSettled: true,
+        proposedPlan,
+      }),
+    ).toBe(true);
+  });
+
+  it("stays hidden while the thread is blocked or running", () => {
+    expect(
+      shouldShowPlanFollowUpPrompt({
+        pendingApprovalCount: 1,
+        pendingUserInputCount: 0,
+        latestTurnSettled: true,
+        proposedPlan,
+      }),
+    ).toBe(false);
+    expect(
+      shouldShowPlanFollowUpPrompt({
+        pendingApprovalCount: 0,
+        pendingUserInputCount: 0,
+        latestTurnSettled: false,
+        proposedPlan,
       }),
     ).toBe(false);
   });
@@ -1854,6 +1920,25 @@ describe("isLatestTurnSettled", () => {
     startedAt: "2026-02-27T21:10:00.000Z",
     completedAt: "2026-02-27T21:10:06.000Z",
   } as const;
+
+  it("returns true for idle threads that have no turns yet", () => {
+    expect(isLatestTurnSettled(null, null)).toBe(true);
+    expect(
+      isLatestTurnSettled(null, {
+        orchestrationStatus: "ready",
+        activeTurnId: undefined,
+      }),
+    ).toBe(true);
+  });
+
+  it("returns false for no-turn threads while a session is running", () => {
+    expect(
+      isLatestTurnSettled(null, {
+        orchestrationStatus: "running",
+        activeTurnId: TurnId.make("turn-1"),
+      }),
+    ).toBe(false);
+  });
 
   it("returns false while the same turn is still active in a running session", () => {
     expect(

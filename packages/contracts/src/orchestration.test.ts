@@ -758,6 +758,23 @@ it.effect("defaults proposed plan implementation metadata for historical rows", 
   }),
 );
 
+it.effect("decodes client proposed plan import commands", () =>
+  Effect.gen(function* () {
+    const parsed = yield* decodeOrchestrationCommand({
+      type: "thread.proposed-plan.import",
+      commandId: "cmd-import-plan",
+      threadId: "thread-1",
+      planId: "plan-imported",
+      planMarkdown: "# Plan\n\n- Step",
+      createdAt: "2026-01-01T00:00:00.000Z",
+    });
+
+    assert.strictEqual(parsed.type, "thread.proposed-plan.import");
+    assert.strictEqual(parsed.planId, "plan-imported");
+    assert.strictEqual(parsed.planMarkdown, "# Plan\n\n- Step");
+  }),
+);
+
 it.effect("preserves proposed plan implementation metadata when present", () =>
   Effect.gen(function* () {
     const parsed = yield* decodeOrchestrationProposedPlan({
