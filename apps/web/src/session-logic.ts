@@ -12,6 +12,7 @@ import {
   type ThreadId,
   type TurnId,
 } from "@t3tools/contracts";
+import { classifyToolActivityGroup } from "@t3tools/shared/toolActivity";
 
 import type {
   ChatMessage,
@@ -1589,6 +1590,22 @@ function formatApprovalActivityLabel(requestKind: PendingApproval["requestKind"]
 }
 
 function labelForToolActivity(entry: WorkLogEntry): string {
+  const activityGroupKind = classifyToolActivityGroup({
+    itemType: entry.itemType,
+    title: entry.toolTitle,
+    label: entry.label,
+    command: entry.command,
+    detail: entry.detail,
+    changedFiles: entry.changedFiles,
+    requestKind: entry.requestKind,
+  });
+  if (activityGroupKind === "exploration") {
+    return "Exploring...";
+  }
+  if (activityGroupKind === "validation") {
+    return "Running checks";
+  }
+
   switch (entry.itemType) {
     case "command_execution":
       return "Running terminal";

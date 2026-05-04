@@ -1841,7 +1841,7 @@ describe("deriveActiveTurnActivityState", () => {
 
     expect(running).toMatchObject({
       kind: "runningTool",
-      label: "Running terminal",
+      label: "Running checks",
       detail: "bun lint",
     });
 

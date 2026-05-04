@@ -289,7 +289,12 @@ function TimelineRowContent({ row }: { row: TimelineRow }) {
       data-message-id={row.kind === "message" ? row.message.id : undefined}
       data-message-role={row.kind === "message" ? row.message.role : undefined}
     >
-      {row.kind === "work" && <WorkGroupSection groupedEntries={row.groupedEntries} />}
+      {row.kind === "work" && (
+        <WorkGroupSection
+          groupedEntries={row.groupedEntries}
+          activityGroupKind={row.activityGroupKind}
+        />
+      )}
 
       {row.kind === "message" &&
         row.message.role === "user" &&
@@ -498,11 +503,14 @@ function LiveMessageMeta({
  *  State resets on unmount which is fine — work groups start collapsed. */
 const WorkGroupSection = memo(function WorkGroupSection({
   groupedEntries,
+  activityGroupKind,
 }: {
   groupedEntries: Extract<MessagesTimelineRow, { kind: "work" }>["groupedEntries"];
+  activityGroupKind: Extract<MessagesTimelineRow, { kind: "work" }>["activityGroupKind"];
 }) {
   const { workspaceRoot } = use(TimelineRowCtx);
   const [isExpanded, setIsExpanded] = useState(false);
+  const [activityGroupExpanded, setActivityGroupExpanded] = useState(false);
   const [expandedOutputKeys, setExpandedOutputKeys] = useState<ReadonlySet<string>>(
     () => new Set(),
   );
@@ -517,8 +525,16 @@ const WorkGroupSection = memo(function WorkGroupSection({
   const hiddenCount = groupedEntries.length - visibleEntries.length;
   const onlyToolEntries = groupedEntries.every((entry) => entry.tone === "tool");
   const onlyTerminalEntries = groupedEntries.every(isTerminalWorkEntry);
-  const showHeader = hasOverflow || !onlyToolEntries;
-  const groupLabel = onlyTerminalEntries ? "Terminal" : onlyToolEntries ? "Tool calls" : "Work log";
+  const showHeader = activityGroupKind === "validation" || hasOverflow || !onlyToolEntries;
+  const groupLabel =
+    activityGroupKind === "validation"
+      ? "Validation"
+      : onlyTerminalEntries
+        ? "Terminal"
+        : onlyToolEntries
+          ? "Tool calls"
+          : "Work log";
+  const activityStatus = workActivityGroupStatus(groupedEntries);
   const toggleOutputExpanded = useCallback((key: string, defaultExpanded: boolean) => {
     if (defaultExpanded) {
       setCollapsedDefaultOutputKeys((current) => {
@@ -542,6 +558,50 @@ const WorkGroupSection = memo(function WorkGroupSection({
       return next;
     });
   }, []);
+
+  if (activityGroupKind === "exploration") {
+    const isExploring = activityStatus === "running";
+    return (
+      <div className="px-0.5 py-0.5">
+        <button
+          type="button"
+          className="group flex min-h-7 w-full items-center gap-1.5 rounded-lg px-1 py-0.5 text-left transition-colors duration-150 hover:bg-muted/15 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring/45"
+          aria-expanded={activityGroupExpanded}
+          onClick={() => setActivityGroupExpanded((value) => !value)}
+          data-testid="exploration-group-toggle"
+        >
+          <span className="flex size-5 shrink-0 items-center justify-center text-muted-foreground/55">
+            <EyeIcon className="size-3" />
+          </span>
+          <span className="min-w-0 truncate text-[11px] leading-5 text-muted-foreground/80">
+            Exploring
+          </span>
+          {isExploring ? <WorkingDots className="text-muted-foreground/55" /> : null}
+          <span className="min-w-0 flex-1" />
+          <ChevronRightIcon
+            className={cn(
+              "size-3.5 shrink-0 text-muted-foreground/45 opacity-0 transition-[opacity,transform,color] duration-150 group-hover:opacity-100 group-hover:text-muted-foreground/80 group-focus-visible:opacity-100",
+              activityGroupExpanded && "rotate-90",
+            )}
+          />
+        </button>
+        {activityGroupExpanded && (
+          <div className="mt-1 space-y-0.5">
+            {groupedEntries.map((workEntry) => (
+              <SimpleWorkEntryRow
+                key={`work-row:${workEntry.id}`}
+                workEntry={workEntry}
+                workspaceRoot={workspaceRoot}
+                outputExpanded={expandedOutputKeys.has(workEntryToolKey(workEntry))}
+                defaultOutputCollapsed={collapsedDefaultOutputKeys.has(workEntryToolKey(workEntry))}
+                onToggleOutputExpanded={toggleOutputExpanded}
+              />
+            ))}
+          </div>
+        )}
+      </div>
+    );
+  }
 
   return (
     <div className="rounded-xl border border-border/45 bg-card/25 px-2 py-1.5">
@@ -856,13 +916,13 @@ function workEntryToolKey(workEntry: TimelineWorkEntry): string {
   return workEntry.toolKey ?? workEntry.toolCallId ?? workEntry.id;
 }
 
-function terminalStatusLabel(workEntry: TimelineWorkEntry): string {
+function terminalStatusLabel(workEntry: Pick<TimelineWorkEntry, "status">): string {
   if (workEntry.status === "failed") return "Failed";
   if (workEntry.status === "completed") return "Completed";
   return "Running";
 }
 
-function terminalStatusClass(workEntry: TimelineWorkEntry): string {
+function terminalStatusClass(workEntry: Pick<TimelineWorkEntry, "status">): string {
   if (workEntry.status === "failed") {
     return "border-destructive/25 bg-destructive/8 text-destructive/80";
   }
@@ -870,6 +930,17 @@ function terminalStatusClass(workEntry: TimelineWorkEntry): string {
     return "border-border/50 bg-muted/35 text-muted-foreground/80";
   }
   return "border-primary/20 bg-primary/8 text-primary/80";
+}
+
+function workActivityGroupStatus(
+  entries: ReadonlyArray<Pick<TimelineWorkEntry, "status">>,
+): TimelineWorkEntry["status"] | undefined {
+  if (entries.some((entry) => entry.status === "failed")) return "failed";
+  if (entries.some((entry) => entry.status === "running")) return "running";
+  if (entries.length > 0 && entries.every((entry) => entry.status === "completed")) {
+    return "completed";
+  }
+  return undefined;
 }
 
 const ToolOutputPreview = memo(function ToolOutputPreview(props: { workEntry: TimelineWorkEntry }) {

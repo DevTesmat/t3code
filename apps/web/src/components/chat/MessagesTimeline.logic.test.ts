@@ -397,8 +397,256 @@ describe("deriveMessagesTimelineRows", () => {
     const startedRows = buildRows("activity-started", "starting");
     const updatedRows = buildRows("activity-updated", "ready");
 
-    expect(startedRows[0]?.id).toBe("work-group:tool:call-1");
+    expect(startedRows[0]?.id).toBe("work-group:other:tool:call-1");
     expect(updatedRows[0]?.id).toBe(startedRows[0]?.id);
+  });
+
+  it("suffixes repeated work group ids so LegendList keys stay unique", () => {
+    const rows = deriveMessagesTimelineRows({
+      timelineEntries: [
+        {
+          id: "entry-rg-start",
+          kind: "work",
+          createdAt: "2026-01-01T00:00:00Z",
+          entry: {
+            id: "work-rg-start",
+            createdAt: "2026-01-01T00:00:00Z",
+            label: "Ran command",
+            tone: "tool",
+            itemType: "command_execution",
+            command: "rg query src",
+            toolKey: "tool:call-explore",
+          },
+        },
+        {
+          id: "assistant-entry",
+          kind: "message",
+          createdAt: "2026-01-01T00:00:01Z",
+          message: {
+            id: "assistant-1" as never,
+            role: "assistant",
+            text: "Still checking.",
+            turnId: "turn-1" as never,
+            createdAt: "2026-01-01T00:00:01Z",
+            streaming: false,
+          },
+        },
+        {
+          id: "entry-rg-repeat",
+          kind: "work",
+          createdAt: "2026-01-01T00:00:02Z",
+          entry: {
+            id: "work-rg-repeat",
+            createdAt: "2026-01-01T00:00:02Z",
+            label: "Ran command",
+            tone: "tool",
+            itemType: "command_execution",
+            command: "rg query src",
+            toolKey: "tool:call-explore",
+          },
+        },
+        {
+          id: "entry-other-start",
+          kind: "work",
+          createdAt: "2026-01-01T00:00:03Z",
+          entry: {
+            id: "work-other-start",
+            createdAt: "2026-01-01T00:00:03Z",
+            label: "Tool call",
+            tone: "tool",
+            itemType: "dynamic_tool_call",
+            toolKey: "tool:call-other",
+          },
+        },
+        {
+          id: "user-entry",
+          kind: "message",
+          createdAt: "2026-01-01T00:00:04Z",
+          message: {
+            id: "user-1" as never,
+            role: "user",
+            text: "Continue.",
+            turnId: null,
+            createdAt: "2026-01-01T00:00:04Z",
+            streaming: false,
+          },
+        },
+        {
+          id: "entry-other-repeat",
+          kind: "work",
+          createdAt: "2026-01-01T00:00:05Z",
+          entry: {
+            id: "work-other-repeat",
+            createdAt: "2026-01-01T00:00:05Z",
+            label: "Tool call",
+            tone: "tool",
+            itemType: "dynamic_tool_call",
+            toolKey: "tool:call-other",
+          },
+        },
+      ],
+      completionDividerBeforeEntryId: null,
+      isWorking: false,
+      activeTurnStartedAt: null,
+      turnDiffSummaryByAssistantMessageId: new Map(),
+      revertTurnCountByUserMessageId: new Map(),
+    });
+
+    const workRowIds = rows
+      .filter((row): row is Extract<(typeof rows)[number], { kind: "work" }> => row.kind === "work")
+      .map((row) => row.id);
+
+    expect(workRowIds).toEqual([
+      "work-group:exploration:tool:call-explore",
+      "work-group:exploration:tool:call-explore:2",
+      "work-group:other:tool:call-other",
+      "work-group:other:tool:call-other:2",
+    ]);
+    expect(new Set(workRowIds).size).toBe(workRowIds.length);
+  });
+
+  it("groups adjacent exploration rows and starts a new group after other work", () => {
+    const rows = deriveMessagesTimelineRows({
+      timelineEntries: [
+        {
+          id: "entry-rg",
+          kind: "work",
+          createdAt: "2026-01-01T00:00:00Z",
+          entry: {
+            id: "work-rg",
+            createdAt: "2026-01-01T00:00:00Z",
+            label: "Ran command",
+            tone: "tool",
+            itemType: "command_execution",
+            command: "rg query src",
+            status: "completed",
+          },
+        },
+        {
+          id: "entry-sed",
+          kind: "work",
+          createdAt: "2026-01-01T00:00:01Z",
+          entry: {
+            id: "work-sed",
+            createdAt: "2026-01-01T00:00:01Z",
+            label: "Ran command",
+            tone: "tool",
+            itemType: "command_execution",
+            command: "sed -n '1,80p' src/app.ts",
+            status: "completed",
+          },
+        },
+        {
+          id: "entry-edit",
+          kind: "work",
+          createdAt: "2026-01-01T00:00:02Z",
+          entry: {
+            id: "work-edit",
+            createdAt: "2026-01-01T00:00:02Z",
+            label: "File change",
+            tone: "tool",
+            itemType: "file_change",
+            changedFiles: ["src/app.ts"],
+            status: "completed",
+          },
+        },
+        {
+          id: "entry-diff",
+          kind: "work",
+          createdAt: "2026-01-01T00:00:03Z",
+          entry: {
+            id: "work-diff",
+            createdAt: "2026-01-01T00:00:03Z",
+            label: "Ran command",
+            tone: "tool",
+            itemType: "command_execution",
+            command: "git diff -- src/app.ts",
+            status: "completed",
+          },
+        },
+      ],
+      completionDividerBeforeEntryId: null,
+      isWorking: false,
+      activeTurnStartedAt: null,
+      turnDiffSummaryByAssistantMessageId: new Map(),
+      revertTurnCountByUserMessageId: new Map(),
+    });
+
+    const workRows = rows.filter(
+      (row): row is Extract<(typeof rows)[number], { kind: "work" }> => row.kind === "work",
+    );
+
+    expect(workRows.map((row) => row.activityGroupKind)).toEqual([
+      "exploration",
+      "other",
+      "exploration",
+    ]);
+    expect(workRows.map((row) => row.groupedEntries.map((entry) => entry.id))).toEqual([
+      ["work-rg", "work-sed"],
+      ["work-edit"],
+      ["work-diff"],
+    ]);
+  });
+
+  it("keeps validation commands in their own adjacent group", () => {
+    const rows = deriveMessagesTimelineRows({
+      timelineEntries: [
+        {
+          id: "entry-rg",
+          kind: "work",
+          createdAt: "2026-01-01T00:00:00Z",
+          entry: {
+            id: "work-rg",
+            createdAt: "2026-01-01T00:00:00Z",
+            label: "Ran command",
+            tone: "tool",
+            itemType: "command_execution",
+            command: "rg query src",
+          },
+        },
+        {
+          id: "entry-test",
+          kind: "work",
+          createdAt: "2026-01-01T00:00:01Z",
+          entry: {
+            id: "work-test",
+            createdAt: "2026-01-01T00:00:01Z",
+            label: "Ran command",
+            tone: "tool",
+            itemType: "command_execution",
+            command: "bun run test",
+          },
+        },
+        {
+          id: "entry-typecheck",
+          kind: "work",
+          createdAt: "2026-01-01T00:00:02Z",
+          entry: {
+            id: "work-typecheck",
+            createdAt: "2026-01-01T00:00:02Z",
+            label: "Ran command",
+            tone: "tool",
+            itemType: "command_execution",
+            command: "bun typecheck",
+          },
+        },
+      ],
+      completionDividerBeforeEntryId: null,
+      isWorking: false,
+      activeTurnStartedAt: null,
+      turnDiffSummaryByAssistantMessageId: new Map(),
+      revertTurnCountByUserMessageId: new Map(),
+    });
+
+    const workRows = rows.filter(
+      (row): row is Extract<(typeof rows)[number], { kind: "work" }> => row.kind === "work",
+    );
+
+    expect(workRows.map((row) => row.activityGroupKind)).toEqual(["exploration", "validation"]);
+    expect(workRows[1]?.groupedEntries.map((entry) => entry.id)).toEqual([
+      "work-test",
+      "work-typecheck",
+    ]);
   });
 });
 

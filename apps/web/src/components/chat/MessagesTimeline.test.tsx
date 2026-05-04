@@ -227,6 +227,115 @@ describe("MessagesTimeline", () => {
     expect(markup).not.toContain("Output preview truncated");
   });
 
+  it("renders codebase exploration as one collapsed expandable row", async () => {
+    const { MessagesTimeline } = await import("./MessagesTimeline");
+    const markup = renderToStaticMarkup(
+      <MessagesTimeline
+        {...buildProps()}
+        timelineEntries={[
+          {
+            id: "entry-1",
+            kind: "work",
+            createdAt: "2026-03-17T19:12:28.000Z",
+            entry: {
+              id: "work-1",
+              createdAt: "2026-03-17T19:12:28.000Z",
+              label: "Ran command",
+              tone: "tool",
+              itemType: "command_execution",
+              command: "rg query apps/web",
+              status: "completed",
+            },
+          },
+          {
+            id: "entry-2",
+            kind: "work",
+            createdAt: "2026-03-17T19:12:29.000Z",
+            entry: {
+              id: "work-2",
+              createdAt: "2026-03-17T19:12:29.000Z",
+              label: "Ran command",
+              tone: "tool",
+              itemType: "command_execution",
+              command: "sed -n '1,80p' apps/web/src/session-logic.ts",
+              status: "completed",
+            },
+          },
+        ]}
+      />,
+    );
+
+    expect(markup).toContain("Exploring");
+    expect(markup).not.toContain("Completed");
+    expect(markup).not.toContain("animate-pulse");
+    expect(markup).toContain("exploration-group-toggle");
+    expect(markup).not.toContain("rg query apps/web");
+    expect(markup).not.toContain("sed -n");
+  });
+
+  it("shows exploration dots only while a grouped tool call is running", async () => {
+    const { MessagesTimeline } = await import("./MessagesTimeline");
+    const markup = renderToStaticMarkup(
+      <MessagesTimeline
+        {...buildProps()}
+        timelineEntries={[
+          {
+            id: "entry-1",
+            kind: "work",
+            createdAt: "2026-03-17T19:12:28.000Z",
+            entry: {
+              id: "work-1",
+              createdAt: "2026-03-17T19:12:28.000Z",
+              label: "Ran command",
+              tone: "tool",
+              itemType: "command_execution",
+              command: "rg query apps/web",
+              status: "running",
+            },
+          },
+        ]}
+      />,
+    );
+
+    expect(markup).toContain("Exploring");
+    expect(markup).toContain("animate-pulse");
+  });
+
+  it("renders validation commands as their own visible section", async () => {
+    const { MessagesTimeline } = await import("./MessagesTimeline");
+    const markup = renderToStaticMarkup(
+      <MessagesTimeline
+        {...buildProps()}
+        timelineEntries={[
+          {
+            id: "entry-1",
+            kind: "work",
+            createdAt: "2026-03-17T19:12:28.000Z",
+            entry: {
+              id: "work-1",
+              createdAt: "2026-03-17T19:12:28.000Z",
+              label: "Ran command",
+              tone: "tool",
+              itemType: "command_execution",
+              command: "bun run test",
+              status: "failed",
+              outputPreview: {
+                lines: ["expected true to be false"],
+                stream: "stderr",
+                truncated: false,
+              },
+            },
+          },
+        ]}
+      />,
+    );
+
+    expect(markup).toContain("Validation");
+    expect(markup).toContain("bun run test");
+    expect(markup).toContain("Failed");
+    expect(markup).toContain("expected true to be false");
+  });
+
   it("renders terminal command input while output is pending", async () => {
     const { MessagesTimeline } = await import("./MessagesTimeline");
     const markup = renderToStaticMarkup(
@@ -419,7 +528,7 @@ describe("MessagesTimeline", () => {
       />,
     );
 
-    expect(markup).toContain("Read file");
+    expect(markup).toContain("Exploring");
     expect(markup).not.toContain("should not render");
   });
 

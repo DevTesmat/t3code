@@ -2,6 +2,10 @@ import { type TimelineEntry, type WorkLogEntry } from "../../session-logic";
 import { type ActiveTurnActivityState } from "../../session-logic";
 import { type ChatMessage, type ProposedPlan, type TurnDiffSummary } from "../../types";
 import { type MessageId } from "@t3tools/contracts";
+import {
+  classifyToolActivityGroup,
+  type ToolActivityGroupKind,
+} from "@t3tools/shared/toolActivity";
 
 export const MAX_VISIBLE_WORK_LOG_ENTRIES = 6;
 
@@ -18,6 +22,7 @@ export type MessagesTimelineRow =
       id: string;
       createdAt: string;
       groupedEntries: WorkLogEntry[];
+      activityGroupKind: ToolActivityGroupKind;
     }
   | {
       kind: "message";
@@ -127,6 +132,7 @@ export function deriveMessagesTimelineRows(input: {
     input.timelineEntries.flatMap((entry) => (entry.kind === "message" ? [entry.message] : [])),
   );
   const terminalAssistantMessageIds = deriveTerminalAssistantMessageIds(input.timelineEntries);
+  const workGroupIdOccurrences = new Map<string, number>();
 
   for (let index = 0; index < input.timelineEntries.length; index += 1) {
     const timelineEntry = input.timelineEntries[index];
@@ -136,18 +142,22 @@ export function deriveMessagesTimelineRows(input: {
 
     if (timelineEntry.kind === "work") {
       const groupedEntries = [timelineEntry.entry];
+      const activityGroupKind = classifyWorkEntryActivityGroup(timelineEntry.entry);
       let cursor = index + 1;
       while (cursor < input.timelineEntries.length) {
         const nextEntry = input.timelineEntries[cursor];
         if (!nextEntry || nextEntry.kind !== "work") break;
+        if (classifyWorkEntryActivityGroup(nextEntry.entry) !== activityGroupKind) break;
         groupedEntries.push(nextEntry.entry);
         cursor += 1;
       }
+      const baseRowId = stableWorkGroupRowId(groupedEntries, activityGroupKind);
       nextRows.push({
         kind: "work",
-        id: stableWorkGroupRowId(groupedEntries),
+        id: uniqueWorkGroupRowId(baseRowId, workGroupIdOccurrences),
         createdAt: timelineEntry.createdAt,
         groupedEntries,
+        activityGroupKind,
       });
       index = cursor - 1;
       continue;
@@ -206,9 +216,30 @@ function stableWorkEntryKey(entry: WorkLogEntry): string {
   return entry.toolKey ?? entry.toolCallId ?? entry.id;
 }
 
-function stableWorkGroupRowId(entries: ReadonlyArray<WorkLogEntry>): string {
+function stableWorkGroupRowId(
+  entries: ReadonlyArray<WorkLogEntry>,
+  activityGroupKind: ToolActivityGroupKind,
+): string {
   const firstEntry = entries[0];
-  return `work-group:${firstEntry ? stableWorkEntryKey(firstEntry) : "empty"}`;
+  return `work-group:${activityGroupKind}:${firstEntry ? stableWorkEntryKey(firstEntry) : "empty"}`;
+}
+
+function uniqueWorkGroupRowId(baseRowId: string, occurrences: Map<string, number>): string {
+  const nextOccurrence = (occurrences.get(baseRowId) ?? 0) + 1;
+  occurrences.set(baseRowId, nextOccurrence);
+  return nextOccurrence === 1 ? baseRowId : `${baseRowId}:${nextOccurrence}`;
+}
+
+function classifyWorkEntryActivityGroup(entry: WorkLogEntry): ToolActivityGroupKind {
+  return classifyToolActivityGroup({
+    itemType: entry.itemType,
+    title: entry.toolTitle,
+    label: entry.label,
+    command: entry.command,
+    detail: entry.detail,
+    changedFiles: entry.changedFiles,
+    requestKind: entry.requestKind,
+  });
 }
 
 export function computeStableMessagesTimelineRows(
@@ -250,6 +281,7 @@ function isRowUnchanged(a: MessagesTimelineRow, b: MessagesTimelineRow): boolean
     case "work":
       return (
         a.createdAt === (b as typeof a).createdAt &&
+        a.activityGroupKind === (b as typeof a).activityGroupKind &&
         areWorkEntryGroupsUnchanged(a.groupedEntries, (b as typeof a).groupedEntries)
       );
 
