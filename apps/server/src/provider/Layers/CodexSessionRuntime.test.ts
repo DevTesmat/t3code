@@ -75,6 +75,17 @@ describe("buildTurnStartParams", () => {
         },
       },
     });
+    assert.match(CODEX_PLAN_MODE_DEVELOPER_INSTRUCTIONS, /compact, legible/);
+    assert.match(
+      CODEX_PLAN_MODE_DEVELOPER_INSTRUCTIONS,
+      /single-level feature- or outcome-oriented bullets/,
+    );
+    assert.match(CODEX_PLAN_MODE_DEVELOPER_INSTRUCTIONS, /Avoid nested bullets by default/);
+    assert.match(CODEX_PLAN_MODE_DEVELOPER_INSTRUCTIONS, /Aim for under 40 lines/);
+    assert.match(
+      CODEX_PLAN_MODE_DEVELOPER_INSTRUCTIONS,
+      /repetitive "Risk" \/ "Plan" \/ "Verification" subsections/,
+    );
   });
 
   it("includes default collaboration mode and image attachments", () => {

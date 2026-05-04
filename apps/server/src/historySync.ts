@@ -913,13 +913,16 @@ export function selectAutosaveCandidateLocalEvents(input: {
   readonly localEvents: readonly HistorySyncEventRow[];
   readonly unpushedLocalEvents: readonly HistorySyncEventRow[];
   readonly remoteMaxSequence: number;
+  readonly maxSequence?: number;
 }): readonly HistorySyncEventRow[] {
   const candidateBySequence = new Map<number, HistorySyncEventRow>();
   for (const event of input.unpushedLocalEvents) {
     if (event.sequence <= input.remoteMaxSequence) continue;
+    if (input.maxSequence !== undefined && event.sequence > input.maxSequence) continue;
     candidateBySequence.set(event.sequence, event);
   }
   for (const event of selectRemoteBehindLocalEvents(input.localEvents, input.remoteMaxSequence)) {
+    if (input.maxSequence !== undefined && event.sequence > input.maxSequence) continue;
     candidateBySequence.set(event.sequence, event);
   }
   return [...candidateBySequence.values()].toSorted(
@@ -2453,7 +2456,10 @@ export const HistorySyncServiceLive = Layer.effect(
         });
       });
 
-    const performSync = (options: { readonly mode: HistorySyncMode }): Effect.Effect<void> =>
+    const performSync = (options: {
+      readonly mode: HistorySyncMode;
+      readonly autosaveMaxSequence?: number;
+    }): Effect.Effect<void> =>
       Effect.gen(function* () {
         const settings = yield* settingsService.getSettings;
         const connectionString = yield* getConnectionString;
@@ -2581,6 +2587,9 @@ export const HistorySyncServiceLive = Layer.effect(
             localEvents,
             unpushedLocalEvents,
             remoteMaxSequence,
+            ...(options.autosaveMaxSequence !== undefined
+              ? { maxSequence: options.autosaveMaxSequence }
+              : {}),
           });
           const pushableLocalEvents = selectAutosaveContiguousPushableEvents({
             candidateEvents: candidateLocalEvents,
@@ -2910,7 +2919,7 @@ export const HistorySyncServiceLive = Layer.effect(
 
     const runSyncMode = (
       mode: HistorySyncMode,
-      options: { readonly clearStopped: boolean },
+      options: { readonly clearStopped: boolean; readonly autosaveMaxSequence?: number },
     ): Effect.Effect<void> =>
       Effect.gen(function* () {
         const running = yield* Ref.get(runningRef);
@@ -2927,7 +2936,12 @@ export const HistorySyncServiceLive = Layer.effect(
           if (stopped) return;
         }
         yield* Ref.set(runningRef, true);
-        yield* performSync({ mode }).pipe(
+        yield* performSync({
+          mode,
+          ...(options.autosaveMaxSequence !== undefined
+            ? { autosaveMaxSequence: options.autosaveMaxSequence }
+            : {}),
+        }).pipe(
           Effect.ensuring(
             Effect.gen(function* () {
               yield* Ref.set(runningRef, false);
@@ -3011,7 +3025,12 @@ export const HistorySyncServiceLive = Layer.effect(
       yield* engine.streamDomainEvents.pipe(
         Stream.filter(shouldScheduleAutosaveForDomainEvent),
         Stream.debounce(Duration.millis(HISTORY_SYNC_AUTOSAVE_DEBOUNCE_MS)),
-        Stream.runForEach(() => runSyncMode("autosave", { clearStopped: false })),
+        Stream.runForEach((event) =>
+          runSyncMode("autosave", {
+            clearStopped: false,
+            autosaveMaxSequence: event.sequence,
+          }),
+        ),
         Effect.forkScoped,
       );
     });

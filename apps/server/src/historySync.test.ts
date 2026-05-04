@@ -1006,6 +1006,47 @@ describe("history sync remote repair", () => {
     ).toEqual([1, 2, 3]);
   });
 
+  test("autosave caps candidates at the event that scheduled the autosave", () => {
+    const local = [
+      threadCreated(1, "thread-plan"),
+      turnStartRequested(2, "thread-plan", "turn-1"),
+      messageSent(3, "thread-plan", "plan ready"),
+      event(4, "thread-plan", "thread.proposed-plan-upserted", {
+        threadId: "thread-plan",
+        proposedPlan: {
+          id: "plan-1",
+          turnId: "turn-1",
+          planMarkdown: "# Plan",
+          implementedAt: null,
+          implementationThreadId: null,
+          createdAt: baseEvent.occurredAt,
+          updatedAt: baseEvent.occurredAt,
+        },
+      }),
+      turnStartRequested(5, "thread-plan", "turn-2"),
+      messageSent(6, "thread-plan", "implementing"),
+    ];
+    const candidates = selectAutosaveCandidateLocalEvents({
+      localEvents: local,
+      unpushedLocalEvents: local,
+      remoteMaxSequence: 0,
+      maxSequence: 4,
+    });
+
+    expect(candidates.map((candidate) => candidate.sequence)).toEqual([1, 2, 3, 4]);
+    expect(
+      selectAutosaveContiguousPushableEvents({
+        candidateEvents: candidates,
+        threadStates: classifyAutosyncThreadStates(local, [
+          projectionThreadRow("thread-plan", {
+            hasActionableProposedPlan: true,
+            latestTurnId: "turn-2",
+          }),
+        ]),
+      }).map((candidate) => candidate.sequence),
+    ).toEqual([1, 2, 3, 4]);
+  });
+
   test("autosave repairs remote when local has events beyond the remote max", () => {
     const local = [
       projectCreated(1, "project-a"),

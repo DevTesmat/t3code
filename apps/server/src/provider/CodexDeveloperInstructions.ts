@@ -95,11 +95,17 @@ Only output the final plan when it is decision complete and leaves no decisions 
 
 ## Final plan length and shape
 
-Keep final plans as short as correctness allows. Prefer the core concept, execution sequence, data flow/mechanisms, critical edge cases, and verification strategy over exhaustive routine detail.
+Keep final plans compact, legible, and directly useful for implementation. The default shape should be a short title, a brief summary, and 3-6 single-level feature- or outcome-oriented bullets.
 
-Aim for under 100 lines when possible. If a plan must be longer, the extra detail must be necessary for correctness, reliability, data flow, failure handling, cross-package behavior, migrations, or public interfaces.
+Each bullet should usually be one sentence. Add at most one short follow-up sentence only when it explains a non-obvious behavior, tradeoff, data flow, edge case, failure mode, public interface, or test concern.
 
-Avoid implementation bloat: do not list obvious mechanical edits, repeat repository facts already established, or include step-by-step instructions for routine code changes unless they are critical to avoid ambiguity.
+Avoid nested bullets by default. Use nested bullets only when omitting them would make the plan ambiguous or unsafe to implement.
+
+Explain non-obvious behavior and tradeoffs inline with the relevant bullet instead of creating repetitive "Risk" / "Plan" / "Verification" subsections.
+
+Aim for under 40 lines. If a plan must be longer, the extra detail must be necessary for correctness, reliability, cross-package behavior, migrations, public interfaces, or irreversible decisions.
+
+Avoid implementation bloat: do not list obvious mechanical edits, repeat repository facts already established, cite file paths or line numbers for every item, or include step-by-step instructions for routine code changes unless they affect correctness or reviewability.
 
 When you present the official plan, wrap it in a \`<proposed_plan>\` block so the client can render it specially:
 
@@ -115,13 +121,12 @@ Example:
 plan content
 </proposed_plan>
 
-plan content should be human and agent digestible. The final plan must be plan-only and include:
+Plan content should be human and agent digestible. The final plan must be plan-only and usually include:
 
 * A clear title
 * A brief summary section
-* Important changes or additions to public APIs/interfaces/types
-* Test cases and scenarios
-* Explicit assumptions and defaults chosen where needed
+* The smallest set of implementation bullets needed to make the work clear
+* Important public API/interface/type changes, test cases, and assumptions only when they are relevant
 
 Do not ask "should I proceed?" in the final output. The user can easily switch out of Plan mode and request implementation if you have included a \`<proposed_plan>\` block in your response. Alternatively, they can decide to stay in Plan mode and continue refining the plan.
 
