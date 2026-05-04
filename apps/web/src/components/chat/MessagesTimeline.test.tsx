@@ -269,11 +269,74 @@ describe("MessagesTimeline", () => {
     );
 
     expect(markup).toContain("Exploring");
+    expect(markup.match(/Exploring/g)).toHaveLength(1);
     expect(markup).not.toContain("Completed");
     expect(markup).not.toContain("animate-pulse");
     expect(markup).toContain("exploration-group-toggle");
     expect(markup).not.toContain("rg query apps/web");
     expect(markup).not.toContain("sed -n");
+  });
+
+  it("renders generated inspection pipelines as one collapsed exploration row", async () => {
+    const { MessagesTimeline } = await import("./MessagesTimeline");
+    const markup = renderToStaticMarkup(
+      <MessagesTimeline
+        {...buildProps()}
+        timelineEntries={[
+          {
+            id: "entry-find-xargs",
+            kind: "work",
+            createdAt: "2026-03-17T19:12:28.000Z",
+            entry: {
+              id: "work-find-xargs",
+              createdAt: "2026-03-17T19:12:28.000Z",
+              label: "Ran command",
+              tone: "tool",
+              itemType: "command_execution",
+              command:
+                "find Gitex.Module.* -maxdepth 1 -name '*.csproj' | sort | xargs -I{} sh -c 'printf \"%s\\n\" \"$1\"' sh {}",
+              status: "completed",
+            },
+          },
+          {
+            id: "entry-node-package",
+            kind: "work",
+            createdAt: "2026-03-17T19:12:29.000Z",
+            entry: {
+              id: "work-node-package",
+              createdAt: "2026-03-17T19:12:29.000Z",
+              label: "Ran command",
+              tone: "tool",
+              itemType: "command_execution",
+              command:
+                'for f in Gitex.Module.*.App/package.json; do printf "%s\\n" "$f"; node -e "const p=require(\'./package.json\'); console.log(p.name)"; done',
+              status: "completed",
+            },
+          },
+          {
+            id: "entry-sed-find",
+            kind: "work",
+            createdAt: "2026-03-17T19:12:30.000Z",
+            entry: {
+              id: "work-sed-find",
+              createdAt: "2026-03-17T19:12:30.000Z",
+              label: "Ran command",
+              tone: "tool",
+              itemType: "command_execution",
+              command:
+                "sed -n '1,180p' Gitex.Module.Core.App/package.json && find Gitex.Module.Core.App/src/app -maxdepth 2 -type f | sort | sed -n '1,80p'",
+              status: "completed",
+            },
+          },
+        ]}
+      />,
+    );
+
+    expect(markup).toContain("Exploring");
+    expect(markup.match(/Exploring/g)).toHaveLength(1);
+    expect(markup).not.toContain("Terminal");
+    expect(markup).not.toContain("find Gitex.Module");
+    expect(markup).not.toContain("node -e");
   });
 
   it("shows exploration dots only while a grouped tool call is running", async () => {

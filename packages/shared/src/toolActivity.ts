@@ -277,7 +277,7 @@ function commandBasename(value: string | undefined): string | undefined {
 }
 
 function hasShellWriteRedirection(segment: string): boolean {
-  return /(^|[^<])>{1,2}(?!&)/u.test(segment);
+  return /(^|[^<=])>{1,2}(?![&=])/u.test(segment);
 }
 
 function stripLeadingAssignments(tokens: string[]): string[] {
@@ -375,33 +375,163 @@ function isReadOnlyExplorationSegment(segment: string): boolean {
   }
 
   const tokens = stripLeadingAssignments(tokenizeCommandSegment(segment));
-  const command = commandBasename(tokens[0]);
+  const normalizedTokens = normalizeShellControlTokens(tokens);
+  const command = commandBasename(normalizedTokens[0]);
   if (!command) {
-    return false;
+    return isReadOnlyShellNoop(tokens);
+  }
+
+  if (isReadOnlyShellNoop(normalizedTokens)) {
+    return true;
+  }
+
+  if (command === "if") {
+    return isReadOnlyShellCondition(normalizedTokens.slice(1));
+  }
+
+  if (command === "for") {
+    return normalizedTokens.some((token) => token.toLowerCase() === "in");
   }
 
   if (command === "sed") {
-    return !tokens.some((token) => token === "-i" || token.startsWith("-i"));
+    return !normalizedTokens.some((token) => token === "-i" || token.startsWith("-i"));
   }
 
   if (command === "find") {
-    return !tokens.some((token) =>
+    return !normalizedTokens.some((token) =>
       ["-delete", "-exec", "-execdir", "-ok", "-okdir"].includes(token.toLowerCase()),
     );
   }
 
   if (command === "git") {
     return new Set(["diff", "show", "status", "log", "grep", "ls-files"]).has(
-      gitSubcommand(tokens) ?? "",
+      gitSubcommand(normalizedTokens) ?? "",
     );
   }
 
-  return new Set(["rg", "grep", "fd", "ls", "tree", "pwd", "cat", "awk", "head", "tail", "wc"]).has(
-    command,
+  if (command === "sort") {
+    return !normalizedTokens.some((token) => token === "-o" || token.startsWith("--output"));
+  }
+
+  if (command === "xargs") {
+    return isReadOnlyXargsSegment(normalizedTokens);
+  }
+
+  if (command === "node") {
+    return isReadOnlyNodeInspectionSegment(normalizedTokens, segment);
+  }
+
+  return new Set([
+    "[",
+    "test",
+    "rg",
+    "grep",
+    "fd",
+    "ls",
+    "tree",
+    "pwd",
+    "cat",
+    "awk",
+    "head",
+    "tail",
+    "wc",
+    "sort",
+    "tr",
+    "printf",
+  ]).has(command);
+}
+
+function normalizeShellControlTokens(tokens: readonly string[]): string[] {
+  let normalized = [...tokens];
+  while (normalized.length > 0) {
+    const first = normalized[0]?.toLowerCase();
+    if (first === "then" || first === "do") {
+      normalized = normalized.slice(1);
+      continue;
+    }
+    if (first === "if") {
+      const thenIndex = normalized.findIndex((token) => token.toLowerCase() === "then");
+      if (thenIndex >= 0) {
+        normalized = normalized.slice(thenIndex + 1);
+        continue;
+      }
+    }
+    break;
+  }
+  return normalized;
+}
+
+function isReadOnlyShellNoop(tokens: readonly string[]): boolean {
+  const joined = tokens.join(" ").trim().toLowerCase();
+  if (!joined) {
+    return false;
+  }
+  return joined === "fi" || joined === "done" || joined === "else";
+}
+
+function isReadOnlyShellCondition(tokens: readonly string[]): boolean {
+  const command = commandBasename(tokens[0]);
+  return command === "[" || command === "test";
+}
+
+function isReadOnlyXargsSegment(tokens: readonly string[]): boolean {
+  const shellIndex = tokens.findIndex((token) => {
+    const command = commandBasename(token);
+    return command === "sh" || command === "bash" || command === "zsh";
+  });
+  if (shellIndex >= 0) {
+    const innerCommand = shellInnerCommand(tokens.slice(shellIndex));
+    return innerCommand ? classifyCommandActivity(innerCommand) === "exploration" : false;
+  }
+
+  const commandIndex = tokens.findIndex((token, index) => {
+    if (index === 0) {
+      return false;
+    }
+    if (!token || token === "--") {
+      return false;
+    }
+    if (token === "-I" || token === "-P" || token === "-n" || token === "-L" || token === "-s") {
+      return false;
+    }
+    const previous = tokens[index - 1];
+    if (
+      previous === "-I" ||
+      previous === "-P" ||
+      previous === "-n" ||
+      previous === "-L" ||
+      previous === "-s"
+    ) {
+      return false;
+    }
+    return !token.startsWith("-");
+  });
+
+  if (commandIndex < 0) {
+    return false;
+  }
+  return isReadOnlyExplorationSegment(tokens.slice(commandIndex).join(" "));
+}
+
+function isReadOnlyNodeInspectionSegment(tokens: readonly string[], segment: string): boolean {
+  if (
+    !tokens.some((token) => token === "-e" || token === "--eval" || token === "-") &&
+    !segment.includes("<<")
+  ) {
+    return false;
+  }
+
+  const lowered = segment.toLowerCase();
+  return !/\b(?:writefile(?:sync)?|appendfile(?:sync)?|rm(?:sync)?|rmdir(?:sync)?|mkdir(?:sync)?|unlink(?:sync)?|rename(?:sync)?|copyfile(?:sync)?|cp(?:sync)?|createwritestream|exec(?:file)?(?:sync)?|spawn(?:sync)?|fork)\b/u.test(
+    lowered,
   );
 }
 
 function classifyCommandActivity(command: string): ToolActivityGroupKind {
+  if (command.includes("<<") && isReadOnlyExplorationSegment(command)) {
+    return "exploration";
+  }
+
   const segments = expandShellWrappedSegments(splitShellSegments(command));
   if (segments.length === 0) {
     return "other";

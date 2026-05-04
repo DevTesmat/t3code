@@ -81,6 +81,16 @@ describe("classifyToolActivityGroup", () => {
       "rg test apps/web",
       `/bin/zsh -lc "rg -n \\"\\\\[WS_METHODS|\\\\[ORCHESTRATION_WS_METHODS|open\\\\.\\" apps/server/src/ws.ts"`,
       `bash -lc "sed -n '1,120p' apps/web/src/session-logic.ts"`,
+      `find Gitex.Module.* -maxdepth 1 -name '*.csproj' | sort | xargs -I{} sh -c 'printf "%s\\n" "$1"' sh {}`,
+      `find Gitex.Module.*.App/src/app -path '*/index.ts' -print | sort | xargs -I{} sh -c 'if [ -f "$1" ]; then printf "%s\\n" "$1"; fi' sh {}`,
+      `for f in Gitex.Module.*.App/package.json; do printf "%s\\n" "$f"; node -e "const p=require('./package.json'); console.log(p.name)"; done`,
+      `node -e "const p=require('./package.json'); Object.keys(p.dependencies ?? {}).forEach((name) => console.log(name))"`,
+      `sed -n '1,180p' Gitex.Module.Core.App/package.json && find Gitex.Module.Core.App/src/app -maxdepth 2 -type f | sort | sed -n '1,80p'`,
+      `node - <<'NODE'
+const fs = require("fs");
+const p = JSON.parse(fs.readFileSync("package.json", "utf8"));
+console.log(p.name);
+NODE`,
     ]) {
       expect(classifyToolActivityGroup({ itemType: "command_execution", command })).toBe(
         "exploration",
@@ -98,6 +108,9 @@ describe("classifyToolActivityGroup", () => {
       "find src -name '*.tmp' -delete",
       "rg query > results.txt",
       "cat package.json && rm package.json",
+      `xargs -I{} sh -c 'rm "$1"' sh {}`,
+      `node -e "require('fs').writeFileSync('out.txt', 'x')"`,
+      `node -e "require('child_process').execSync('rm -rf dist')"`,
       `/bin/zsh -lc "rg query > results.txt"`,
       `/bin/zsh -lc "cat package.json && rm package.json"`,
     ]) {
