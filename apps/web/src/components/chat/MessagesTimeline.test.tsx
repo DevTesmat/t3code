@@ -214,18 +214,13 @@ describe("MessagesTimeline", () => {
     );
 
     expect(markup).toContain("Ran command");
-    expect(markup).toContain("Input");
-    expect(markup).toContain("Output");
     expect(markup).toContain("Completed");
     expect(markup).toContain("exit 0");
-    expect(markup).toContain("<details");
-    expect(markup).not.toContain("<details open");
+    expect(markup).not.toContain("<details");
+    expect(markup).toContain("tool-output-toggle");
     expect(markup).toContain("bun run lint");
-    expect(markup).toContain("line one");
-    expect(markup).toContain("line four");
-    expect(markup).toContain("whitespace-pre-wrap");
-    expect(markup).toContain("wrap-break-word");
-    expect(markup).toContain("Output preview truncated");
+    expect(markup).not.toContain("line one");
+    expect(markup).not.toContain("Output preview truncated");
   });
 
   it("renders terminal command input while output is pending", async () => {
@@ -252,11 +247,10 @@ describe("MessagesTimeline", () => {
       />,
     );
 
-    expect(markup).toContain("Input");
-    expect(markup).toContain("Output");
     expect(markup).toContain("Running");
     expect(markup).toContain("bun run typecheck");
-    expect(markup).toContain("Waiting for output");
+    expect(markup).not.toContain("tool-output-toggle");
+    expect(markup).not.toContain("Waiting for output");
   });
 
   it("renders stderr terminal previews with a subtle stream label", async () => {
@@ -289,11 +283,10 @@ describe("MessagesTimeline", () => {
       />,
     );
 
-    expect(markup).toContain("stderr");
     expect(markup).toContain("Failed");
     expect(markup).toContain("exit 1");
-    expect(markup).toContain("TypeError: nope");
-    expect(markup).toContain("border-destructive");
+    expect(markup).toContain("tool-output-toggle");
+    expect(markup).not.toContain("TypeError: nope");
   });
 
   it("does not render terminal output preview styling for non-command tools", async () => {

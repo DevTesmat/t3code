@@ -148,6 +148,10 @@ describe("normalizeCompactToolLabel", () => {
   it("removes trailing completion wording from other labels", () => {
     expect(normalizeCompactToolLabel("Read file completed")).toBe("Read file");
   });
+
+  it("removes trailing started wording from lifecycle labels", () => {
+    expect(normalizeCompactToolLabel("Ran command started")).toBe("Ran command");
+  });
 });
 
 describe("resolveAssistantMessageCopyState", () => {

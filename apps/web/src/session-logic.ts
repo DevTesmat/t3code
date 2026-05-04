@@ -66,12 +66,13 @@ export interface WorkLogEntry {
   toolTitle?: string;
   itemType?: ToolLifecycleItemType;
   requestKind?: PendingApproval["requestKind"];
+  toolCallId?: string;
+  toolKey?: string;
 }
 
 interface DerivedWorkLogEntry extends WorkLogEntry {
   activityKind: OrchestrationThreadActivity["kind"];
   collapseKey?: string;
-  toolCallId?: string;
 }
 
 type TerminalOutputPreview = NonNullable<WorkLogEntry["outputPreview"]>;
@@ -683,7 +684,6 @@ export function deriveWorkLogEntries(
   const ordered = [...activities].toSorted(compareActivitiesByOrder);
   const entries = ordered
     .filter((activity) => (latestTurnId ? activity.turnId === latestTurnId : true))
-    .filter((activity) => activity.kind !== "tool.started")
     .filter((activity) => activity.kind !== "task.started")
     .filter((activity) => activity.kind !== "context-window.updated")
     .filter((activity) => activity.summary !== "Checkpoint captured")
@@ -789,6 +789,7 @@ function toDerivedWorkLogEntry(activity: OrchestrationThreadActivity): DerivedWo
   const collapseKey = deriveToolLifecycleCollapseKey(entry);
   if (collapseKey) {
     entry.collapseKey = collapseKey;
+    entry.toolKey = collapseKey;
   }
   return entry;
 }
@@ -812,10 +813,10 @@ function shouldCollapseToolLifecycleEntries(
   previous: DerivedWorkLogEntry,
   next: DerivedWorkLogEntry,
 ): boolean {
-  if (previous.activityKind !== "tool.updated" && previous.activityKind !== "tool.completed") {
+  if (!isToolLifecycleActivityKind(previous.activityKind)) {
     return false;
   }
-  if (next.activityKind !== "tool.updated" && next.activityKind !== "tool.completed") {
+  if (!isToolLifecycleActivityKind(next.activityKind)) {
     return false;
   }
   if (previous.activityKind === "tool.completed") {
@@ -849,6 +850,7 @@ function mergeDerivedWorkLogEntries(
   const requestKind = next.requestKind ?? previous.requestKind;
   const collapseKey = next.collapseKey ?? previous.collapseKey;
   const toolCallId = next.toolCallId ?? previous.toolCallId;
+  const toolKey = next.toolKey ?? previous.toolKey;
   return {
     ...previous,
     ...next,
@@ -864,6 +866,7 @@ function mergeDerivedWorkLogEntries(
     ...(requestKind ? { requestKind } : {}),
     ...(collapseKey ? { collapseKey } : {}),
     ...(toolCallId ? { toolCallId } : {}),
+    ...(toolKey ? { toolKey } : {}),
   };
 }
 
@@ -879,7 +882,7 @@ function mergeChangedFiles(
 }
 
 function deriveToolLifecycleCollapseKey(entry: DerivedWorkLogEntry): string | undefined {
-  if (entry.activityKind !== "tool.updated" && entry.activityKind !== "tool.completed") {
+  if (!isToolLifecycleActivityKind(entry.activityKind)) {
     return undefined;
   }
   if (entry.toolCallId) {
@@ -894,8 +897,12 @@ function deriveToolLifecycleCollapseKey(entry: DerivedWorkLogEntry): string | un
   return [itemType, normalizedLabel, detail].join("\u001f");
 }
 
+function isToolLifecycleActivityKind(kind: OrchestrationThreadActivity["kind"]): boolean {
+  return kind === "tool.started" || kind === "tool.updated" || kind === "tool.completed";
+}
+
 function normalizeCompactToolLabel(value: string): string {
-  return value.replace(/\s+(?:complete|completed)\s*$/i, "").trim();
+  return value.replace(/\s+(?:started|complete|completed)\s*$/i, "").trim();
 }
 
 function toLatestProposedPlanState(proposedPlan: ProposedPlan): LatestProposedPlanState {

@@ -68,7 +68,7 @@ export function computeMessageDurationStart(
 }
 
 export function normalizeCompactToolLabel(value: string): string {
-  return value.replace(/\s+(?:complete|completed)\s*$/i, "").trim();
+  return value.replace(/\s+(?:started|complete|completed)\s*$/i, "").trim();
 }
 
 export function resolveAssistantMessageCopyState({
@@ -306,6 +306,8 @@ function areWorkEntriesUnchanged(a: WorkLogEntry, b: WorkLogEntry): boolean {
     a.toolTitle === b.toolTitle &&
     a.itemType === b.itemType &&
     a.requestKind === b.requestKind &&
+    a.toolCallId === b.toolCallId &&
+    a.toolKey === b.toolKey &&
     areOptionalStringArraysUnchanged(a.changedFiles, b.changedFiles) &&
     areOutputPreviewsUnchanged(a.outputPreview, b.outputPreview)
   );

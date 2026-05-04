@@ -268,6 +268,25 @@ export interface HistorySyncPushedEventReceiptRow {
   readonly pushedAt: string;
 }
 
+export interface HistorySyncAutosyncProjectionThreadRow {
+  readonly threadId: string;
+  readonly pendingUserInputCount: number;
+  readonly hasActionableProposedPlan: number;
+  readonly latestTurnId: string | null;
+  readonly sessionStatus: string | null;
+  readonly sessionActiveTurnId: string | null;
+}
+
+export interface HistorySyncAutosyncThreadState {
+  readonly threadId: string;
+  readonly hasOpenTurn: boolean;
+  readonly hasCompletedTurn: boolean;
+  readonly pendingUserInputCount: number;
+  readonly hasActionableProposedPlan: boolean;
+  readonly sessionStatus: string | null;
+  readonly sessionActiveTurnId: string | null;
+}
+
 interface HistorySyncStateRow {
   readonly hasCompletedInitialSync: number;
   readonly lastSyncedRemoteSequence: number;
@@ -768,6 +787,13 @@ export function selectRemoteBehindLocalEvents(
   return localEvents.filter((event) => event.sequence > remoteMaxSequence);
 }
 
+export function nextSyncedRemoteSequenceAfterPush(
+  previousRemoteSequence: number,
+  pushedEvents: readonly HistorySyncEventRow[],
+): number {
+  return Math.max(previousRemoteSequence, 0, ...pushedEvents.map((event) => event.sequence));
+}
+
 function readPayloadThreadId(row: HistorySyncEventRow): string {
   return readString(readPayload(row), "threadId") ?? row.streamId;
 }
@@ -795,11 +821,170 @@ export function filterAlreadyImportedRemoteDeltaEvents(
   );
 }
 
+export function selectKnownRemoteDeltaLocalEvents(input: {
+  readonly remoteEvents: readonly HistorySyncEventRow[];
+  readonly localEvents: readonly HistorySyncEventRow[];
+}): readonly HistorySyncEventRow[] {
+  const localEventById = new Map(input.localEvents.map((event) => [event.eventId, event]));
+  return input.remoteEvents.flatMap((event) => {
+    const localEvent = localEventById.get(event.eventId);
+    return localEvent ? [localEvent] : [];
+  });
+}
+
+export function selectUnknownRemoteDeltaEvents(input: {
+  readonly remoteEvents: readonly HistorySyncEventRow[];
+  readonly localEvents: readonly HistorySyncEventRow[];
+}): readonly HistorySyncEventRow[] {
+  const localEventIds = new Set(input.localEvents.map((event) => event.eventId));
+  return input.remoteEvents.filter((event) => !localEventIds.has(event.eventId));
+}
+
 export function filterUnpushedLocalEvents(
   localEvents: readonly HistorySyncEventRow[],
   pushedSequences: ReadonlySet<number>,
 ): readonly HistorySyncEventRow[] {
   return localEvents.filter((event) => !pushedSequences.has(event.sequence));
+}
+
+export function classifyAutosyncThreadStates(
+  events: readonly HistorySyncEventRow[],
+  projectionThreadRows: readonly HistorySyncAutosyncProjectionThreadRow[] = [],
+): ReadonlyMap<string, HistorySyncAutosyncThreadState> {
+  const openTurnByThread = new Map<string, string>();
+  const completedTurnThreads = new Set<string>();
+  const threadIds = new Set<string>();
+  for (const event of events.toSorted((left, right) => left.sequence - right.sequence)) {
+    if (event.aggregateKind !== "thread") continue;
+    const threadId = readPayloadThreadId(event);
+    threadIds.add(threadId);
+    if (event.eventType === "thread.turn-start-requested") {
+      const turnId = readPayloadTurnId(event);
+      const messageId = readString(readPayload(event), "messageId");
+      openTurnByThread.set(threadId, turnId ?? messageId ?? event.eventId);
+      continue;
+    }
+    if (event.eventType === "thread.turn-diff-completed" || event.eventType === "thread.deleted") {
+      openTurnByThread.delete(threadId);
+    }
+    if (event.eventType === "thread.turn-diff-completed") {
+      completedTurnThreads.add(threadId);
+    }
+  }
+
+  const projectionByThreadId = new Map(projectionThreadRows.map((row) => [row.threadId, row]));
+  for (const row of projectionThreadRows) {
+    threadIds.add(row.threadId);
+  }
+
+  return new Map(
+    [...threadIds].map((threadId) => {
+      const projection = projectionByThreadId.get(threadId);
+      return [
+        threadId,
+        {
+          threadId,
+          hasOpenTurn: openTurnByThread.has(threadId),
+          hasCompletedTurn: completedTurnThreads.has(threadId),
+          pendingUserInputCount: projection?.pendingUserInputCount ?? 0,
+          hasActionableProposedPlan: projection?.hasActionableProposedPlan === 1,
+          sessionStatus: projection?.sessionStatus ?? null,
+          sessionActiveTurnId: projection?.sessionActiveTurnId ?? null,
+        },
+      ];
+    }),
+  );
+}
+
+export function isAutosyncEligibleThread(state: HistorySyncAutosyncThreadState): boolean {
+  if (state.pendingUserInputCount > 0 || state.hasActionableProposedPlan) {
+    return true;
+  }
+  return (
+    state.sessionActiveTurnId === null &&
+    ((state.sessionStatus === "ready" && state.hasCompletedTurn) ||
+      state.sessionStatus === "stopped" ||
+      state.sessionStatus === "interrupted" ||
+      state.sessionStatus === "error")
+  );
+}
+
+export function selectAutosaveCandidateLocalEvents(input: {
+  readonly localEvents: readonly HistorySyncEventRow[];
+  readonly unpushedLocalEvents: readonly HistorySyncEventRow[];
+  readonly remoteMaxSequence: number;
+}): readonly HistorySyncEventRow[] {
+  const candidateBySequence = new Map<number, HistorySyncEventRow>();
+  for (const event of input.unpushedLocalEvents) {
+    if (event.sequence <= input.remoteMaxSequence) continue;
+    candidateBySequence.set(event.sequence, event);
+  }
+  for (const event of selectRemoteBehindLocalEvents(input.localEvents, input.remoteMaxSequence)) {
+    candidateBySequence.set(event.sequence, event);
+  }
+  return [...candidateBySequence.values()].toSorted(
+    (left, right) => left.sequence - right.sequence,
+  );
+}
+
+export function selectAutosaveRemoteCoveredReceiptEvents(input: {
+  readonly unpushedLocalEvents: readonly HistorySyncEventRow[];
+  readonly remoteMaxSequence: number;
+}): readonly HistorySyncEventRow[] {
+  return input.unpushedLocalEvents.filter((event) => event.sequence <= input.remoteMaxSequence);
+}
+
+export function selectAutosaveContiguousPushableEvents(input: {
+  readonly candidateEvents: readonly HistorySyncEventRow[];
+  readonly threadStates: ReadonlyMap<string, HistorySyncAutosyncThreadState>;
+}): readonly HistorySyncEventRow[] {
+  const pushable: HistorySyncEventRow[] = [];
+  for (const event of input.candidateEvents.toSorted(
+    (left, right) => left.sequence - right.sequence,
+  )) {
+    if (event.aggregateKind !== "thread") {
+      pushable.push(event);
+      continue;
+    }
+    const threadId = readPayloadThreadId(event);
+    const threadState =
+      input.threadStates.get(threadId) ??
+      ({
+        threadId,
+        hasOpenTurn: true,
+        hasCompletedTurn: false,
+        pendingUserInputCount: 0,
+        hasActionableProposedPlan: false,
+        sessionStatus: null,
+        sessionActiveTurnId: null,
+      } satisfies HistorySyncAutosyncThreadState);
+    if (!isAutosyncEligibleThread(threadState)) {
+      break;
+    }
+    pushable.push(event);
+  }
+  return pushable;
+}
+
+export function shouldScheduleAutosaveForDomainEvent(event: OrchestrationEvent): boolean {
+  if (event.type === "thread.turn-diff-completed") {
+    return true;
+  }
+  if (event.type === "thread.proposed-plan-upserted") {
+    return true;
+  }
+  if (event.type === "thread.user-input-response-requested") {
+    return true;
+  }
+  if (event.type === "thread.session-set") {
+    return (
+      event.payload.session.activeTurnId === null &&
+      (event.payload.session.status === "stopped" ||
+        event.payload.session.status === "interrupted" ||
+        event.payload.session.status === "error")
+    );
+  }
+  return false;
 }
 
 export function filterPushableLocalEvents(
@@ -1607,6 +1792,20 @@ export const HistorySyncServiceLive = Layer.effect(
       ORDER BY event.sequence ASC
     `;
 
+    const readProjectionThreadAutosyncRows = sql<HistorySyncAutosyncProjectionThreadRow>`
+      SELECT
+        thread.thread_id AS "threadId",
+        thread.pending_user_input_count AS "pendingUserInputCount",
+        thread.has_actionable_proposed_plan AS "hasActionableProposedPlan",
+        thread.latest_turn_id AS "latestTurnId",
+        session.status AS "sessionStatus",
+        session.active_turn_id AS "sessionActiveTurnId"
+      FROM projection_threads AS thread
+      LEFT JOIN projection_thread_sessions AS session
+        ON session.thread_id = thread.thread_id
+      WHERE thread.deleted_at IS NULL
+    `;
+
     const writePushedEventReceipts = (events: readonly HistorySyncEventRow[], pushedAt: string) =>
       Effect.gen(function* () {
         if (events.length === 0) return;
@@ -2314,32 +2513,86 @@ export const HistorySyncServiceLive = Layer.effect(
 
         if (isAutosave) {
           const remoteMaxSequence = yield* readRemoteMaxSequence(connectionString);
+          let autosaveLastSyncedAt = lastSyncedAt;
           if (remoteMaxSequence > lastSyncedRemoteSequence) {
-            const message =
-              "Remote history has new events. Run Sync now to fast-forward before autosave.";
-            console.warn("[history-sync] autosave skipped because remote is ahead", {
+            const remoteDeltaEvents = yield* readRemoteEvents(
+              connectionString,
+              lastSyncedRemoteSequence,
+            );
+            const unknownRemoteDeltaEvents = selectUnknownRemoteDeltaEvents({
+              remoteEvents: remoteDeltaEvents,
+              localEvents,
+            });
+            if (unknownRemoteDeltaEvents.length > 0) {
+              const message =
+                "Remote history has newer events from another device. Run Sync now to import them before autosave.";
+              console.warn("[history-sync] autosave skipped because remote has unknown events", {
+                remoteMaxSequence,
+                lastSyncedRemoteSequence,
+                remoteDeltaEvents: remoteDeltaEvents.length,
+                unknownRemoteDeltaEvents: unknownRemoteDeltaEvents.length,
+              });
+              yield* Ref.set(stoppedRef, true);
+              yield* publishStatus({
+                state: "error",
+                configured: true,
+                message,
+                lastSyncedAt,
+              });
+              return;
+            }
+
+            const now = new Date().toISOString();
+            const alreadyLocalRemoteDeltaEvents = selectKnownRemoteDeltaLocalEvents({
+              remoteEvents: remoteDeltaEvents,
+              localEvents,
+            });
+            yield* writePushedEventReceipts(alreadyLocalRemoteDeltaEvents, now);
+            yield* writeState({
+              hasCompletedInitialSync: true,
+              lastSyncedRemoteSequence: remoteMaxSequence,
+              lastSuccessfulSyncAt: now,
+            });
+            autosaveLastSyncedAt = now;
+            console.info("[history-sync] autosave accepted remote delta already present locally", {
               remoteMaxSequence,
               lastSyncedRemoteSequence,
+              remoteDeltaEvents: remoteDeltaEvents.length,
             });
-            yield* Ref.set(stoppedRef, true);
-            yield* publishStatus({
-              state: "error",
-              configured: true,
-              message,
-              lastSyncedAt,
-            });
-            return;
           }
 
           const projectMappings = yield* readProjectMappings;
           const unpushedLocalEvents = yield* readUnpushedLocalEvents;
-          const pushableLocalEvents = filterPushableLocalEvents(unpushedLocalEvents, localEvents);
+          const projectionThreadRows = yield* readProjectionThreadAutosyncRows;
+          const remoteCoveredReceiptEvents = selectAutosaveRemoteCoveredReceiptEvents({
+            unpushedLocalEvents,
+            remoteMaxSequence,
+          });
+          if (remoteCoveredReceiptEvents.length > 0) {
+            const now = new Date().toISOString();
+            yield* writePushedEventReceipts(remoteCoveredReceiptEvents, now);
+            autosaveLastSyncedAt = now;
+            console.info("[history-sync] autosave seeded receipts for remote-covered events", {
+              events: remoteCoveredReceiptEvents.length,
+              remoteMaxSequence,
+            });
+          }
+          const candidateLocalEvents = selectAutosaveCandidateLocalEvents({
+            localEvents,
+            unpushedLocalEvents,
+            remoteMaxSequence,
+          });
+          const pushableLocalEvents = selectAutosaveContiguousPushableEvents({
+            candidateEvents: candidateLocalEvents,
+            threadStates: classifyAutosyncThreadStates(localEvents, projectionThreadRows),
+          });
           if (pushableLocalEvents.length > 0) {
             console.info("[history-sync] autosaving local pending history", {
               pendingEvents: pushableLocalEvents.length,
-              deferredEvents: unpushedLocalEvents.length - pushableLocalEvents.length,
+              deferredEvents: candidateLocalEvents.length - pushableLocalEvents.length,
               localMaxSequence,
-              lastSyncedRemoteSequence,
+              lastSyncedRemoteSequence: Math.max(lastSyncedRemoteSequence, remoteMaxSequence),
+              remoteMaxSequence,
             });
             yield* pushEventsBatched(
               connectionString,
@@ -2347,16 +2600,24 @@ export const HistorySyncServiceLive = Layer.effect(
             );
             const now = new Date().toISOString();
             yield* writePushedEventReceipts(pushableLocalEvents, now);
+            const nextRemoteSequence = nextSyncedRemoteSequenceAfterPush(
+              Math.max(lastSyncedRemoteSequence, remoteMaxSequence),
+              pushableLocalEvents,
+            );
             yield* writeState({
               hasCompletedInitialSync: true,
-              lastSyncedRemoteSequence,
+              lastSyncedRemoteSequence: nextRemoteSequence,
               lastSuccessfulSyncAt: now,
             });
             yield* publishStatus({ state: "idle", configured: true, lastSyncedAt: now });
             return;
           }
 
-          yield* publishStatus({ state: "idle", configured: true, lastSyncedAt });
+          yield* publishStatus({
+            state: "idle",
+            configured: true,
+            lastSyncedAt: autosaveLastSyncedAt,
+          });
           return;
         }
 
@@ -2564,9 +2825,13 @@ export const HistorySyncServiceLive = Layer.effect(
             );
             const pushedAt = new Date().toISOString();
             yield* writePushedEventReceipts(pushableLocalEvents, pushedAt);
+            const nextRemoteSequence = nextSyncedRemoteSequenceAfterPush(
+              remoteMaxSequence,
+              pushableLocalEvents,
+            );
             yield* writeState({
               hasCompletedInitialSync: true,
-              lastSyncedRemoteSequence: remoteMaxSequence,
+              lastSyncedRemoteSequence: nextRemoteSequence,
               lastSuccessfulSyncAt: pushedAt,
             });
             yield* publishStatus({ state: "idle", configured: true, lastSyncedAt: pushedAt });
@@ -2592,9 +2857,13 @@ export const HistorySyncServiceLive = Layer.effect(
           );
           const now = new Date().toISOString();
           yield* writePushedEventReceipts(pushableLocalEvents, now);
+          const nextRemoteSequence = nextSyncedRemoteSequenceAfterPush(
+            lastSyncedRemoteSequence,
+            pushableLocalEvents,
+          );
           yield* writeState({
             hasCompletedInitialSync: true,
-            lastSyncedRemoteSequence,
+            lastSyncedRemoteSequence: nextRemoteSequence,
             lastSuccessfulSyncAt: now,
           });
           yield* publishStatus({ state: "idle", configured: true, lastSyncedAt: now });
@@ -2740,6 +3009,7 @@ export const HistorySyncServiceLive = Layer.effect(
         ),
       );
       yield* engine.streamDomainEvents.pipe(
+        Stream.filter(shouldScheduleAutosaveForDomainEvent),
         Stream.debounce(Duration.millis(HISTORY_SYNC_AUTOSAVE_DEBOUNCE_MS)),
         Stream.runForEach(() => runSyncMode("autosave", { clearStopped: false })),
         Effect.forkScoped,

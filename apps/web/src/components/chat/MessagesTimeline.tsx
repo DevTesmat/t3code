@@ -21,6 +21,7 @@ import ChatMarkdown from "../ChatMarkdown";
 import {
   BotIcon,
   CheckIcon,
+  ChevronRightIcon,
   CircleAlertIcon,
   EyeIcon,
   GlobeIcon,
@@ -502,6 +503,9 @@ const WorkGroupSection = memo(function WorkGroupSection({
 }) {
   const { workspaceRoot } = use(TimelineRowCtx);
   const [isExpanded, setIsExpanded] = useState(false);
+  const [expandedOutputKeys, setExpandedOutputKeys] = useState<ReadonlySet<string>>(
+    () => new Set(),
+  );
   const hasOverflow = groupedEntries.length > MAX_VISIBLE_WORK_LOG_ENTRIES;
   const visibleEntries =
     hasOverflow && !isExpanded
@@ -511,6 +515,17 @@ const WorkGroupSection = memo(function WorkGroupSection({
   const onlyToolEntries = groupedEntries.every((entry) => entry.tone === "tool");
   const showHeader = hasOverflow || !onlyToolEntries;
   const groupLabel = onlyToolEntries ? "Tool calls" : "Work log";
+  const toggleOutputExpanded = useCallback((key: string) => {
+    setExpandedOutputKeys((current) => {
+      const next = new Set(current);
+      if (next.has(key)) {
+        next.delete(key);
+      } else {
+        next.add(key);
+      }
+      return next;
+    });
+  }, []);
 
   return (
     <div className="rounded-xl border border-border/45 bg-card/25 px-2 py-1.5">
@@ -536,6 +551,8 @@ const WorkGroupSection = memo(function WorkGroupSection({
             key={`work-row:${workEntry.id}`}
             workEntry={workEntry}
             workspaceRoot={workspaceRoot}
+            outputExpanded={expandedOutputKeys.has(workEntryToolKey(workEntry))}
+            onToggleOutputExpanded={toggleOutputExpanded}
           />
         ))}
       </div>
@@ -798,8 +815,8 @@ function commandOutputPreviewLabel(workEntry: TimelineWorkEntry): string | null 
   }
 }
 
-function isTerminalWorkEntry(workEntry: TimelineWorkEntry): boolean {
-  return workEntry.itemType === "command_execution" || Boolean(workEntry.command);
+function workEntryToolKey(workEntry: TimelineWorkEntry): string {
+  return workEntry.toolKey ?? workEntry.toolCallId ?? workEntry.id;
 }
 
 function terminalStatusLabel(workEntry: TimelineWorkEntry): string {
@@ -818,113 +835,62 @@ function terminalStatusClass(workEntry: TimelineWorkEntry): string {
   return "border-primary/20 bg-primary/8 text-primary/80";
 }
 
-const TerminalToolBox = memo(function TerminalToolBox(props: { workEntry: TimelineWorkEntry }) {
+const ToolOutputPreview = memo(function ToolOutputPreview(props: { workEntry: TimelineWorkEntry }) {
   const { workEntry } = props;
-  const heading = toolWorkEntryHeading(workEntry);
-  const command = workEntry.command ?? workEntry.detail ?? "Command unavailable";
-  const rawCommand = workEntryRawCommand(workEntry);
-  const outputPreview =
-    (workEntry.outputPreview?.lines.length ?? 0) > 0 ? workEntry.outputPreview : null;
+  const outputPreview = workEntry.outputPreview;
   const outputPreviewLabel = commandOutputPreviewLabel(workEntry);
   const outputIsError = outputPreview?.stream === "stderr";
+  const scrollerRef = useRef<HTMLDivElement | null>(null);
+  const stickToBottomRef = useRef(true);
+
+  useEffect(() => {
+    const scroller = scrollerRef.current;
+    if (!scroller || !stickToBottomRef.current) return;
+    scroller.scrollTop = scroller.scrollHeight;
+  }, [outputPreview?.lines, outputPreview?.truncated]);
+
+  const handleScroll = useCallback(() => {
+    const scroller = scrollerRef.current;
+    if (!scroller) return;
+    const distanceFromBottom = scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight;
+    stickToBottomRef.current = distanceFromBottom <= 4;
+  }, []);
 
   return (
-    <details className="group rounded-lg border border-border/55 bg-background/70 shadow-xs/5">
-      <summary className="flex min-h-8 cursor-pointer list-none items-center gap-2 px-2.5 py-1.5 transition-colors hover:bg-muted/20 [&::-webkit-details-marker]:hidden">
-        <span className="flex size-5 shrink-0 items-center justify-center text-muted-foreground/75">
-          <TerminalIcon className="size-3.5" />
-        </span>
-        <span className="shrink-0 text-xs font-medium text-foreground/82">{heading}</span>
-        <span className="min-w-0 flex-1 truncate font-mono text-[11px] leading-4 text-muted-foreground/80">
-          {command}
-        </span>
-        <span
-          className={cn(
-            "shrink-0 rounded-md border px-1.5 py-0.5 text-[10px] leading-3 font-medium",
-            terminalStatusClass(workEntry),
-          )}
-        >
-          {terminalStatusLabel(workEntry)}
-        </span>
-        {workEntry.exitCode !== undefined && (
-          <span className="shrink-0 rounded-md border border-border/50 bg-muted/25 px-1.5 py-0.5 font-mono text-[10px] leading-3 text-muted-foreground/70">
-            exit {workEntry.exitCode}
-          </span>
+    <div className="pl-7 pr-1 pb-1">
+      {outputPreviewLabel && (
+        <div className="mb-1 font-mono text-[9px] leading-3 text-muted-foreground/55">
+          {outputPreviewLabel}
+        </div>
+      )}
+      <div
+        ref={scrollerRef}
+        onScroll={handleScroll}
+        className={cn(
+          "h-16 max-w-full overflow-y-auto rounded-md border px-2 py-1 font-mono text-[11px] leading-4 whitespace-pre-wrap wrap-break-word",
+          outputIsError
+            ? "border-destructive/25 bg-destructive/5 text-destructive/85"
+            : "border-border/45 bg-muted/20 text-muted-foreground/85",
         )}
-      </summary>
-
-      <div className="space-y-2 border-t border-border/45 px-2.5 py-2">
-        <div>
-          <div className="mb-1 text-[10px] leading-3 font-medium tracking-[0.12em] text-muted-foreground/50 uppercase">
-            Input
+        data-testid="tool-output-preview"
+      >
+        {outputPreview?.lines.map((line, index) => (
+          <div key={`${workEntryToolKey(workEntry)}:output:${index}`} className="min-w-0">
+            {line}
           </div>
-          <div className="max-w-full overflow-x-auto rounded-md border border-border/50 bg-muted/20 px-2 py-1.5 font-mono text-[11px] leading-4 whitespace-pre-wrap wrap-break-word text-foreground/82">
-            {command}
-          </div>
-          {rawCommand && (
-            <div className="mt-1 max-w-full overflow-x-auto font-mono text-[10px] leading-4 whitespace-pre-wrap wrap-break-word text-muted-foreground/55">
-              {rawCommand}
-            </div>
-          )}
-        </div>
-
-        <div>
-          <div className="mb-1 flex items-center gap-2">
-            <span className="text-[10px] leading-3 font-medium tracking-[0.12em] text-muted-foreground/50 uppercase">
-              Output
-            </span>
-            {outputPreviewLabel && (
-              <span
-                className={cn(
-                  "rounded-sm px-1 font-mono text-[9px] leading-3",
-                  outputIsError
-                    ? "bg-destructive/10 text-destructive/70"
-                    : "bg-muted/45 text-muted-foreground/60",
-                )}
-              >
-                {outputPreviewLabel}
-              </span>
-            )}
-          </div>
-          <div
-            className={cn(
-              "max-w-full overflow-hidden rounded-md border px-2 py-1.5 font-mono text-[11px] leading-4 whitespace-pre-wrap wrap-break-word",
-              outputIsError
-                ? "border-destructive/25 bg-destructive/5 text-destructive/85"
-                : "border-border/50 bg-muted/20 text-muted-foreground/85",
-            )}
-          >
-            {outputPreview ? (
-              outputPreview.lines.slice(0, 4).map((line, index) => (
-                <div key={`${workEntry.id}:terminal-box-output:${index}`} className="min-w-0">
-                  {line}
-                </div>
-              ))
-            ) : (
-              <span className="text-muted-foreground/50">
-                {workEntry.status === "completed" ? "No output captured" : "Waiting for output..."}
-              </span>
-            )}
-          </div>
-          {outputPreview?.truncated && (
-            <div className="mt-1 text-[10px] leading-4 text-muted-foreground/55">
-              Output preview truncated. Open the terminal for the full stream.
-            </div>
-          )}
-        </div>
+        ))}
       </div>
-    </details>
+    </div>
   );
 });
 
 const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
   workEntry: TimelineWorkEntry;
   workspaceRoot: string | undefined;
+  outputExpanded: boolean;
+  onToggleOutputExpanded: (key: string) => void;
 }) {
-  const { workEntry, workspaceRoot } = props;
-  if (isTerminalWorkEntry(workEntry)) {
-    return <TerminalToolBox workEntry={workEntry} />;
-  }
+  const { workEntry, workspaceRoot, outputExpanded, onToggleOutputExpanded } = props;
 
   const iconConfig = workToneIcon(workEntry.tone);
   const EntryIcon = workEntryIcon(workEntry);
@@ -945,11 +911,12 @@ const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
     (workEntry.outputPreview?.lines.length ?? 0) > 0
       ? workEntry.outputPreview
       : null;
-  const outputPreviewLabel = commandOutputPreviewLabel(workEntry);
+  const isExpandable = outputPreview !== null;
+  const toolKey = workEntryToolKey(workEntry);
 
   return (
-    <div className="rounded-lg px-1 py-1">
-      <div className="flex items-center gap-2 transition-[opacity,translate] duration-200">
+    <div className="group rounded-lg px-1 py-0.5 transition-colors duration-150 hover:bg-muted/20 focus-within:bg-muted/20">
+      <div className="flex min-h-7 items-center gap-2 transition-[opacity,translate] duration-200">
         <span
           className={cn("flex size-5 shrink-0 items-center justify-center", iconConfig.className)}
         >
@@ -1022,7 +989,40 @@ const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
             </Tooltip>
           )}
         </div>
+        {workEntry.status && (
+          <span
+            className={cn(
+              "shrink-0 rounded-md border px-1.5 py-0.5 text-[10px] leading-3 font-medium",
+              terminalStatusClass(workEntry),
+            )}
+          >
+            {terminalStatusLabel(workEntry)}
+          </span>
+        )}
+        {workEntry.exitCode !== undefined && (
+          <span className="shrink-0 rounded-md border border-border/50 bg-muted/25 px-1.5 py-0.5 font-mono text-[10px] leading-3 text-muted-foreground/70">
+            exit {workEntry.exitCode}
+          </span>
+        )}
+        {isExpandable && (
+          <button
+            type="button"
+            className="flex size-5 shrink-0 items-center justify-center rounded-md text-muted-foreground/45 opacity-0 transition-[opacity,transform,color] duration-150 hover:text-muted-foreground/80 focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring/45 group-hover:opacity-100 group-focus-within:opacity-100"
+            aria-label={outputExpanded ? "Collapse tool output" : "Expand tool output"}
+            aria-expanded={outputExpanded}
+            onClick={() => onToggleOutputExpanded(toolKey)}
+            data-testid="tool-output-toggle"
+          >
+            <ChevronRightIcon
+              className={cn(
+                "size-3.5 transition-transform duration-150",
+                outputExpanded && "rotate-90",
+              )}
+            />
+          </button>
+        )}
       </div>
+      {isExpandable && outputExpanded && <ToolOutputPreview workEntry={workEntry} />}
       {hasChangedFiles && !previewIsChangedFiles && (
         <div className="mt-1 flex flex-wrap gap-1 pl-6">
           {workEntry.changedFiles?.slice(0, 4).map((filePath) => {
@@ -1042,34 +1042,6 @@ const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
               +{(workEntry.changedFiles?.length ?? 0) - 4}
             </span>
           )}
-        </div>
-      )}
-      {outputPreview && (
-        <div
-          className={cn(
-            "mt-1 ml-7 max-w-[calc(100%-1.75rem)] overflow-hidden rounded-md border px-2 py-1 font-mono text-[10.5px] leading-4 whitespace-pre-wrap wrap-break-word",
-            outputPreview.stream === "stderr"
-              ? "border-destructive/25 bg-destructive/5 text-destructive/85"
-              : "border-border/50 bg-background/55 text-muted-foreground/80",
-          )}
-        >
-          {outputPreviewLabel && (
-            <span
-              className={cn(
-                "mb-0.5 block text-[9px] leading-3 uppercase tracking-[0.12em]",
-                outputPreview.stream === "stderr"
-                  ? "text-destructive/65"
-                  : "text-muted-foreground/50",
-              )}
-            >
-              {outputPreviewLabel}
-            </span>
-          )}
-          {outputPreview.lines.slice(0, 4).map((line, index) => (
-            <div key={`${workEntry.id}:terminal-output:${index}`} className="min-w-0 max-w-full">
-              {line}
-            </div>
-          ))}
         </div>
       )}
     </div>

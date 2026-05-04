@@ -9,6 +9,7 @@ import {
   isToolLifecycleItemType,
   ThreadId,
   type ThreadTokenUsageSnapshot,
+  type ToolLifecycleItemType,
   TurnId,
   type OrchestrationThreadActivity,
   type ProviderRuntimeEvent,
@@ -241,6 +242,7 @@ function terminalOutputPreviewFromRawOutput(data: unknown): TerminalOutputPrevie
 
 function normalizedToolLifecycleData(
   event: ProviderRuntimeEvent,
+  itemType: ToolLifecycleItemType,
   outputPreview: TerminalOutputPreview | undefined,
 ): unknown {
   const data = asRecord(
@@ -249,7 +251,7 @@ function normalizedToolLifecycleData(
   if (!data && !outputPreview && !event.itemId) {
     return "payload" in event && "data" in event.payload ? event.payload.data : undefined;
   }
-  const nextData: Record<string, unknown> = data ? { ...data } : {};
+  const nextData: Record<string, unknown> = data ? sanitizeToolLifecycleData(data, itemType) : {};
   if (
     event.itemId &&
     event.type !== "content.delta" &&
@@ -261,6 +263,17 @@ function normalizedToolLifecycleData(
   }
   if (outputPreview) {
     nextData.outputPreview = outputPreview;
+  }
+  return nextData;
+}
+
+function sanitizeToolLifecycleData(
+  data: Record<string, unknown>,
+  itemType: ToolLifecycleItemType,
+): Record<string, unknown> {
+  const nextData = { ...data };
+  if (itemType === "command_execution") {
+    delete nextData.rawOutput;
   }
   return nextData;
 }
@@ -639,7 +652,7 @@ function runtimeEventToActivities(
         event.payload.itemType === "command_execution"
           ? terminalOutputPreviewFromRawOutput(event.payload.data)
           : undefined;
-      const data = normalizedToolLifecycleData(event, outputPreview);
+      const data = normalizedToolLifecycleData(event, event.payload.itemType, outputPreview);
       return [
         {
           id: event.eventId,
@@ -667,7 +680,7 @@ function runtimeEventToActivities(
         event.payload.itemType === "command_execution"
           ? terminalOutputPreviewFromRawOutput(event.payload.data)
           : undefined;
-      const data = normalizedToolLifecycleData(event, outputPreview);
+      const data = normalizedToolLifecycleData(event, event.payload.itemType, outputPreview);
       return [
         {
           id: event.eventId,
@@ -690,6 +703,7 @@ function runtimeEventToActivities(
       if (!isToolLifecycleItemType(event.payload.itemType)) {
         return [];
       }
+      const data = normalizedToolLifecycleData(event, event.payload.itemType, undefined);
       return [
         {
           id: event.eventId,
@@ -700,6 +714,7 @@ function runtimeEventToActivities(
           payload: {
             itemType: event.payload.itemType,
             ...(event.payload.detail ? { detail: truncateDetail(event.payload.detail) } : {}),
+            ...(data !== undefined ? { data } : {}),
           },
           turnId: toTurnId(event.turnId) ?? null,
           ...maybeSequence,
@@ -1830,7 +1845,7 @@ const make = Effect.gen(function* () {
                 ...event,
                 payload: {
                   ...event.payload,
-                  data: normalizedToolLifecycleData(event, outputPreview),
+                  data: normalizedToolLifecycleData(event, "command_execution", outputPreview),
                 },
               } satisfies ProviderRuntimeEvent;
             })

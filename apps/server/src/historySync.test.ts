@@ -1,22 +1,33 @@
 import { describe, expect, test } from "vitest";
 
+import type { OrchestrationEvent } from "@t3tools/contracts";
+
 import {
   buildFirstSyncRescueEvents,
   buildPushedEventReceiptRows,
   buildFirstSyncClientMergeEvents,
   chunkHistorySyncEvents,
+  classifyAutosyncThreadStates,
   collectProjectCandidates,
   countActiveThreadCreates,
   computeThreadUserSequenceHash,
   filterAlreadyImportedRemoteDeltaEvents,
   filterPushableLocalEvents,
   filterUnpushedLocalEvents,
+  isAutosyncEligibleThread,
   isRemoteBehindLocal,
+  nextSyncedRemoteSequenceAfterPush,
   normalizeRemoteEventForLocalImport,
   rewriteRemoteEventsForLocalMappings,
+  selectAutosaveCandidateLocalEvents,
+  selectAutosaveContiguousPushableEvents,
+  selectAutosaveRemoteCoveredReceiptEvents,
+  selectKnownRemoteDeltaLocalEvents,
   selectRemoteDeltaEvents,
   selectRemoteBehindLocalEvents,
   selectPushedReceiptSeedEvents,
+  selectUnknownRemoteDeltaEvents,
+  shouldScheduleAutosaveForDomainEvent,
   shouldRunAutomaticHistorySync,
   shouldImportRemoteIntoEmptyLocal,
   shouldPushLocalHistoryOnFirstSync,
@@ -48,6 +59,24 @@ function event(
     eventType,
     payloadJson: JSON.stringify(payload),
   };
+}
+
+function domainEvent(
+  sequence: number,
+  streamId: string,
+  type: OrchestrationEvent["type"],
+  payload: Record<string, unknown>,
+): OrchestrationEvent {
+  return {
+    ...baseEvent,
+    sequence,
+    eventId: `${streamId}:${sequence}`,
+    aggregateKind: type.startsWith("project.") ? "project" : "thread",
+    aggregateId: streamId,
+    type,
+    payload,
+    metadata: {},
+  } as unknown as OrchestrationEvent;
 }
 
 function projectCreated(sequence: number, projectId: string) {
@@ -120,6 +149,24 @@ function turnDiffCompleted(
     assistantMessageId: null,
     completedAt: baseEvent.occurredAt,
   });
+}
+
+function projectionThreadRow(
+  threadId: string,
+  options: {
+    readonly pendingUserInputCount?: number;
+    readonly hasActionableProposedPlan?: boolean;
+    readonly latestTurnId?: string | null;
+  } = {},
+) {
+  return {
+    threadId,
+    pendingUserInputCount: options.pendingUserInputCount ?? 0,
+    hasActionableProposedPlan: options.hasActionableProposedPlan ? 1 : 0,
+    latestTurnId: options.latestTurnId ?? null,
+    sessionStatus: null,
+    sessionActiveTurnId: null,
+  };
 }
 
 describe("history sync first-sync rescue", () => {
@@ -673,6 +720,423 @@ describe("history sync first-sync rescue", () => {
 });
 
 describe("history sync remote repair", () => {
+  test("autosave scheduler ignores working-thread activity events", () => {
+    expect(
+      shouldScheduleAutosaveForDomainEvent(
+        domainEvent(1, "thread-working", "thread.activity-appended", {
+          threadId: "thread-working",
+          activity: {
+            id: "activity-1",
+            tone: "neutral",
+            kind: "tool.completed",
+            summary: "Read file",
+            payload: {},
+            turnId: "turn-1",
+            createdAt: baseEvent.occurredAt,
+          },
+        }),
+      ),
+    ).toBe(false);
+  });
+
+  test("autosave scheduler only accepts explicit settled-thread boundary events", () => {
+    expect(
+      shouldScheduleAutosaveForDomainEvent(
+        domainEvent(1, "thread-done", "thread.turn-diff-completed", {
+          threadId: "thread-done",
+          turnId: "turn-1",
+          checkpointTurnCount: 1,
+          checkpointRef: "checkpoint-1",
+          status: "ready",
+          files: [],
+          assistantMessageId: null,
+          completedAt: baseEvent.occurredAt,
+        }),
+      ),
+    ).toBe(true);
+    expect(
+      shouldScheduleAutosaveForDomainEvent(
+        domainEvent(2, "thread-plan", "thread.proposed-plan-upserted", {
+          threadId: "thread-plan",
+          proposedPlan: {
+            id: "plan-1",
+            turnId: "turn-1",
+            planMarkdown: "# Plan",
+            implementedAt: null,
+            implementationThreadId: null,
+            createdAt: baseEvent.occurredAt,
+            updatedAt: baseEvent.occurredAt,
+          },
+        }),
+      ),
+    ).toBe(true);
+    expect(
+      shouldScheduleAutosaveForDomainEvent(
+        domainEvent(3, "thread-waiting", "thread.user-input-response-requested", {
+          threadId: "thread-waiting",
+          requestId: "request-1",
+          answers: [],
+          createdAt: baseEvent.occurredAt,
+        }),
+      ),
+    ).toBe(true);
+    expect(
+      shouldScheduleAutosaveForDomainEvent(
+        domainEvent(4, "thread-done", "thread.session-set", {
+          threadId: "thread-done",
+          session: {
+            threadId: "thread-done",
+            status: "stopped",
+            providerName: "codex",
+            runtimeMode: "full-access",
+            activeTurnId: null,
+            lastError: null,
+            updatedAt: baseEvent.occurredAt,
+          },
+        }),
+      ),
+    ).toBe(true);
+  });
+
+  test("autosave scheduler ignores ready session updates without a completed turn boundary", () => {
+    expect(
+      shouldScheduleAutosaveForDomainEvent(
+        domainEvent(1, "thread-ready", "thread.session-set", {
+          threadId: "thread-ready",
+          session: {
+            threadId: "thread-ready",
+            status: "ready",
+            providerName: "codex",
+            runtimeMode: "full-access",
+            activeTurnId: null,
+            lastError: null,
+            updatedAt: baseEvent.occurredAt,
+          },
+        }),
+      ),
+    ).toBe(false);
+  });
+
+  test("autosave treats a completed turn with ready session as a finished thread", () => {
+    const local = [
+      threadCreated(1, "thread-ready"),
+      turnStartRequested(2, "thread-ready", "turn-1"),
+      turnDiffCompleted(3, "thread-ready", "turn-1"),
+    ];
+    const state = classifyAutosyncThreadStates(local, [
+      {
+        ...projectionThreadRow("thread-ready", { latestTurnId: "turn-1" }),
+        sessionStatus: "ready",
+        sessionActiveTurnId: null,
+      },
+    ]).get("thread-ready");
+
+    expect(state).toBeDefined();
+    if (!state) throw new Error("expected thread state");
+    expect(isAutosyncEligibleThread(state)).toBe(true);
+  });
+
+  test("autosave marks terminal stopped threads as done", () => {
+    const local = [
+      threadCreated(1, "thread-done"),
+      turnStartRequested(2, "thread-done", "turn-1"),
+      turnDiffCompleted(3, "thread-done", "turn-1"),
+    ];
+    const state = classifyAutosyncThreadStates(local, [
+      {
+        ...projectionThreadRow("thread-done", { latestTurnId: "turn-1" }),
+        sessionStatus: "stopped",
+        sessionActiveTurnId: null,
+      },
+    ]).get("thread-done");
+
+    expect(state).toBeDefined();
+    if (!state) throw new Error("expected thread state");
+    expect(isAutosyncEligibleThread(state)).toBe(true);
+  });
+
+  test("autosave marks working threads as ineligible", () => {
+    const local = [
+      threadCreated(1, "thread-working"),
+      turnStartRequested(2, "thread-working", "turn-1"),
+      messageSent(3, "thread-working", "working"),
+    ];
+    const state = classifyAutosyncThreadStates(local).get("thread-working");
+
+    expect(state).toBeDefined();
+    if (!state) throw new Error("expected thread state");
+    expect(isAutosyncEligibleThread(state)).toBe(false);
+  });
+
+  test("autosave marks threads waiting for user input as eligible", () => {
+    const local = [
+      threadCreated(1, "thread-waiting"),
+      turnStartRequested(2, "thread-waiting", "turn-1"),
+      messageSent(3, "thread-waiting", "working"),
+    ];
+    const state = classifyAutosyncThreadStates(local, [
+      projectionThreadRow("thread-waiting", {
+        pendingUserInputCount: 1,
+        latestTurnId: "turn-1",
+      }),
+    ]).get("thread-waiting");
+
+    expect(state).toBeDefined();
+    if (!state) throw new Error("expected thread state");
+    expect(isAutosyncEligibleThread(state)).toBe(true);
+  });
+
+  test("autosave marks plan-ready threads as eligible", () => {
+    const local = [
+      threadCreated(1, "thread-plan"),
+      turnStartRequested(2, "thread-plan", "turn-1"),
+      messageSent(3, "thread-plan", "working"),
+    ];
+    const state = classifyAutosyncThreadStates(local, [
+      projectionThreadRow("thread-plan", {
+        hasActionableProposedPlan: true,
+        latestTurnId: "turn-1",
+      }),
+    ]).get("thread-plan");
+
+    expect(state).toBeDefined();
+    if (!state) throw new Error("expected thread state");
+    expect(isAutosyncEligibleThread(state)).toBe(true);
+  });
+
+  test("autosave pushes done thread events when no earlier unsafe events exist", () => {
+    const local = [
+      threadCreated(1, "thread-done"),
+      turnStartRequested(2, "thread-done", "turn-1"),
+      turnDiffCompleted(3, "thread-done", "turn-1"),
+    ];
+    const candidates = selectAutosaveCandidateLocalEvents({
+      localEvents: local,
+      unpushedLocalEvents: local,
+      remoteMaxSequence: 0,
+    });
+
+    expect(
+      selectAutosaveContiguousPushableEvents({
+        candidateEvents: candidates,
+        threadStates: classifyAutosyncThreadStates(local, [
+          {
+            ...projectionThreadRow("thread-done", { latestTurnId: "turn-1" }),
+            sessionStatus: "stopped",
+            sessionActiveTurnId: null,
+          },
+        ]),
+      }).map((event) => event.sequence),
+    ).toEqual([1, 2, 3]);
+  });
+
+  test("autosave does not push working thread events", () => {
+    const local = [
+      threadCreated(1, "thread-working"),
+      turnStartRequested(2, "thread-working", "turn-1"),
+      messageSent(3, "thread-working", "working"),
+    ];
+    const candidates = selectAutosaveCandidateLocalEvents({
+      localEvents: local,
+      unpushedLocalEvents: local,
+      remoteMaxSequence: 0,
+    });
+
+    expect(
+      selectAutosaveContiguousPushableEvents({
+        candidateEvents: candidates,
+        threadStates: classifyAutosyncThreadStates(local, [
+          {
+            ...projectionThreadRow("thread-done", { latestTurnId: "turn-2" }),
+            sessionStatus: "stopped",
+            sessionActiveTurnId: null,
+          },
+        ]),
+      }),
+    ).toEqual([]);
+  });
+
+  test("autosave does not let a later done thread leapfrog an earlier working thread", () => {
+    const local = [
+      threadCreated(1, "thread-working"),
+      turnStartRequested(2, "thread-working", "turn-1"),
+      threadCreated(3, "thread-done"),
+      turnStartRequested(4, "thread-done", "turn-2"),
+      turnDiffCompleted(5, "thread-done", "turn-2"),
+    ];
+    const candidates = selectAutosaveCandidateLocalEvents({
+      localEvents: local,
+      unpushedLocalEvents: local,
+      remoteMaxSequence: 0,
+    });
+
+    expect(
+      selectAutosaveContiguousPushableEvents({
+        candidateEvents: candidates,
+        threadStates: classifyAutosyncThreadStates(local),
+      }),
+    ).toEqual([]);
+  });
+
+  test("autosave pushes a finished thread before later working-thread events", () => {
+    const local = [
+      threadCreated(1, "thread-done"),
+      turnStartRequested(2, "thread-done", "turn-1"),
+      turnDiffCompleted(3, "thread-done", "turn-1"),
+      threadCreated(4, "thread-working"),
+      turnStartRequested(5, "thread-working", "turn-2"),
+    ];
+    const candidates = selectAutosaveCandidateLocalEvents({
+      localEvents: local,
+      unpushedLocalEvents: local,
+      remoteMaxSequence: 0,
+    });
+
+    expect(
+      selectAutosaveContiguousPushableEvents({
+        candidateEvents: candidates,
+        threadStates: classifyAutosyncThreadStates(local, [
+          {
+            ...projectionThreadRow("thread-done", { latestTurnId: "turn-1" }),
+            sessionStatus: "stopped",
+            sessionActiveTurnId: null,
+          },
+        ]),
+      }).map((event) => event.sequence),
+    ).toEqual([1, 2, 3]);
+  });
+
+  test("autosave repairs remote when local has events beyond the remote max", () => {
+    const local = [
+      projectCreated(1, "project-a"),
+      threadCreated(2, "thread-a"),
+      messageSent(3, "thread-a", "missing remotely"),
+      messageSent(4, "thread-a", "also missing remotely"),
+    ];
+
+    expect(
+      selectAutosaveCandidateLocalEvents({
+        localEvents: local,
+        unpushedLocalEvents: [],
+        remoteMaxSequence: 2,
+      }).map((event) => event.sequence),
+    ).toEqual([3, 4]);
+  });
+
+  test("autosave does not re-push unreceipted events already covered by the remote frontier", () => {
+    const local = [
+      projectCreated(1, "project-a"),
+      threadCreated(2, "thread-a"),
+      messageSent(3, "thread-a", "already remote"),
+      messageSent(4, "thread-a", "new local"),
+    ];
+
+    expect(
+      selectAutosaveCandidateLocalEvents({
+        localEvents: local,
+        unpushedLocalEvents: local,
+        remoteMaxSequence: 3,
+      }).map((event) => event.sequence),
+    ).toEqual([4]);
+    expect(
+      selectAutosaveRemoteCoveredReceiptEvents({
+        unpushedLocalEvents: local,
+        remoteMaxSequence: 3,
+      }).map((event) => event.sequence),
+    ).toEqual([1, 2, 3]);
+  });
+
+  test("autosave recovers when a previous push wrote remote events before local receipts", () => {
+    const local = [
+      projectCreated(1, "project-a"),
+      threadCreated(2, "thread-a"),
+      messageSent(3, "thread-a", "already in remote"),
+    ];
+    const remoteDelta = [messageSent(3, "thread-a", "already in remote")];
+
+    expect(
+      selectUnknownRemoteDeltaEvents({
+        remoteEvents: remoteDelta,
+        localEvents: local,
+      }),
+    ).toEqual([]);
+    expect(
+      selectKnownRemoteDeltaLocalEvents({
+        remoteEvents: remoteDelta,
+        localEvents: local,
+      }).map((event) => event.sequence),
+    ).toEqual([3]);
+  });
+
+  test("autosave advances state when remote-ahead events are already present locally", () => {
+    const local = [
+      projectCreated(1, "project-a"),
+      threadCreated(2, "thread-a"),
+      messageSent(3, "thread-a", "known remote"),
+    ];
+    const remoteDelta = [messageSent(3, "thread-a", "known remote")];
+
+    expect(
+      selectKnownRemoteDeltaLocalEvents({
+        remoteEvents: remoteDelta,
+        localEvents: local,
+      }).map((event) => event.eventId),
+    ).toEqual(["thread-a:3"]);
+    expect(nextSyncedRemoteSequenceAfterPush(2, remoteDelta)).toBe(3);
+  });
+
+  test("autosave refuses to push when remote has unknown newer events from another device", () => {
+    const local = [projectCreated(1, "project-a"), threadCreated(2, "thread-a")];
+    const remoteDelta = [messageSent(3, "thread-a", "other device")];
+
+    expect(
+      selectUnknownRemoteDeltaEvents({
+        remoteEvents: remoteDelta,
+        localEvents: local,
+      }).map((event) => event.eventId),
+    ).toEqual(["thread-a:3"]);
+  });
+
+  test("autosave still defers events for open turns while repairing a remote suffix", () => {
+    const local = [
+      threadCreated(1, "thread-running"),
+      turnStartRequested(2, "thread-running", "turn-1"),
+      messageSent(3, "thread-running", "working"),
+    ];
+    const candidates = selectAutosaveCandidateLocalEvents({
+      localEvents: local,
+      unpushedLocalEvents: [],
+      remoteMaxSequence: 0,
+    });
+
+    expect(candidates.map((event) => event.sequence)).toEqual([1, 2, 3]);
+    expect(
+      selectAutosaveContiguousPushableEvents({
+        candidateEvents: candidates,
+        threadStates: classifyAutosyncThreadStates(local),
+      }).map((event) => event.sequence),
+    ).toEqual([]);
+  });
+
+  test("advances the synced remote cursor after pushing local events", () => {
+    const pushed = [
+      messageSent(11, "thread-a", "first local"),
+      messageSent(12, "thread-a", "second local"),
+    ];
+
+    expect(nextSyncedRemoteSequenceAfterPush(10, pushed)).toBe(12);
+  });
+
+  test("keeps the synced remote cursor unchanged when nothing was pushed", () => {
+    expect(nextSyncedRemoteSequenceAfterPush(10, [])).toBe(10);
+  });
+
+  test("never moves the synced remote cursor backwards after a push", () => {
+    const pushed = [messageSent(9, "thread-a", "already covered")];
+
+    expect(nextSyncedRemoteSequenceAfterPush(10, pushed)).toBe(10);
+  });
+
   test("detects a completed sync whose remote sequence fell behind local state", () => {
     expect(
       isRemoteBehindLocal({

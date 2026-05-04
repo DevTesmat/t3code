@@ -598,7 +598,7 @@ describe("findSidebarProposedPlan", () => {
 });
 
 describe("deriveWorkLogEntries", () => {
-  it("omits tool started entries and keeps completed entries", () => {
+  it("collapses tool started entries with matching completed entries", () => {
     const activities: OrchestrationThreadActivity[] = [
       makeActivity({
         id: "tool-complete",
@@ -616,6 +616,39 @@ describe("deriveWorkLogEntries", () => {
 
     const entries = deriveWorkLogEntries(activities, undefined);
     expect(entries.map((entry) => entry.id)).toEqual(["tool-complete"]);
+  });
+
+  it("collapses old command started and completed entries without tool ids", () => {
+    const activities: OrchestrationThreadActivity[] = [
+      makeActivity({
+        id: "tool-start",
+        createdAt: "2026-02-23T00:00:02.000Z",
+        summary: "Ran command started",
+        kind: "tool.started",
+        payload: {
+          itemType: "command_execution",
+          detail: "git status --short",
+          data: { command: "git status --short" },
+        },
+      }),
+      makeActivity({
+        id: "tool-complete",
+        createdAt: "2026-02-23T00:00:03.000Z",
+        summary: "Ran command",
+        kind: "tool.completed",
+        payload: {
+          itemType: "command_execution",
+          detail: "git status --short",
+          data: { command: "git status --short", exitCode: 0 },
+        },
+      }),
+    ];
+
+    const entries = deriveWorkLogEntries(activities, undefined);
+    expect(entries).toHaveLength(1);
+    expect(entries[0]?.id).toBe("tool-complete");
+    expect(entries[0]?.label).toBe("Ran command");
+    expect(entries[0]?.status).toBe("completed");
   });
 
   it("omits task.started but shows task.progress and task.completed", () => {
