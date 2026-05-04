@@ -51,6 +51,7 @@ export const PROVIDER_OPTIONS: Array<{
 export interface WorkLogEntry {
   id: string;
   createdAt: string;
+  turnId?: TurnId | undefined;
   label: string;
   detail?: string;
   command?: string;
@@ -759,6 +760,7 @@ function toDerivedWorkLogEntry(activity: OrchestrationThreadActivity): DerivedWo
   const entry: DerivedWorkLogEntry = {
     id: activity.id,
     createdAt: activity.createdAt,
+    ...(activity.turnId ? { turnId: activity.turnId } : {}),
     label: taskLabel || activity.summary,
     tone:
       activity.kind === "task.progress"
@@ -867,6 +869,7 @@ function mergeDerivedWorkLogEntries(
   const collapseKey = next.collapseKey ?? previous.collapseKey;
   const toolCallId = next.toolCallId ?? previous.toolCallId;
   const toolKey = next.toolKey ?? previous.toolKey;
+  const turnId = next.turnId ?? previous.turnId;
   return {
     ...previous,
     ...next,
@@ -883,6 +886,7 @@ function mergeDerivedWorkLogEntries(
     ...(collapseKey ? { collapseKey } : {}),
     ...(toolCallId ? { toolCallId } : {}),
     ...(toolKey ? { toolKey } : {}),
+    ...(turnId ? { turnId } : {}),
   };
 }
 

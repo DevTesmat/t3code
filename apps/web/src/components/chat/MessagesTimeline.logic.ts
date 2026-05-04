@@ -337,6 +337,7 @@ function areWorkEntriesUnchanged(a: WorkLogEntry, b: WorkLogEntry): boolean {
   return (
     a.id === b.id &&
     a.createdAt === b.createdAt &&
+    a.turnId === b.turnId &&
     a.label === b.label &&
     a.detail === b.detail &&
     a.command === b.command &&

@@ -1,4 +1,6 @@
-import { type EnvironmentId, type MessageId, type TurnId } from "@t3tools/contracts";
+import { type EnvironmentId, type MessageId, type ThreadId, type TurnId } from "@t3tools/contracts";
+import { FileDiff } from "@pierre/diffs/react";
+import { useQuery } from "@tanstack/react-query";
 import {
   createContext,
   memo,
@@ -56,6 +58,16 @@ import {
 import { cn } from "~/lib/utils";
 import { type TimestampFormat } from "@t3tools/contracts/settings";
 import { formatTimestamp } from "../../timestampFormat";
+import { useSettings } from "../../hooks/useSettings";
+import { useTheme } from "../../hooks/useTheme";
+import { checkpointDiffQueryOptions } from "../../lib/providerReactQuery";
+import { resolveDiffThemeName } from "../../lib/diffRendering";
+import {
+  buildFileDiffRenderKey,
+  DIFF_RENDER_UNSAFE_CSS,
+  getRenderablePatch,
+  resolveFileDiffMatchPaths,
+} from "../../lib/unifiedDiffRendering";
 
 import {
   buildInlineTerminalContextText,
@@ -79,7 +91,10 @@ interface TimelineRowSharedState {
   timestampFormat: TimestampFormat;
   markdownCwd: string | undefined;
   workspaceRoot: string | undefined;
+  activeThreadId: ThreadId;
   activeThreadEnvironmentId: EnvironmentId;
+  turnDiffSummaryByTurnId: ReadonlyMap<TurnId, TurnDiffSummary>;
+  inferredCheckpointTurnCountByTurnId: Readonly<Record<TurnId, number>>;
   onRevertUserMessage: (messageId: MessageId) => void;
   onImageExpand: (preview: ExpandedImagePreview) => void;
   onPreserveViewportRequest?: ((anchor: HTMLElement, mutate: () => void) => void) | undefined;
@@ -101,10 +116,13 @@ interface MessagesTimelineProps {
   timelineEntries: ReturnType<typeof deriveTimelineEntries>;
   completionDividerBeforeEntryId: string | null;
   turnDiffSummaryByAssistantMessageId: Map<MessageId, TurnDiffSummary>;
+  turnDiffSummaryByTurnId: Map<TurnId, TurnDiffSummary>;
+  inferredCheckpointTurnCountByTurnId: Record<TurnId, number>;
   revertTurnCountByUserMessageId: Map<MessageId, number>;
   onRevertUserMessage: (messageId: MessageId) => void;
   isRevertingCheckpoint: boolean;
   onImageExpand: (preview: ExpandedImagePreview) => void;
+  activeThreadId: ThreadId;
   activeThreadEnvironmentId: EnvironmentId;
   markdownCwd: string | undefined;
   timestampFormat: TimestampFormat;
@@ -128,10 +146,13 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   timelineEntries,
   completionDividerBeforeEntryId,
   turnDiffSummaryByAssistantMessageId,
+  turnDiffSummaryByTurnId,
+  inferredCheckpointTurnCountByTurnId,
   revertTurnCountByUserMessageId,
   onRevertUserMessage,
   isRevertingCheckpoint,
   onImageExpand,
+  activeThreadId,
   activeThreadEnvironmentId,
   markdownCwd,
   timestampFormat,
@@ -199,7 +220,10 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       timestampFormat,
       markdownCwd,
       workspaceRoot,
+      activeThreadId,
       activeThreadEnvironmentId,
+      turnDiffSummaryByTurnId,
+      inferredCheckpointTurnCountByTurnId,
       onRevertUserMessage,
       onImageExpand,
       onPreserveViewportRequest,
@@ -212,7 +236,10 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       timestampFormat,
       markdownCwd,
       workspaceRoot,
+      activeThreadId,
       activeThreadEnvironmentId,
+      turnDiffSummaryByTurnId,
+      inferredCheckpointTurnCountByTurnId,
       onRevertUserMessage,
       onImageExpand,
       onPreserveViewportRequest,
@@ -514,6 +541,9 @@ const WorkGroupSection = memo(function WorkGroupSection({
   const [expandedOutputKeys, setExpandedOutputKeys] = useState<ReadonlySet<string>>(
     () => new Set(),
   );
+  const [expandedInlineDiffKeys, setExpandedInlineDiffKeys] = useState<ReadonlySet<string>>(
+    () => new Set(),
+  );
   const [collapsedDefaultOutputKeys, setCollapsedDefaultOutputKeys] = useState<ReadonlySet<string>>(
     () => new Set(),
   );
@@ -549,6 +579,17 @@ const WorkGroupSection = memo(function WorkGroupSection({
       return;
     }
     setExpandedOutputKeys((current) => {
+      const next = new Set(current);
+      if (next.has(key)) {
+        next.delete(key);
+      } else {
+        next.add(key);
+      }
+      return next;
+    });
+  }, []);
+  const toggleInlineDiffExpanded = useCallback((key: string) => {
+    setExpandedInlineDiffKeys((current) => {
       const next = new Set(current);
       if (next.has(key)) {
         next.delete(key);
@@ -595,6 +636,8 @@ const WorkGroupSection = memo(function WorkGroupSection({
                 outputExpanded={expandedOutputKeys.has(workEntryToolKey(workEntry))}
                 defaultOutputCollapsed={collapsedDefaultOutputKeys.has(workEntryToolKey(workEntry))}
                 onToggleOutputExpanded={toggleOutputExpanded}
+                inlineDiffExpanded={expandedInlineDiffKeys.has(workEntryToolKey(workEntry))}
+                onToggleInlineDiffExpanded={toggleInlineDiffExpanded}
               />
             ))}
           </div>
@@ -630,6 +673,8 @@ const WorkGroupSection = memo(function WorkGroupSection({
             outputExpanded={expandedOutputKeys.has(workEntryToolKey(workEntry))}
             defaultOutputCollapsed={collapsedDefaultOutputKeys.has(workEntryToolKey(workEntry))}
             onToggleOutputExpanded={toggleOutputExpanded}
+            inlineDiffExpanded={expandedInlineDiffKeys.has(workEntryToolKey(workEntry))}
+            onToggleInlineDiffExpanded={toggleInlineDiffExpanded}
           />
         ))}
       </div>
@@ -992,19 +1037,222 @@ const ToolOutputPreview = memo(function ToolOutputPreview(props: { workEntry: Ti
   );
 });
 
+type InlineDiffThemeType = "light" | "dark";
+
+const INLINE_DIFF_UNSAFE_CSS = `${DIFF_RENDER_UNSAFE_CSS}
+
+:host {
+  --diffs-font-size: 10.5px;
+  --diffs-line-height: 15px;
+  --diffs-gap-fallback: 4px;
+  --diffs-gap-block: 3px;
+  --diffs-gap-inline: 4px;
+  --diffs-tab-size: 2;
+}
+
+[data-code] {
+  padding-block: 3px !important;
+}
+
+[data-file-info] {
+  padding: 4px 6px !important;
+  font-size: 10px !important;
+  font-weight: 600 !important;
+}
+`;
+
+function normalizeDiffMatchPath(pathValue: string, workspaceRoot: string | undefined): string {
+  let normalized = pathValue.replace(/\\/g, "/").trim();
+  if (normalized.startsWith("./")) {
+    normalized = normalized.slice(2);
+  }
+
+  const normalizedRoot = workspaceRoot?.replace(/\\/g, "/").replace(/\/+$/u, "");
+  if (normalizedRoot && normalized.startsWith(`${normalizedRoot}/`)) {
+    normalized = normalized.slice(normalizedRoot.length + 1);
+  }
+
+  return normalized;
+}
+
+const InlineChangedFilesDiffPreview = memo(function InlineChangedFilesDiffPreview(props: {
+  workEntry: TimelineWorkEntry;
+  changedFiles: ReadonlyArray<string>;
+  workspaceRoot: string | undefined;
+}) {
+  const { workEntry, changedFiles, workspaceRoot } = props;
+  const ctx = use(TimelineRowCtx);
+  const { resolvedTheme } = useTheme();
+  const settings = useSettings();
+  const turnId = workEntry.turnId ?? null;
+  const turnSummary = turnId ? ctx.turnDiffSummaryByTurnId.get(turnId) : undefined;
+  const checkpointTurnCount =
+    turnId && turnSummary
+      ? (turnSummary.checkpointTurnCount ?? ctx.inferredCheckpointTurnCountByTurnId[turnId])
+      : undefined;
+  const checkpointRange =
+    typeof checkpointTurnCount === "number"
+      ? {
+          fromTurnCount: Math.max(0, checkpointTurnCount - 1),
+          toTurnCount: checkpointTurnCount,
+        }
+      : null;
+  const diffQuery = useQuery(
+    checkpointDiffQueryOptions({
+      environmentId: ctx.activeThreadEnvironmentId,
+      threadId: ctx.activeThreadId,
+      fromTurnCount: checkpointRange?.fromTurnCount ?? null,
+      toTurnCount: checkpointRange?.toTurnCount ?? null,
+      cacheScope: turnId ? `turn:${turnId}` : null,
+      enabled: checkpointRange !== null,
+    }),
+  );
+  const renderablePatch = useMemo(
+    () => getRenderablePatch(diffQuery.data?.diff, `inline-diff:${resolvedTheme}`),
+    [diffQuery.data?.diff, resolvedTheme],
+  );
+  const requestedPaths = useMemo(
+    () => new Set(changedFiles.map((filePath) => normalizeDiffMatchPath(filePath, workspaceRoot))),
+    [changedFiles, workspaceRoot],
+  );
+  const matchingFiles = useMemo(() => {
+    if (renderablePatch?.kind !== "files") {
+      return [];
+    }
+    return renderablePatch.files.filter((fileDiff) =>
+      resolveFileDiffMatchPaths(fileDiff).some((filePath) =>
+        requestedPaths.has(normalizeDiffMatchPath(filePath, workspaceRoot)),
+      ),
+    );
+  }, [renderablePatch, requestedPaths, workspaceRoot]);
+  const matchedPaths = useMemo(() => {
+    const paths = new Set<string>();
+    for (const fileDiff of matchingFiles) {
+      for (const filePath of resolveFileDiffMatchPaths(fileDiff)) {
+        paths.add(normalizeDiffMatchPath(filePath, workspaceRoot));
+      }
+    }
+    return paths;
+  }, [matchingFiles, workspaceRoot]);
+  const missingFiles = useMemo(
+    () =>
+      changedFiles.filter(
+        (filePath) => !matchedPaths.has(normalizeDiffMatchPath(filePath, workspaceRoot)),
+      ),
+    [changedFiles, matchedPaths, workspaceRoot],
+  );
+
+  if (!turnId || !turnSummary || checkpointRange === null) {
+    return (
+      <InlineDiffMessage>
+        Diff unavailable for this change because the completed turn checkpoint is missing.
+      </InlineDiffMessage>
+    );
+  }
+
+  if (diffQuery.isLoading) {
+    return <InlineDiffMessage>Loading inline diff...</InlineDiffMessage>;
+  }
+
+  if (diffQuery.error) {
+    const message =
+      diffQuery.error instanceof Error ? diffQuery.error.message : "Failed to load inline diff.";
+    return <InlineDiffMessage>{message}</InlineDiffMessage>;
+  }
+
+  if (!renderablePatch) {
+    return <InlineDiffMessage>No net diff available for this change.</InlineDiffMessage>;
+  }
+
+  if (renderablePatch.kind === "raw") {
+    return (
+      <div className="pl-7 pr-1 pb-1">
+        <div className="max-h-56 overflow-auto rounded-md border border-border/50 bg-muted/20 p-2">
+          <p className="mb-1 text-[10px] text-muted-foreground/65">{renderablePatch.reason}</p>
+          <pre
+            className={cn(
+              "font-mono text-[9.5px] leading-3.5 text-muted-foreground/85",
+              settings.diffWordWrap ? "whitespace-pre-wrap wrap-break-word" : "whitespace-pre",
+            )}
+          >
+            {renderablePatch.text}
+          </pre>
+        </div>
+      </div>
+    );
+  }
+
+  if (matchingFiles.length === 0) {
+    return (
+      <InlineDiffMessage>
+        Diff unavailable for {changedFiles.length === 1 ? "this file" : "these files"}.
+      </InlineDiffMessage>
+    );
+  }
+
+  return (
+    <div className="pl-7 pr-1 pb-1">
+      <div className="max-h-64 overflow-auto rounded-md border border-border/55 bg-card/25">
+        {matchingFiles.map((fileDiff) => {
+          const fileKey = buildFileDiffRenderKey(fileDiff);
+          return (
+            <div key={`${fileKey}:${resolvedTheme}`}>
+              <FileDiff
+                fileDiff={fileDiff}
+                options={{
+                  disableFileHeader: true,
+                  diffStyle: "unified",
+                  lineDiffType: "none",
+                  overflow: settings.diffWordWrap ? "wrap" : "scroll",
+                  theme: resolveDiffThemeName(resolvedTheme),
+                  themeType: resolvedTheme as InlineDiffThemeType,
+                  unsafeCSS: INLINE_DIFF_UNSAFE_CSS,
+                }}
+              />
+            </div>
+          );
+        })}
+      </div>
+      {missingFiles.length > 0 && (
+        <div className="mt-1 flex flex-wrap gap-1 text-[10px] text-muted-foreground/55">
+          {missingFiles.map((filePath) => (
+            <span key={`${workEntry.id}:missing-diff:${filePath}`}>
+              Diff unavailable for {formatWorkspaceRelativePath(filePath, workspaceRoot)}
+            </span>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+});
+
+function InlineDiffMessage({ children }: { children: ReactNode }) {
+  return (
+    <div className="pl-7 pr-1 pb-1">
+      <div className="rounded-md border border-border/45 bg-muted/15 px-2 py-1.5 text-[11px] text-muted-foreground/70">
+        {children}
+      </div>
+    </div>
+  );
+}
+
 const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
   workEntry: TimelineWorkEntry;
   workspaceRoot: string | undefined;
   outputExpanded: boolean;
+  inlineDiffExpanded: boolean;
   defaultOutputCollapsed: boolean;
   onToggleOutputExpanded: (key: string, defaultExpanded: boolean) => void;
+  onToggleInlineDiffExpanded: (key: string) => void;
 }) {
   const {
     workEntry,
     workspaceRoot,
     outputExpanded,
+    inlineDiffExpanded,
     defaultOutputCollapsed,
     onToggleOutputExpanded,
+    onToggleInlineDiffExpanded,
   } = props;
 
   const iconConfig = workToneIcon(workEntry.tone);
@@ -1022,6 +1270,7 @@ const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
   const displayText = preview ? `${heading} - ${preview}` : heading;
   const hasChangedFiles = (workEntry.changedFiles?.length ?? 0) > 0;
   const previewIsChangedFiles = hasChangedFiles && !workEntry.command && !workEntry.detail;
+  const hasInlineDiff = hasChangedFiles && !isTerminal;
   const outputPreview =
     (workEntry.itemType === "command_execution" || workEntry.command) &&
     (workEntry.outputPreview?.lines.length ?? 0) > 0
@@ -1095,6 +1344,63 @@ const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
           )}
         </div>
         {showOutputPreview && <ToolOutputPreview workEntry={workEntry} />}
+      </div>
+    );
+  }
+
+  if (hasInlineDiff) {
+    return (
+      <div className="group rounded-lg px-1 py-0.5 transition-colors duration-150 hover:bg-muted/20 focus-within:bg-muted/20">
+        <button
+          type="button"
+          className="flex min-h-7 w-full min-w-0 items-center gap-2 text-left transition-[opacity,translate] duration-200 focus-visible:outline-none"
+          aria-expanded={inlineDiffExpanded}
+          aria-label={inlineDiffExpanded ? "Collapse inline diff" : "Expand inline diff"}
+          onClick={() => onToggleInlineDiffExpanded(toolKey)}
+          data-testid="inline-diff-toggle"
+        >
+          <span
+            className={cn("flex size-5 shrink-0 items-center justify-center", iconConfig.className)}
+          >
+            <EntryIcon className="size-3" />
+          </span>
+          <p
+            className={cn(
+              "min-w-0 flex-1 truncate text-[11px] leading-5",
+              workToneClass(workEntry.tone),
+              preview ? "text-muted-foreground/70" : "",
+            )}
+            title={displayText}
+          >
+            <span className={cn("text-foreground/80", workToneClass(workEntry.tone))}>
+              {heading}
+            </span>
+            {preview && <span className="text-muted-foreground/55"> - {preview}</span>}
+          </p>
+          {workEntry.status && (
+            <span
+              className={cn(
+                "shrink-0 rounded-md border px-1.5 py-0.5 text-[10px] leading-3 font-medium",
+                terminalStatusClass(workEntry),
+              )}
+            >
+              {terminalStatusLabel(workEntry)}
+            </span>
+          )}
+          <ChevronRightIcon
+            className={cn(
+              "size-3.5 shrink-0 text-muted-foreground/45 opacity-0 transition-[opacity,transform,color] duration-150 group-hover:opacity-100 group-hover:text-muted-foreground/80 group-focus-within:opacity-100",
+              inlineDiffExpanded && "rotate-90 opacity-100",
+            )}
+          />
+        </button>
+        {inlineDiffExpanded && (
+          <InlineChangedFilesDiffPreview
+            workEntry={workEntry}
+            changedFiles={workEntry.changedFiles ?? []}
+            workspaceRoot={workspaceRoot}
+          />
+        )}
       </div>
     );
   }

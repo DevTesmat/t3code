@@ -795,6 +795,37 @@ describe("deriveWorkLogEntries", () => {
     expect(entries.map((entry) => entry.id)).toEqual(["turn-2"]);
   });
 
+  it("preserves turn ids on derived work log entries", () => {
+    const activities: OrchestrationThreadActivity[] = [
+      makeActivity({
+        id: "file-change-start",
+        turnId: "turn-file-change",
+        summary: "File change started",
+        kind: "tool.started",
+        payload: {
+          itemType: "file_change",
+          data: { files: [{ path: "src/app.ts" }] },
+        },
+      }),
+      makeActivity({
+        id: "file-change-complete",
+        turnId: "turn-file-change",
+        createdAt: "2026-02-23T00:00:01.000Z",
+        summary: "File change complete",
+        kind: "tool.completed",
+        payload: {
+          itemType: "file_change",
+          data: { files: [{ path: "src/app.ts" }] },
+        },
+      }),
+    ];
+
+    const [entry] = deriveWorkLogEntries(activities, TurnId.make("turn-file-change"));
+    expect(entry?.id).toBe("file-change-complete");
+    expect(entry?.turnId).toBe(TurnId.make("turn-file-change"));
+    expect(entry?.changedFiles).toEqual(["src/app.ts"]);
+  });
+
   it("omits checkpoint captured info entries", () => {
     const activities: OrchestrationThreadActivity[] = [
       makeActivity({

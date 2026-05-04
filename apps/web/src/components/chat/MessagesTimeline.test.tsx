@@ -1,4 +1,4 @@
-import { EnvironmentId, MessageId, TurnId } from "@t3tools/contracts";
+import { EnvironmentId, MessageId, ThreadId, TurnId } from "@t3tools/contracts";
 import { createRef } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { beforeAll, describe, expect, it, vi } from "vitest";
@@ -87,10 +87,13 @@ function buildProps() {
     listRef: createRef<LegendListRef | null>(),
     completionDividerBeforeEntryId: null,
     turnDiffSummaryByAssistantMessageId: new Map(),
+    turnDiffSummaryByTurnId: new Map(),
+    inferredCheckpointTurnCountByTurnId: {},
     revertTurnCountByUserMessageId: new Map(),
     onRevertUserMessage: () => {},
     isRevertingCheckpoint: false,
     onImageExpand: () => {},
+    activeThreadId: ThreadId.make("thread-1"),
     activeThreadEnvironmentId: ACTIVE_THREAD_ENVIRONMENT_ID,
     markdownCwd: undefined,
     timestampFormat: "locale" as const,

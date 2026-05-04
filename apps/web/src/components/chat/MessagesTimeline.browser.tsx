@@ -1,6 +1,7 @@
 import "../../index.css";
 
-import { EnvironmentId } from "@t3tools/contracts";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { EnvironmentId, ThreadId, TurnId, type EnvironmentApi } from "@t3tools/contracts";
 import { createRef } from "react";
 import type { LegendListRef } from "@legendapp/list/react";
 import { page } from "vitest/browser";
@@ -69,7 +70,30 @@ vi.mock("@legendapp/list/react", async () => {
   return { LegendList };
 });
 
+vi.mock("@pierre/diffs/react", () => ({
+  FileDiff: (props: { fileDiff: { name?: string; prevName?: string } }) => (
+    <div data-testid="inline-file-diff">{props.fileDiff.name ?? props.fileDiff.prevName}</div>
+  ),
+}));
+
+const mockSettings = { diffWordWrap: false };
+
+vi.mock("../../hooks/useSettings", () => ({
+  getClientSettings: () => mockSettings,
+  useSettings: <T,>(selector?: (settings: typeof mockSettings) => T) =>
+    selector ? selector(mockSettings) : mockSettings,
+  useUpdateSettings: () => ({
+    updateSettings: vi.fn(),
+    resetSettings: vi.fn(),
+  }),
+  __resetClientSettingsPersistenceForTests: vi.fn(),
+}));
+
 import { MessagesTimeline } from "./MessagesTimeline";
+import {
+  __resetEnvironmentApiOverridesForTests,
+  __setEnvironmentApiOverrideForTests,
+} from "../../environmentApi";
 
 function buildProps() {
   return {
@@ -80,10 +104,13 @@ function buildProps() {
     listRef: createRef<LegendListRef | null>(),
     completionDividerBeforeEntryId: null,
     turnDiffSummaryByAssistantMessageId: new Map(),
+    turnDiffSummaryByTurnId: new Map(),
+    inferredCheckpointTurnCountByTurnId: {},
     revertTurnCountByUserMessageId: new Map(),
     onRevertUserMessage: vi.fn(),
     isRevertingCheckpoint: false,
     onImageExpand: vi.fn(),
+    activeThreadId: ThreadId.make("thread-1"),
     activeThreadEnvironmentId: EnvironmentId.make("environment-local"),
     markdownCwd: undefined,
     timestampFormat: "24-hour" as const,
@@ -97,6 +124,7 @@ describe("MessagesTimeline", () => {
     scrollToEndSpy.mockReset();
     getStateSpy.mockClear();
     legendListPropsSpy.mockClear();
+    __resetEnvironmentApiOverridesForTests();
     vi.restoreAllMocks();
     document.body.innerHTML = "";
   });
@@ -263,6 +291,107 @@ describe("MessagesTimeline", () => {
         expect.objectContaining({ maintainScrollAtEnd: false }),
       );
     } finally {
+      await screen.unmount();
+    }
+  });
+
+  it("expands a changed-file row inline and fetches only after expansion", async () => {
+    const environmentId = EnvironmentId.make("environment-local");
+    const threadId = ThreadId.make("thread-1");
+    const turnId = TurnId.make("turn-1");
+    const getTurnDiff = vi.fn(async () => ({
+      threadId,
+      fromTurnCount: 1,
+      toTurnCount: 2,
+      diff: [
+        "diff --git a/src/app.ts b/src/app.ts",
+        "index 1111111..2222222 100644",
+        "--- a/src/app.ts",
+        "+++ b/src/app.ts",
+        "@@ -1 +1 @@",
+        "-old",
+        "+new",
+        "diff --git a/src/other.ts b/src/other.ts",
+        "index 3333333..4444444 100644",
+        "--- a/src/other.ts",
+        "+++ b/src/other.ts",
+        "@@ -1 +1 @@",
+        "-other",
+        "+changed",
+        "",
+      ].join("\n"),
+    }));
+    __setEnvironmentApiOverrideForTests(environmentId, {
+      orchestration: {
+        getTurnDiff,
+        getFullThreadDiff: vi.fn(),
+      },
+    } as unknown as EnvironmentApi);
+    const queryClient = new QueryClient({
+      defaultOptions: {
+        queries: {
+          retry: false,
+        },
+      },
+    });
+
+    const screen = await render(
+      <QueryClientProvider client={queryClient}>
+        <MessagesTimeline
+          {...buildProps()}
+          activeThreadId={threadId}
+          activeThreadEnvironmentId={environmentId}
+          turnDiffSummaryByTurnId={
+            new Map([
+              [
+                turnId,
+                {
+                  turnId,
+                  checkpointTurnCount: 2,
+                  completedAt: "2026-04-13T12:00:02.000Z",
+                  files: [{ path: "src/app.ts", additions: 1, deletions: 1 }],
+                },
+              ],
+            ])
+          }
+          timelineEntries={[
+            {
+              id: "work-1",
+              kind: "work",
+              createdAt: "2026-04-13T12:00:00.000Z",
+              entry: {
+                id: "work-1",
+                turnId,
+                createdAt: "2026-04-13T12:00:00.000Z",
+                label: "File change",
+                tone: "tool",
+                itemType: "file_change",
+                status: "completed",
+                changedFiles: ["src/app.ts"],
+              },
+            },
+          ]}
+        />
+      </QueryClientProvider>,
+    );
+
+    try {
+      expect(getTurnDiff).not.toHaveBeenCalled();
+
+      await page.getByTestId("inline-diff-toggle").click();
+      await expect.element(page.getByTestId("inline-file-diff")).toHaveTextContent("src/app.ts");
+      await expect.element(page.getByText("src/other.ts")).not.toBeInTheDocument();
+      expect(getTurnDiff).toHaveBeenCalledWith({
+        threadId,
+        fromTurnCount: 1,
+        toTurnCount: 2,
+      });
+
+      await page.getByTestId("inline-diff-toggle").click();
+      await expect.element(page.getByTestId("inline-file-diff")).not.toBeInTheDocument();
+      expect(getTurnDiff).toHaveBeenCalledTimes(1);
+    } finally {
+      queryClient.clear();
       await screen.unmount();
     }
   });
