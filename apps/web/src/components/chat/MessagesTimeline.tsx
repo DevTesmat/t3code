@@ -506,7 +506,7 @@ const WorkGroupSection = memo(function WorkGroupSection({
   const [expandedOutputKeys, setExpandedOutputKeys] = useState<ReadonlySet<string>>(
     () => new Set(),
   );
-  const [collapsedAutoOutputKeys, setCollapsedAutoOutputKeys] = useState<ReadonlySet<string>>(
+  const [collapsedDefaultOutputKeys, setCollapsedDefaultOutputKeys] = useState<ReadonlySet<string>>(
     () => new Set(),
   );
   const hasOverflow = groupedEntries.length > MAX_VISIBLE_WORK_LOG_ENTRIES;
@@ -519,9 +519,9 @@ const WorkGroupSection = memo(function WorkGroupSection({
   const onlyTerminalEntries = groupedEntries.every(isTerminalWorkEntry);
   const showHeader = hasOverflow || !onlyToolEntries;
   const groupLabel = onlyTerminalEntries ? "Terminal" : onlyToolEntries ? "Tool calls" : "Work log";
-  const toggleOutputExpanded = useCallback((key: string, autoExpanded: boolean) => {
-    if (autoExpanded) {
-      setCollapsedAutoOutputKeys((current) => {
+  const toggleOutputExpanded = useCallback((key: string, defaultExpanded: boolean) => {
+    if (defaultExpanded) {
+      setCollapsedDefaultOutputKeys((current) => {
         const next = new Set(current);
         if (next.has(key)) {
           next.delete(key);
@@ -568,7 +568,7 @@ const WorkGroupSection = memo(function WorkGroupSection({
             workEntry={workEntry}
             workspaceRoot={workspaceRoot}
             outputExpanded={expandedOutputKeys.has(workEntryToolKey(workEntry))}
-            autoOutputCollapsed={collapsedAutoOutputKeys.has(workEntryToolKey(workEntry))}
+            defaultOutputCollapsed={collapsedDefaultOutputKeys.has(workEntryToolKey(workEntry))}
             onToggleOutputExpanded={toggleOutputExpanded}
           />
         ))}
@@ -790,21 +790,12 @@ function terminalCopyCommand(workEntry: Pick<TimelineWorkEntry, "command" | "raw
   return workEntry.rawCommand?.trim() || workEntry.command?.trim() || "Ran command";
 }
 
-function terminalOutputText(workEntry: Pick<TimelineWorkEntry, "outputPreview">): string | null {
-  const lines = workEntry.outputPreview?.lines ?? [];
-  return lines.length > 0 ? lines.join("\n") : null;
-}
-
 function shouldAutoShowTerminalOutput(workEntry: TimelineWorkEntry): boolean {
   const outputPreview = workEntry.outputPreview;
   if (!outputPreview || outputPreview.lines.length === 0) {
     return false;
   }
-  return (
-    workEntry.status === "failed" ||
-    workEntry.status === "running" ||
-    outputPreview.stream === "stderr"
-  );
+  return workEntry.status === "failed" || workEntry.status === "running";
 }
 
 function workEntryIcon(workEntry: TimelineWorkEntry): LucideIcon {
@@ -934,11 +925,16 @@ const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
   workEntry: TimelineWorkEntry;
   workspaceRoot: string | undefined;
   outputExpanded: boolean;
-  autoOutputCollapsed: boolean;
-  onToggleOutputExpanded: (key: string, autoExpanded: boolean) => void;
+  defaultOutputCollapsed: boolean;
+  onToggleOutputExpanded: (key: string, defaultExpanded: boolean) => void;
 }) {
-  const { workEntry, workspaceRoot, outputExpanded, autoOutputCollapsed, onToggleOutputExpanded } =
-    props;
+  const {
+    workEntry,
+    workspaceRoot,
+    outputExpanded,
+    defaultOutputCollapsed,
+    onToggleOutputExpanded,
+  } = props;
 
   const iconConfig = workToneIcon(workEntry.tone);
   const EntryIcon = workEntryIcon(workEntry);
@@ -962,13 +958,12 @@ const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
       : null;
   const isExpandable = outputPreview !== null;
   const toolKey = workEntryToolKey(workEntry);
-  const autoOutputExpanded = isTerminal && shouldAutoShowTerminalOutput(workEntry);
+  const defaultOutputExpanded = isTerminal && shouldAutoShowTerminalOutput(workEntry);
   const showOutputPreview =
-    isExpandable && (outputExpanded || (autoOutputExpanded && !autoOutputCollapsed));
+    isExpandable && (outputExpanded || (defaultOutputExpanded && !defaultOutputCollapsed));
 
   if (isTerminal) {
     const commandLabel = terminalPrimaryLabel(workEntry);
-    const copyOutputText = terminalOutputText(workEntry);
     return (
       <div className="group rounded-lg px-1 py-0.5 transition-colors duration-150 hover:bg-muted/20 focus-within:bg-muted/20">
         <div className="flex min-h-7 items-center gap-2 transition-[opacity,translate] duration-200">
@@ -994,14 +989,6 @@ const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
               variant="ghost"
               className="size-5 text-muted-foreground/45 hover:text-muted-foreground/80"
             />
-            {copyOutputText && (
-              <MessageCopyButton
-                text={copyOutputText}
-                size="icon-xs"
-                variant="ghost"
-                className="size-5 text-muted-foreground/45 hover:text-muted-foreground/80"
-              />
-            )}
           </div>
           {workEntry.status && (
             <span
@@ -1024,7 +1011,7 @@ const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
               className="flex size-5 shrink-0 items-center justify-center rounded-md text-muted-foreground/45 transition-[transform,color] duration-150 hover:text-muted-foreground/80 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring/45"
               aria-label={showOutputPreview ? "Collapse tool output" : "Expand tool output"}
               aria-expanded={showOutputPreview}
-              onClick={() => onToggleOutputExpanded(toolKey, autoOutputExpanded)}
+              onClick={() => onToggleOutputExpanded(toolKey, defaultOutputExpanded)}
               data-testid="tool-output-toggle"
             >
               <ChevronRightIcon

@@ -361,6 +361,45 @@ describe("deriveMessagesTimelineRows", () => {
     expect(userRow?.revertTurnCount).toBe(1);
     expect(assistantRow?.assistantTurnDiffSummary).toBe(assistantTurnDiffSummary);
   });
+
+  it("uses stable tool keys for work row ids across lifecycle activity id changes", () => {
+    const buildRows = (entryId: string, outputLine: string) =>
+      deriveMessagesTimelineRows({
+        timelineEntries: [
+          {
+            id: entryId,
+            kind: "work",
+            createdAt: "2026-01-01T00:00:00Z",
+            entry: {
+              id: entryId,
+              createdAt: "2026-01-01T00:00:00Z",
+              label: "Ran command",
+              tone: "tool",
+              itemType: "command_execution",
+              command: "bun run dev",
+              status: "running",
+              toolKey: "tool:call-1",
+              outputPreview: {
+                lines: [outputLine],
+                stream: "stdout",
+                truncated: false,
+              },
+            },
+          },
+        ],
+        completionDividerBeforeEntryId: null,
+        isWorking: false,
+        activeTurnStartedAt: null,
+        turnDiffSummaryByAssistantMessageId: new Map(),
+        revertTurnCountByUserMessageId: new Map(),
+      });
+
+    const startedRows = buildRows("activity-started", "starting");
+    const updatedRows = buildRows("activity-updated", "ready");
+
+    expect(startedRows[0]?.id).toBe("work-group:tool:call-1");
+    expect(updatedRows[0]?.id).toBe(startedRows[0]?.id);
+  });
 });
 
 describe("computeStableMessagesTimelineRows", () => {

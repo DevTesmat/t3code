@@ -74,6 +74,10 @@ beforeAll(() => {
 
 const ACTIVE_THREAD_ENVIRONMENT_ID = EnvironmentId.make("environment-local");
 
+function countOccurrences(value: string, needle: string): number {
+  return value.split(needle).length - 1;
+}
+
 function buildProps() {
   return {
     isWorking: false,
@@ -323,6 +327,42 @@ describe("MessagesTimeline", () => {
     expect(markup).toContain("bun run dev");
     expect(markup).toContain("last output");
     expect(markup).toContain("ready in 124ms");
+    expect(countOccurrences(markup, 'aria-label="Copy link"')).toBe(1);
+  });
+
+  it("keeps older terminal rows hidden behind show more in overflowing work groups", async () => {
+    const { MessagesTimeline } = await import("./MessagesTimeline");
+    const entries = Array.from({ length: 7 }, (_, index) => {
+      const command = index === 0 ? "bun run hidden-failure" : `bun run visible-${index}`;
+      return {
+        id: `entry-${index}`,
+        kind: "work" as const,
+        createdAt: `2026-03-17T19:12:2${index}.000Z`,
+        entry: {
+          id: `work-${index}`,
+          createdAt: `2026-03-17T19:12:2${index}.000Z`,
+          label: "Ran command",
+          tone: "tool" as const,
+          itemType: "command_execution" as const,
+          command,
+          status: index === 0 ? ("failed" as const) : ("completed" as const),
+          outputPreview: {
+            lines: [index === 0 ? "hidden error" : `visible output ${index}`],
+            stream: index === 0 ? ("stderr" as const) : ("stdout" as const),
+            truncated: false,
+          },
+        },
+      };
+    });
+    const markup = renderToStaticMarkup(
+      <MessagesTimeline {...buildProps()} timelineEntries={entries} />,
+    );
+
+    expect(markup).toContain("Show 1 more");
+    expect(markup).not.toContain("bun run hidden-failure");
+    expect(markup).not.toContain("hidden error");
+    expect(markup).toContain("bun run visible-1");
+    expect(markup).toContain("bun run visible-6");
   });
 
   it("falls back to a generic terminal label when the command is missing", async () => {

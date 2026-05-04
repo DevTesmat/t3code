@@ -145,7 +145,7 @@ export function deriveMessagesTimelineRows(input: {
       }
       nextRows.push({
         kind: "work",
-        id: timelineEntry.id,
+        id: stableWorkGroupRowId(groupedEntries),
         createdAt: timelineEntry.createdAt,
         groupedEntries,
       });
@@ -200,6 +200,15 @@ export function deriveMessagesTimelineRows(input: {
   }
 
   return nextRows;
+}
+
+function stableWorkEntryKey(entry: WorkLogEntry): string {
+  return entry.toolKey ?? entry.toolCallId ?? entry.id;
+}
+
+function stableWorkGroupRowId(entries: ReadonlyArray<WorkLogEntry>): string {
+  const firstEntry = entries[0];
+  return `work-group:${firstEntry ? stableWorkEntryKey(firstEntry) : "empty"}`;
 }
 
 export function computeStableMessagesTimelineRows(
