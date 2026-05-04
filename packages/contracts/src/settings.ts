@@ -164,7 +164,7 @@ export const HistorySyncSettings = Schema.Struct({
 export type HistorySyncSettings = typeof HistorySyncSettings.Type;
 
 export const ServerSettings = Schema.Struct({
-  enableAssistantStreaming: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
+  enableAssistantStreaming: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(true))),
   defaultThreadEnvMode: ThreadEnvMode.pipe(
     Schema.withDecodingDefault(Effect.succeed("local" as const satisfies ThreadEnvMode)),
   ),
