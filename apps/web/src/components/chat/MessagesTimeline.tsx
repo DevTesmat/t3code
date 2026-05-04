@@ -506,6 +506,9 @@ const WorkGroupSection = memo(function WorkGroupSection({
   const [expandedOutputKeys, setExpandedOutputKeys] = useState<ReadonlySet<string>>(
     () => new Set(),
   );
+  const [collapsedAutoOutputKeys, setCollapsedAutoOutputKeys] = useState<ReadonlySet<string>>(
+    () => new Set(),
+  );
   const hasOverflow = groupedEntries.length > MAX_VISIBLE_WORK_LOG_ENTRIES;
   const visibleEntries =
     hasOverflow && !isExpanded
@@ -513,9 +516,22 @@ const WorkGroupSection = memo(function WorkGroupSection({
       : groupedEntries;
   const hiddenCount = groupedEntries.length - visibleEntries.length;
   const onlyToolEntries = groupedEntries.every((entry) => entry.tone === "tool");
+  const onlyTerminalEntries = groupedEntries.every(isTerminalWorkEntry);
   const showHeader = hasOverflow || !onlyToolEntries;
-  const groupLabel = onlyToolEntries ? "Tool calls" : "Work log";
-  const toggleOutputExpanded = useCallback((key: string) => {
+  const groupLabel = onlyTerminalEntries ? "Terminal" : onlyToolEntries ? "Tool calls" : "Work log";
+  const toggleOutputExpanded = useCallback((key: string, autoExpanded: boolean) => {
+    if (autoExpanded) {
+      setCollapsedAutoOutputKeys((current) => {
+        const next = new Set(current);
+        if (next.has(key)) {
+          next.delete(key);
+        } else {
+          next.add(key);
+        }
+        return next;
+      });
+      return;
+    }
     setExpandedOutputKeys((current) => {
       const next = new Set(current);
       if (next.has(key)) {
@@ -552,6 +568,7 @@ const WorkGroupSection = memo(function WorkGroupSection({
             workEntry={workEntry}
             workspaceRoot={workspaceRoot}
             outputExpanded={expandedOutputKeys.has(workEntryToolKey(workEntry))}
+            autoOutputCollapsed={collapsedAutoOutputKeys.has(workEntryToolKey(workEntry))}
             onToggleOutputExpanded={toggleOutputExpanded}
           />
         ))}
@@ -761,6 +778,35 @@ function workEntryRawCommand(
   return rawCommand === workEntry.command.trim() ? null : rawCommand;
 }
 
+function isTerminalWorkEntry(workEntry: Pick<TimelineWorkEntry, "command" | "itemType">): boolean {
+  return workEntry.itemType === "command_execution" || Boolean(workEntry.command);
+}
+
+function terminalPrimaryLabel(workEntry: Pick<TimelineWorkEntry, "command">): string {
+  return workEntry.command?.trim() || "Ran command";
+}
+
+function terminalCopyCommand(workEntry: Pick<TimelineWorkEntry, "command" | "rawCommand">): string {
+  return workEntry.rawCommand?.trim() || workEntry.command?.trim() || "Ran command";
+}
+
+function terminalOutputText(workEntry: Pick<TimelineWorkEntry, "outputPreview">): string | null {
+  const lines = workEntry.outputPreview?.lines ?? [];
+  return lines.length > 0 ? lines.join("\n") : null;
+}
+
+function shouldAutoShowTerminalOutput(workEntry: TimelineWorkEntry): boolean {
+  const outputPreview = workEntry.outputPreview;
+  if (!outputPreview || outputPreview.lines.length === 0) {
+    return false;
+  }
+  return (
+    workEntry.status === "failed" ||
+    workEntry.status === "running" ||
+    outputPreview.stream === "stderr"
+  );
+}
+
 function workEntryIcon(workEntry: TimelineWorkEntry): LucideIcon {
   if (workEntry.requestKind === "command") return TerminalIcon;
   if (workEntry.requestKind === "file-read") return EyeIcon;
@@ -808,10 +854,10 @@ function commandOutputPreviewLabel(workEntry: TimelineWorkEntry): string | null 
     case "mixed":
       return "mixed";
     case "unknown":
-      return "output";
+      return "last output";
     case "stdout":
     default:
-      return null;
+      return "last output";
   }
 }
 
@@ -888,12 +934,15 @@ const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
   workEntry: TimelineWorkEntry;
   workspaceRoot: string | undefined;
   outputExpanded: boolean;
-  onToggleOutputExpanded: (key: string) => void;
+  autoOutputCollapsed: boolean;
+  onToggleOutputExpanded: (key: string, autoExpanded: boolean) => void;
 }) {
-  const { workEntry, workspaceRoot, outputExpanded, onToggleOutputExpanded } = props;
+  const { workEntry, workspaceRoot, outputExpanded, autoOutputCollapsed, onToggleOutputExpanded } =
+    props;
 
   const iconConfig = workToneIcon(workEntry.tone);
   const EntryIcon = workEntryIcon(workEntry);
+  const isTerminal = isTerminalWorkEntry(workEntry);
   const heading = toolWorkEntryHeading(workEntry);
   const rawPreview = workEntryPreview(workEntry, workspaceRoot);
   const preview =
@@ -913,6 +962,84 @@ const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
       : null;
   const isExpandable = outputPreview !== null;
   const toolKey = workEntryToolKey(workEntry);
+  const autoOutputExpanded = isTerminal && shouldAutoShowTerminalOutput(workEntry);
+  const showOutputPreview =
+    isExpandable && (outputExpanded || (autoOutputExpanded && !autoOutputCollapsed));
+
+  if (isTerminal) {
+    const commandLabel = terminalPrimaryLabel(workEntry);
+    const copyOutputText = terminalOutputText(workEntry);
+    return (
+      <div className="group rounded-lg px-1 py-0.5 transition-colors duration-150 hover:bg-muted/20 focus-within:bg-muted/20">
+        <div className="flex min-h-7 items-center gap-2 transition-[opacity,translate] duration-200">
+          <span className="flex size-5 shrink-0 items-center justify-center text-muted-foreground/70">
+            <TerminalIcon className="size-3" />
+          </span>
+          <Tooltip>
+            <TooltipTrigger className="block min-w-0 flex-1 text-left" title={commandLabel}>
+              <p className="truncate font-mono text-[11px] leading-5 text-foreground/80">
+                {commandLabel}
+              </p>
+            </TooltipTrigger>
+            <TooltipPopup className="max-w-[min(56rem,calc(100vw-2rem))] px-0 py-0">
+              <div className="max-w-[min(56rem,calc(100vw-2rem))] overflow-x-auto px-1.5 py-1 font-mono text-[11px] leading-4 whitespace-nowrap">
+                {terminalCopyCommand(workEntry)}
+              </div>
+            </TooltipPopup>
+          </Tooltip>
+          <div className="flex shrink-0 items-center gap-1 opacity-0 transition-opacity duration-150 focus-within:opacity-100 group-hover:opacity-100">
+            <MessageCopyButton
+              text={terminalCopyCommand(workEntry)}
+              size="icon-xs"
+              variant="ghost"
+              className="size-5 text-muted-foreground/45 hover:text-muted-foreground/80"
+            />
+            {copyOutputText && (
+              <MessageCopyButton
+                text={copyOutputText}
+                size="icon-xs"
+                variant="ghost"
+                className="size-5 text-muted-foreground/45 hover:text-muted-foreground/80"
+              />
+            )}
+          </div>
+          {workEntry.status && (
+            <span
+              className={cn(
+                "shrink-0 rounded-md border px-1.5 py-0.5 text-[10px] leading-3 font-medium",
+                terminalStatusClass(workEntry),
+              )}
+            >
+              {terminalStatusLabel(workEntry)}
+            </span>
+          )}
+          {workEntry.exitCode !== undefined && (
+            <span className="shrink-0 rounded-md border border-border/50 bg-muted/25 px-1.5 py-0.5 font-mono text-[10px] leading-3 text-muted-foreground/70">
+              exit {workEntry.exitCode}
+            </span>
+          )}
+          {isExpandable && (
+            <button
+              type="button"
+              className="flex size-5 shrink-0 items-center justify-center rounded-md text-muted-foreground/45 transition-[transform,color] duration-150 hover:text-muted-foreground/80 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring/45"
+              aria-label={showOutputPreview ? "Collapse tool output" : "Expand tool output"}
+              aria-expanded={showOutputPreview}
+              onClick={() => onToggleOutputExpanded(toolKey, autoOutputExpanded)}
+              data-testid="tool-output-toggle"
+            >
+              <ChevronRightIcon
+                className={cn(
+                  "size-3.5 transition-transform duration-150",
+                  showOutputPreview && "rotate-90",
+                )}
+              />
+            </button>
+          )}
+        </div>
+        {showOutputPreview && <ToolOutputPreview workEntry={workEntry} />}
+      </div>
+    );
+  }
 
   return (
     <div className="group rounded-lg px-1 py-0.5 transition-colors duration-150 hover:bg-muted/20 focus-within:bg-muted/20">
@@ -1010,7 +1137,7 @@ const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
             className="flex size-5 shrink-0 items-center justify-center rounded-md text-muted-foreground/45 opacity-0 transition-[opacity,transform,color] duration-150 hover:text-muted-foreground/80 focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring/45 group-hover:opacity-100 group-focus-within:opacity-100"
             aria-label={outputExpanded ? "Collapse tool output" : "Expand tool output"}
             aria-expanded={outputExpanded}
-            onClick={() => onToggleOutputExpanded(toolKey)}
+            onClick={() => onToggleOutputExpanded(toolKey, false)}
             data-testid="tool-output-toggle"
           >
             <ChevronRightIcon

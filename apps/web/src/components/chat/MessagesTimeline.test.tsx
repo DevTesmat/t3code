@@ -183,7 +183,7 @@ describe("MessagesTimeline", () => {
     expect(markup).not.toContain("C:/Users/mike/dev-stuff/t3code/apps/web/src/session-logic.ts");
   });
 
-  it("renders terminal command rows as input/output boxes with a four-line output preview", async () => {
+  it("renders successful terminal command rows as compact collapsed command boxes", async () => {
     const { MessagesTimeline } = await import("./MessagesTimeline");
     const markup = renderToStaticMarkup(
       <MessagesTimeline
@@ -213,7 +213,7 @@ describe("MessagesTimeline", () => {
       />,
     );
 
-    expect(markup).toContain("Ran command");
+    expect(markup).not.toContain("Ran command - bun run lint");
     expect(markup).toContain("Completed");
     expect(markup).toContain("exit 0");
     expect(markup).not.toContain("<details");
@@ -253,7 +253,7 @@ describe("MessagesTimeline", () => {
     expect(markup).not.toContain("Waiting for output");
   });
 
-  it("renders stderr terminal previews with a subtle stream label", async () => {
+  it("auto-renders failed stderr terminal previews with a subtle stream label", async () => {
     const { MessagesTimeline } = await import("./MessagesTimeline");
     const markup = renderToStaticMarkup(
       <MessagesTimeline
@@ -286,7 +286,70 @@ describe("MessagesTimeline", () => {
     expect(markup).toContain("Failed");
     expect(markup).toContain("exit 1");
     expect(markup).toContain("tool-output-toggle");
-    expect(markup).not.toContain("TypeError: nope");
+    expect(markup).toContain("stderr");
+    expect(markup).toContain("TypeError: nope");
+  });
+
+  it("auto-renders running terminal output previews", async () => {
+    const { MessagesTimeline } = await import("./MessagesTimeline");
+    const markup = renderToStaticMarkup(
+      <MessagesTimeline
+        {...buildProps()}
+        timelineEntries={[
+          {
+            id: "entry-1",
+            kind: "work",
+            createdAt: "2026-03-17T19:12:28.000Z",
+            entry: {
+              id: "work-1",
+              createdAt: "2026-03-17T19:12:28.000Z",
+              label: "Ran command",
+              tone: "tool",
+              itemType: "command_execution",
+              command: "bun run dev",
+              status: "running",
+              outputPreview: {
+                lines: ["ready in 124ms"],
+                stream: "stdout",
+                truncated: false,
+              },
+            },
+          },
+        ]}
+      />,
+    );
+
+    expect(markup).toContain("Running");
+    expect(markup).toContain("bun run dev");
+    expect(markup).toContain("last output");
+    expect(markup).toContain("ready in 124ms");
+  });
+
+  it("falls back to a generic terminal label when the command is missing", async () => {
+    const { MessagesTimeline } = await import("./MessagesTimeline");
+    const markup = renderToStaticMarkup(
+      <MessagesTimeline
+        {...buildProps()}
+        timelineEntries={[
+          {
+            id: "entry-1",
+            kind: "work",
+            createdAt: "2026-03-17T19:12:28.000Z",
+            entry: {
+              id: "work-1",
+              createdAt: "2026-03-17T19:12:28.000Z",
+              label: "Terminal",
+              tone: "tool",
+              itemType: "command_execution",
+              status: "completed",
+            },
+          },
+        ]}
+      />,
+    );
+
+    expect(markup).toContain("Ran command");
+    expect(markup).toContain("Completed");
   });
 
   it("does not render terminal output preview styling for non-command tools", async () => {
