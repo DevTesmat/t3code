@@ -816,13 +816,29 @@ function collapseDerivedWorkLogEntries(
   entries: ReadonlyArray<DerivedWorkLogEntry>,
 ): DerivedWorkLogEntry[] {
   const collapsed: DerivedWorkLogEntry[] = [];
+  const explicitToolIndexByKey = new Map<string, number>();
   for (const entry of entries) {
+    if (entry.toolCallId && entry.collapseKey) {
+      const existingIndex = explicitToolIndexByKey.get(entry.collapseKey);
+      if (existingIndex !== undefined) {
+        collapsed[existingIndex] = mergeDerivedWorkLogEntries(collapsed[existingIndex]!, entry);
+        continue;
+      }
+    }
+
     const previous = collapsed.at(-1);
     if (previous && shouldCollapseToolLifecycleEntries(previous, entry)) {
-      collapsed[collapsed.length - 1] = mergeDerivedWorkLogEntries(previous, entry);
+      const merged = mergeDerivedWorkLogEntries(previous, entry);
+      collapsed[collapsed.length - 1] = merged;
+      if (merged.toolCallId && merged.collapseKey) {
+        explicitToolIndexByKey.set(merged.collapseKey, collapsed.length - 1);
+      }
       continue;
     }
     collapsed.push(entry);
+    if (entry.toolCallId && entry.collapseKey) {
+      explicitToolIndexByKey.set(entry.collapseKey, collapsed.length - 1);
+    }
   }
   return collapsed;
 }
@@ -861,7 +877,7 @@ function mergeDerivedWorkLogEntries(
   const command = next.command ?? previous.command;
   const rawCommand = next.rawCommand ?? previous.rawCommand;
   const outputPreview = next.outputPreview ?? previous.outputPreview;
-  const status = next.status ?? previous.status;
+  const status = mergeWorkLogStatus(previous.status, next.status);
   const exitCode = next.exitCode ?? previous.exitCode;
   const toolTitle = next.toolTitle ?? previous.toolTitle;
   const itemType = next.itemType ?? previous.itemType;
@@ -888,6 +904,19 @@ function mergeDerivedWorkLogEntries(
     ...(toolKey ? { toolKey } : {}),
     ...(turnId ? { turnId } : {}),
   };
+}
+
+function mergeWorkLogStatus(
+  previous: WorkLogEntry["status"] | undefined,
+  next: WorkLogEntry["status"] | undefined,
+): WorkLogEntry["status"] | undefined {
+  if (previous === "failed" || next === "failed") {
+    return "failed";
+  }
+  if (previous === "completed" || next === "completed") {
+    return "completed";
+  }
+  return next ?? previous;
 }
 
 function mergeChangedFiles(
@@ -1078,8 +1107,8 @@ function extractCommandStatus(
   }
   const data = asRecord(payload?.data);
   const rawOutput = asRecord(data?.rawOutput);
-  const rawStatus = asTrimmedString(rawOutput?.status)?.toLowerCase();
-  const payloadStatus = asTrimmedString(payload?.status)?.toLowerCase();
+  const rawStatus = normalizeRuntimeStatus(rawOutput?.status);
+  const payloadStatus = normalizeRuntimeStatus(payload?.status);
   const exitCode = extractCommandExitCode(payload);
   if (
     (exitCode !== null && exitCode !== 0) ||
@@ -1098,6 +1127,12 @@ function extractCommandStatus(
     return "completed";
   }
   return "running";
+}
+
+function normalizeRuntimeStatus(value: unknown): string | undefined {
+  return asTrimmedString(value)
+    ?.replace(/[_\s-]+/g, "")
+    .toLowerCase();
 }
 
 function outputPreviewFromRawOutput(
@@ -1648,6 +1683,7 @@ function deriveActiveToolActivity(
   }
 
   const activeByKey = new Map<string, OrchestrationThreadActivity>();
+  const terminalKeys = new Set<string>();
   const ordered = [...activities]
     .filter((activity) => activity.turnId === turnId && activity.tone === "tool")
     .filter(
@@ -1662,6 +1698,10 @@ function deriveActiveToolActivity(
     const key = activeToolLifecycleKey(activity) ?? activity.id;
     if (activity.kind === "tool.completed") {
       activeByKey.delete(key);
+      terminalKeys.add(key);
+      continue;
+    }
+    if (terminalKeys.has(key)) {
       continue;
     }
     activeByKey.set(key, activity);

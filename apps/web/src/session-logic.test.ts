@@ -717,6 +717,122 @@ describe("deriveWorkLogEntries", () => {
     expect(entries[0]?.status).toBe("completed");
   });
 
+  it("reconciles command lifecycle by tool call id across intervening assistant text", () => {
+    const activities: OrchestrationThreadActivity[] = [
+      makeActivity({
+        id: "tool-start",
+        createdAt: "2026-02-23T00:00:01.000Z",
+        summary: "Ran command started",
+        kind: "tool.started",
+        turnId: "turn-1",
+        payload: {
+          itemType: "command_execution",
+          status: "in_progress",
+          detail: "bun run lint",
+          data: {
+            toolCallId: "tool-command-interleaved",
+            command: "bun run lint",
+          },
+        },
+      }),
+      makeActivity({
+        id: "tool-complete",
+        createdAt: "2026-02-23T00:00:03.000Z",
+        summary: "Ran command",
+        kind: "tool.completed",
+        turnId: "turn-1",
+        payload: {
+          itemType: "command_execution",
+          status: "completed",
+          detail: "bun run lint",
+          data: {
+            toolCallId: "tool-command-interleaved",
+            command: "bun run lint",
+            exitCode: 0,
+          },
+        },
+      }),
+    ];
+    const assistant = makeAssistantMessage({
+      id: MessageId.make("assistant-between-tool-events"),
+      createdAt: "2026-02-23T00:00:02.000Z",
+      streaming: false,
+      text: "Still working.",
+    });
+
+    const entries = deriveWorkLogEntries(activities, TurnId.make("turn-1"));
+    const timelineEntries = deriveTimelineEntries([assistant], [], entries);
+    const workTimelineEntries = timelineEntries.filter((entry) => entry.kind === "work");
+
+    expect(entries).toHaveLength(1);
+    expect(entries[0]).toMatchObject({
+      id: "tool-complete",
+      command: "bun run lint",
+      status: "completed",
+      toolCallId: "tool-command-interleaved",
+      toolKey: "tool:tool-command-interleaved",
+    });
+    expect(workTimelineEntries).toHaveLength(1);
+    expect(timelineEntries.map((entry) => entry.kind)).toEqual(["message", "work"]);
+  });
+
+  it("does not downgrade a completed command when a later update arrives for the same tool", () => {
+    const activities: OrchestrationThreadActivity[] = [
+      makeActivity({
+        id: "tool-complete",
+        createdAt: "2026-02-23T00:00:02.000Z",
+        summary: "Ran command",
+        kind: "tool.completed",
+        payload: {
+          itemType: "command_execution",
+          status: "completed",
+          detail: "bun run lint",
+          data: {
+            toolCallId: "tool-command-late-update",
+            command: "bun run lint",
+            outputPreview: {
+              lines: ["done"],
+              stream: "stdout",
+              truncated: false,
+            },
+          },
+        },
+      }),
+      makeActivity({
+        id: "tool-late-update",
+        createdAt: "2026-02-23T00:00:03.000Z",
+        summary: "Terminal output",
+        kind: "tool.updated",
+        payload: {
+          itemType: "command_execution",
+          status: "inProgress",
+          data: {
+            toolCallId: "tool-command-late-update",
+            outputPreview: {
+              lines: ["done", "summary"],
+              stream: "stdout",
+              truncated: false,
+            },
+          },
+        },
+      }),
+    ];
+
+    const entries = deriveWorkLogEntries(activities, undefined);
+
+    expect(entries).toHaveLength(1);
+    expect(entries[0]).toMatchObject({
+      id: "tool-late-update",
+      command: "bun run lint",
+      status: "completed",
+      outputPreview: {
+        lines: ["done", "summary"],
+        stream: "stdout",
+        truncated: false,
+      },
+    });
+  });
+
   it("omits task.started but shows task.progress and task.completed", () => {
     const activities: OrchestrationThreadActivity[] = [
       makeActivity({
