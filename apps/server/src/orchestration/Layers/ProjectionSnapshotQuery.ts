@@ -428,6 +428,8 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
             COALESCE(
               SUM(
                 CASE
+                  WHEN turn_id IS NOT NULL AND work_duration_ms IS NOT NULL
+                  THEN work_duration_ms
                   WHEN turn_id IS NOT NULL
                     AND started_at IS NOT NULL
                     AND completed_at IS NOT NULL
@@ -701,6 +703,8 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
             COALESCE(
               SUM(
                 CASE
+                  WHEN turn_id IS NOT NULL AND work_duration_ms IS NOT NULL
+                  THEN work_duration_ms
                   WHEN turn_id IS NOT NULL
                     AND started_at IS NOT NULL
                     AND completed_at IS NOT NULL

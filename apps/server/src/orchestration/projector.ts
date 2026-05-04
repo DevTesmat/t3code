@@ -5,6 +5,7 @@ import {
   OrchestrationSession,
   OrchestrationThread,
 } from "@t3tools/contracts";
+import { computeWorkDurationMs } from "@t3tools/shared/workDuration";
 import { Effect, Schema } from "effect";
 
 import { toProjectorDecodeError, type OrchestrationProjectorDecodeError } from "./Errors.ts";
@@ -463,6 +464,22 @@ export function projectEvent(
           "session",
         );
 
+        const settlingTurnId =
+          thread.session?.status === "running" && session.status !== "running"
+            ? thread.session.activeTurnId
+            : null;
+        const shouldAddWorkDuration =
+          settlingTurnId !== null &&
+          thread.latestTurn?.turnId === settlingTurnId &&
+          thread.latestTurn.startedAt !== null;
+        const completedWorkDurationMs = shouldAddWorkDuration
+          ? computeWorkDurationMs({
+              startedAt: thread.latestTurn!.startedAt,
+              completedAt: session.updatedAt,
+              activities: thread.activities,
+            })
+          : 0;
+
         return {
           ...nextBase,
           threads: updateThread(nextBase.threads, payload.threadId, {
@@ -487,6 +504,7 @@ export function projectEvent(
                         : null,
                   }
                 : thread.latestTurn,
+            totalWorkDurationMs: (thread.totalWorkDurationMs ?? 0) + completedWorkDurationMs,
             updatedAt: event.occurredAt,
           }),
         };
@@ -569,20 +587,6 @@ export function projectEvent(
           .toSorted((left, right) => left.checkpointTurnCount - right.checkpointTurnCount)
           .slice(-MAX_THREAD_CHECKPOINTS);
 
-        const latestTurnStartedAt =
-          thread.latestTurn?.turnId === payload.turnId ? thread.latestTurn.startedAt : null;
-        const shouldAddCompletedDuration =
-          thread.latestTurn?.turnId === payload.turnId &&
-          thread.latestTurn.completedAt === null &&
-          latestTurnStartedAt !== null;
-        const completedDurationMs = (() => {
-          if (!shouldAddCompletedDuration || latestTurnStartedAt === null) return 0;
-          const startedAtMs = Date.parse(latestTurnStartedAt);
-          const completedAtMs = Date.parse(payload.completedAt);
-          if (!Number.isFinite(startedAtMs) || !Number.isFinite(completedAtMs)) return 0;
-          return Math.max(0, completedAtMs - startedAtMs);
-        })();
-
         return {
           ...nextBase,
           threads: updateThread(nextBase.threads, payload.threadId, {
@@ -601,7 +605,6 @@ export function projectEvent(
               completedAt: payload.completedAt,
               assistantMessageId: payload.assistantMessageId,
             },
-            totalWorkDurationMs: (thread.totalWorkDurationMs ?? 0) + completedDurationMs,
             updatedAt: event.occurredAt,
           }),
         };

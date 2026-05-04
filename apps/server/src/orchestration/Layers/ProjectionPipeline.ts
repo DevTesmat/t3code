@@ -6,6 +6,7 @@ import {
 } from "@t3tools/contracts";
 import { Effect, FileSystem, Layer, Option, Path, Stream } from "effect";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
+import { computeWorkDurationMs } from "@t3tools/shared/workDuration";
 
 import { toPersistenceSqlError, type ProjectionRepositoryError } from "../../persistence/Errors.ts";
 import { OrchestrationEventStore } from "../../persistence/Services/OrchestrationEventStore.ts";
@@ -334,6 +335,24 @@ function retainProjectionProposedPlansAfterRevert(
   return proposedPlans.filter(
     (proposedPlan) => proposedPlan.turnId === null || retainedTurnIds.has(proposedPlan.turnId),
   );
+}
+
+function computeTurnWorkDurationMs(input: {
+  turn: Pick<ProjectionTurn, "startedAt">;
+  completedAt: string;
+  activities: ReadonlyArray<ProjectionThreadActivity>;
+}): number {
+  return computeWorkDurationMs({
+    startedAt: input.turn.startedAt,
+    completedAt: input.completedAt,
+    activities: input.activities.map((activity) => ({
+      id: activity.activityId,
+      kind: activity.kind,
+      payload: activity.payload,
+      ...(activity.sequence !== undefined ? { sequence: activity.sequence } : {}),
+      createdAt: activity.createdAt,
+    })),
+  });
 }
 
 function collectThreadAttachmentRelativePaths(
@@ -1053,8 +1072,73 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
         }
 
         case "thread.session-set": {
+          const existingSession = yield* projectionThreadSessionRepository.getByThreadId({
+            threadId: event.payload.threadId,
+          });
+          if (event.payload.session.status !== "running") {
+            const settlingTurnId =
+              Option.isSome(existingSession) && existingSession.value.status === "running"
+                ? existingSession.value.activeTurnId
+                : null;
+            const existingTurn =
+              settlingTurnId !== null
+                ? yield* projectionTurnRepository.getByTurnId({
+                    threadId: event.payload.threadId,
+                    turnId: settlingTurnId,
+                  })
+                : Option.none();
+            let turnToSettle: ProjectionTurn | null = Option.isSome(existingTurn)
+              ? existingTurn.value
+              : null;
+            if (turnToSettle === null) {
+              const turn = (yield* projectionTurnRepository.listByThreadId({
+                threadId: event.payload.threadId,
+              }))
+                .filter((entry) => entry.turnId !== null && entry.workDurationMs === null)
+                .toSorted(
+                  (left, right) =>
+                    right.requestedAt.localeCompare(left.requestedAt) ||
+                    (right.turnId ?? "").localeCompare(left.turnId ?? ""),
+                )[0];
+              turnToSettle = turn ?? null;
+            }
+            if (turnToSettle !== null && turnToSettle.turnId !== null) {
+              const turn = {
+                ...turnToSettle,
+                turnId: turnToSettle.turnId,
+              };
+              if (turn.workDurationMs === null) {
+                const activities = yield* projectionThreadActivityRepository.listByThreadId({
+                  threadId: event.payload.threadId,
+                });
+                yield* projectionTurnRepository.upsertByTurnId({
+                  ...turn,
+                  state:
+                    event.payload.session.status === "error"
+                      ? "error"
+                      : turn.state === "interrupted"
+                        ? "interrupted"
+                        : turn.state === "error"
+                          ? "error"
+                          : "completed",
+                  completedAt: turn.completedAt ?? event.payload.session.updatedAt,
+                  startedAt: turn.startedAt ?? event.payload.session.updatedAt,
+                  requestedAt: turn.requestedAt ?? event.payload.session.updatedAt,
+                  workDurationMs: computeTurnWorkDurationMs({
+                    turn: {
+                      startedAt: turn.startedAt ?? event.payload.session.updatedAt,
+                    },
+                    completedAt: event.payload.session.updatedAt,
+                    activities,
+                  }),
+                });
+              }
+            }
+            return;
+          }
+
           const turnId = event.payload.session.activeTurnId;
-          if (turnId === null || event.payload.session.status !== "running") {
+          if (turnId === null) {
             return;
           }
 
@@ -1096,6 +1180,7 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
                 (Option.isSome(pendingTurnStart)
                   ? pendingTurnStart.value.requestedAt
                   : event.occurredAt),
+              workDurationMs: existingTurn.value.workDurationMs,
             });
           } else {
             yield* projectionTurnRepository.upsertByTurnId({
@@ -1119,6 +1204,7 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
                 ? pendingTurnStart.value.requestedAt
                 : event.occurredAt,
               completedAt: null,
+              workDurationMs: null,
               checkpointTurnCount: null,
               checkpointRef: null,
               checkpointStatus: null,
@@ -1156,6 +1242,7 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
                 : (existingTurn.value.completedAt ?? event.payload.updatedAt),
               startedAt: existingTurn.value.startedAt ?? event.payload.createdAt,
               requestedAt: existingTurn.value.requestedAt ?? event.payload.createdAt,
+              workDurationMs: existingTurn.value.workDurationMs,
             });
             return;
           }
@@ -1170,6 +1257,7 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
             requestedAt: event.payload.createdAt,
             startedAt: event.payload.createdAt,
             completedAt: event.payload.streaming ? null : event.payload.updatedAt,
+            workDurationMs: null,
             checkpointTurnCount: null,
             checkpointRef: null,
             checkpointStatus: null,
@@ -1193,6 +1281,15 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
               completedAt: existingTurn.value.completedAt ?? event.payload.createdAt,
               startedAt: existingTurn.value.startedAt ?? event.payload.createdAt,
               requestedAt: existingTurn.value.requestedAt ?? event.payload.createdAt,
+              workDurationMs:
+                existingTurn.value.workDurationMs ??
+                computeTurnWorkDurationMs({
+                  turn: { startedAt: existingTurn.value.startedAt ?? event.payload.createdAt },
+                  completedAt: event.payload.createdAt,
+                  activities: yield* projectionThreadActivityRepository.listByThreadId({
+                    threadId: event.payload.threadId,
+                  }),
+                }),
             });
             return;
           }
@@ -1207,6 +1304,7 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
             requestedAt: event.payload.createdAt,
             startedAt: event.payload.createdAt,
             completedAt: event.payload.createdAt,
+            workDurationMs: 0,
             checkpointTurnCount: null,
             checkpointRef: null,
             checkpointStatus: null,
@@ -1253,6 +1351,7 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
             requestedAt: event.payload.completedAt,
             startedAt: event.payload.completedAt,
             completedAt: event.payload.completedAt,
+            workDurationMs: 0,
             checkpointTurnCount: event.payload.checkpointTurnCount,
             checkpointRef: event.payload.checkpointRef,
             checkpointStatus: event.payload.status,

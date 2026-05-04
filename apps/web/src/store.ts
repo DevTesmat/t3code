@@ -22,6 +22,7 @@ import { isProviderDriverKind, ProviderDriverKind } from "@t3tools/contracts";
 import type { ThreadId, TurnId } from "@t3tools/contracts";
 import { Schema } from "effect";
 import { resolveModelSlugForProvider } from "@t3tools/shared/model";
+import { computeWorkDurationMs } from "@t3tools/shared/workDuration";
 import { create } from "zustand";
 import {
   type ChatMessage,
@@ -1477,34 +1478,55 @@ function applyEnvironmentOrchestrationEvent(
       });
 
     case "thread.session-set":
-      return updateThreadState(state, event.payload.threadId, (thread) => ({
-        ...thread,
-        session: mapSession(event.payload.session),
-        error: sanitizeThreadErrorMessage(event.payload.session.lastError),
-        latestTurn:
-          event.payload.session.status === "running" && event.payload.session.activeTurnId !== null
-            ? buildLatestTurn({
-                previous: thread.latestTurn,
-                turnId: event.payload.session.activeTurnId,
-                state: "running",
-                requestedAt:
-                  thread.latestTurn?.turnId === event.payload.session.activeTurnId
-                    ? thread.latestTurn.requestedAt
-                    : event.payload.session.updatedAt,
-                startedAt:
-                  thread.latestTurn?.turnId === event.payload.session.activeTurnId
-                    ? (thread.latestTurn.startedAt ?? event.payload.session.updatedAt)
-                    : event.payload.session.updatedAt,
-                completedAt: null,
-                assistantMessageId:
-                  thread.latestTurn?.turnId === event.payload.session.activeTurnId
-                    ? thread.latestTurn.assistantMessageId
-                    : null,
-                sourceProposedPlan: thread.pendingSourceProposedPlan,
-              })
-            : thread.latestTurn,
-        updatedAt: event.occurredAt,
-      }));
+      return updateThreadState(state, event.payload.threadId, (thread) => {
+        const settlingTurnId =
+          thread.session?.orchestrationStatus === "running" &&
+          event.payload.session.status !== "running"
+            ? (thread.session.activeTurnId ?? null)
+            : null;
+        const shouldAddWorkDuration =
+          settlingTurnId !== null &&
+          thread.latestTurn?.turnId === settlingTurnId &&
+          thread.latestTurn.startedAt !== null;
+        const completedWorkDurationMs = shouldAddWorkDuration
+          ? computeWorkDurationMs({
+              startedAt: thread.latestTurn!.startedAt,
+              completedAt: event.payload.session.updatedAt,
+              activities: thread.activities,
+            })
+          : 0;
+
+        return {
+          ...thread,
+          session: mapSession(event.payload.session),
+          error: sanitizeThreadErrorMessage(event.payload.session.lastError),
+          latestTurn:
+            event.payload.session.status === "running" &&
+            event.payload.session.activeTurnId !== null
+              ? buildLatestTurn({
+                  previous: thread.latestTurn,
+                  turnId: event.payload.session.activeTurnId,
+                  state: "running",
+                  requestedAt:
+                    thread.latestTurn?.turnId === event.payload.session.activeTurnId
+                      ? thread.latestTurn.requestedAt
+                      : event.payload.session.updatedAt,
+                  startedAt:
+                    thread.latestTurn?.turnId === event.payload.session.activeTurnId
+                      ? (thread.latestTurn.startedAt ?? event.payload.session.updatedAt)
+                      : event.payload.session.updatedAt,
+                  completedAt: null,
+                  assistantMessageId:
+                    thread.latestTurn?.turnId === event.payload.session.activeTurnId
+                      ? thread.latestTurn.assistantMessageId
+                      : null,
+                  sourceProposedPlan: thread.pendingSourceProposedPlan,
+                })
+              : thread.latestTurn,
+          totalWorkDurationMs: (thread.totalWorkDurationMs ?? 0) + completedWorkDurationMs,
+          updatedAt: event.occurredAt,
+        };
+      });
 
     case "thread.session-stop-requested":
       return updateThreadState(state, event.payload.threadId, (thread) =>
@@ -1582,22 +1604,10 @@ function applyEnvironmentOrchestrationEvent(
                 sourceProposedPlan: thread.pendingSourceProposedPlan,
               })
             : thread.latestTurn;
-        const shouldAddCompletedDuration =
-          thread.latestTurn?.turnId === event.payload.turnId &&
-          thread.latestTurn.completedAt === null &&
-          thread.latestTurn.startedAt !== null;
-        const completedDurationMs = (() => {
-          if (!shouldAddCompletedDuration) return 0;
-          const startedAtMs = Date.parse(thread.latestTurn!.startedAt!);
-          const completedAtMs = Date.parse(event.payload.completedAt);
-          if (!Number.isFinite(startedAtMs) || !Number.isFinite(completedAtMs)) return 0;
-          return Math.max(0, completedAtMs - startedAtMs);
-        })();
         return {
           ...thread,
           turnDiffSummaries,
           latestTurn,
-          totalWorkDurationMs: (thread.totalWorkDurationMs ?? 0) + completedDurationMs,
           updatedAt: event.occurredAt,
         };
       });

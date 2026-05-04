@@ -7,6 +7,7 @@ import {
   EventId,
   MessageId,
   ProjectId,
+  ProviderDriverKind,
   ProviderInstanceId,
   ThreadId,
   TurnId,
@@ -134,6 +135,7 @@ function makeState(thread: Thread): AppState {
         updatedAt: thread.updatedAt,
         branch: thread.branch,
         worktreePath: thread.worktreePath,
+        totalWorkDurationMs: thread.totalWorkDurationMs ?? 0,
       },
     },
     threadSessionById: {
@@ -1051,6 +1053,115 @@ describe("incremental orchestration updates", () => {
     expect(threadsOf(next)[0]?.session?.status).toBe("running");
     expect(threadsOf(next)[0]?.latestTurn?.state).toBe("completed");
     expect(threadsOf(next)[0]?.messages).toHaveLength(1);
+  });
+
+  it("adds work duration only when a running session settles", () => {
+    const thread = makeThread({
+      totalWorkDurationMs: 4_000,
+      session: {
+        status: "running",
+        orchestrationStatus: "running",
+        activeTurnId: TurnId.make("turn-1"),
+        provider: ProviderDriverKind.make("codex"),
+        createdAt: "2026-02-27T00:00:01.000Z",
+        updatedAt: "2026-02-27T00:00:01.000Z",
+      },
+      latestTurn: {
+        turnId: TurnId.make("turn-1"),
+        state: "completed",
+        requestedAt: "2026-02-27T00:00:00.000Z",
+        startedAt: "2026-02-27T00:00:00.000Z",
+        completedAt: "2026-02-27T00:00:03.000Z",
+        assistantMessageId: MessageId.make("assistant-1"),
+      },
+      activities: [
+        {
+          id: EventId.make("activity-user-input-open"),
+          tone: "info",
+          kind: "user-input.requested",
+          summary: "Waiting",
+          payload: { requestId: "request-1" },
+          turnId: TurnId.make("turn-1"),
+          createdAt: "2026-02-27T00:00:04.000Z",
+        },
+        {
+          id: EventId.make("activity-user-input-resolved"),
+          tone: "info",
+          kind: "user-input.resolved",
+          summary: "Resolved",
+          payload: { requestId: "request-1" },
+          turnId: TurnId.make("turn-1"),
+          createdAt: "2026-02-27T00:00:07.000Z",
+        },
+        {
+          id: EventId.make("activity-approval-open"),
+          tone: "approval",
+          kind: "approval.requested",
+          summary: "Approval",
+          payload: { requestId: "approval-1", requestKind: "command" },
+          turnId: TurnId.make("turn-1"),
+          createdAt: "2026-02-27T00:00:08.000Z",
+        },
+      ],
+    });
+
+    const next = applyOrchestrationEvent(
+      makeState(thread),
+      makeEvent("thread.session-set", {
+        threadId: thread.id,
+        session: {
+          threadId: thread.id,
+          status: "ready",
+          providerName: "codex",
+          runtimeMode: "full-access",
+          activeTurnId: null,
+          lastError: null,
+          updatedAt: "2026-02-27T00:00:11.000Z",
+        },
+      }),
+      localEnvironmentId,
+    );
+
+    expect(threadsOf(next)[0]?.totalWorkDurationMs).toBe(12_000);
+  });
+
+  it("does not add work duration when the turn diff completes before the session settles", () => {
+    const thread = makeThread({
+      totalWorkDurationMs: 4_000,
+      session: {
+        status: "running",
+        orchestrationStatus: "running",
+        activeTurnId: TurnId.make("turn-1"),
+        provider: ProviderDriverKind.make("codex"),
+        createdAt: "2026-02-27T00:00:01.000Z",
+        updatedAt: "2026-02-27T00:00:01.000Z",
+      },
+      latestTurn: {
+        turnId: TurnId.make("turn-1"),
+        state: "running",
+        requestedAt: "2026-02-27T00:00:00.000Z",
+        startedAt: "2026-02-27T00:00:00.000Z",
+        completedAt: null,
+        assistantMessageId: null,
+      },
+    });
+
+    const next = applyOrchestrationEvent(
+      makeState(thread),
+      makeEvent("thread.turn-diff-completed", {
+        threadId: thread.id,
+        turnId: TurnId.make("turn-1"),
+        checkpointTurnCount: 1,
+        checkpointRef: CheckpointRef.make("checkpoint-1"),
+        status: "ready",
+        files: [],
+        assistantMessageId: MessageId.make("assistant-1"),
+        completedAt: "2026-02-27T00:00:03.000Z",
+      }),
+      localEnvironmentId,
+    );
+
+    expect(threadsOf(next)[0]?.totalWorkDurationMs).toBe(4_000);
   });
 
   it("does not regress latestTurn when an older turn diff completes late", () => {
