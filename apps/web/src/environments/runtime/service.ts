@@ -2,6 +2,7 @@ import {
   type AuthSessionRole,
   type EnvironmentId,
   type OrchestrationEvent,
+  type OrchestrationThreadDetailSnapshot,
   type OrchestrationShellSnapshot,
   type OrchestrationShellStreamEvent,
   type ServerConfig,
@@ -91,6 +92,13 @@ type ThreadDetailSubscriptionEntry = {
 const environmentConnections = new Map<EnvironmentId, EnvironmentConnection>();
 const environmentConnectionListeners = new Set<() => void>();
 const threadDetailSubscriptions = new Map<string, ThreadDetailSubscriptionEntry>();
+const lastAppliedThreadDetailVersionByKey = new Map<
+  string,
+  {
+    readonly latestEventSequence: number;
+    readonly latestSnapshotSequence: number;
+  }
+>();
 const lastAppliedProjectionVersionByEnvironment = new Map<
   EnvironmentId,
   {
@@ -209,6 +217,97 @@ function getThreadDetailSubscriptionKey(environmentId: EnvironmentId, threadId: 
   return scopedThreadKey(scopeThreadRef(environmentId, threadId));
 }
 
+function clearThreadDetailVersionsForEnvironment(environmentId: EnvironmentId): void {
+  for (const key of Array.from(lastAppliedThreadDetailVersionByKey.keys())) {
+    if (key.startsWith(`${environmentId}:`)) {
+      lastAppliedThreadDetailVersionByKey.delete(key);
+    }
+  }
+}
+
+function readLastAppliedThreadDetailVersion(
+  environmentId: EnvironmentId,
+  threadId: ThreadId,
+): {
+  readonly latestEventSequence: number;
+  readonly latestSnapshotSequence: number;
+} {
+  return (
+    lastAppliedThreadDetailVersionByKey.get(
+      getThreadDetailSubscriptionKey(environmentId, threadId),
+    ) ?? {
+      latestEventSequence: 0,
+      latestSnapshotSequence: 0,
+    }
+  );
+}
+
+function markAppliedThreadDetailSnapshot(
+  environmentId: EnvironmentId,
+  snapshot: OrchestrationThreadDetailSnapshot,
+): void {
+  const key = getThreadDetailSubscriptionKey(environmentId, snapshot.thread.id);
+  const current = readLastAppliedThreadDetailVersion(environmentId, snapshot.thread.id);
+  lastAppliedThreadDetailVersionByKey.set(key, {
+    latestEventSequence: current.latestEventSequence,
+    latestSnapshotSequence: Math.max(current.latestSnapshotSequence, snapshot.snapshotSequence),
+  });
+}
+
+function markAppliedThreadDetailEvent(
+  environmentId: EnvironmentId,
+  event: OrchestrationEvent,
+): void {
+  if (event.aggregateKind !== "thread") {
+    return;
+  }
+  const threadId = ThreadId.make(event.aggregateId);
+  const key = getThreadDetailSubscriptionKey(environmentId, threadId);
+  const current = readLastAppliedThreadDetailVersion(environmentId, threadId);
+  lastAppliedThreadDetailVersionByKey.set(key, {
+    latestEventSequence: Math.max(current.latestEventSequence, event.sequence),
+    latestSnapshotSequence: current.latestSnapshotSequence,
+  });
+}
+
+function shouldApplyThreadDetailSnapshot(
+  snapshot: OrchestrationThreadDetailSnapshot,
+  environmentId: EnvironmentId,
+): boolean {
+  const version = readLastAppliedThreadDetailVersion(environmentId, snapshot.thread.id);
+  if (
+    snapshot.snapshotSequence >=
+    Math.max(version.latestEventSequence, version.latestSnapshotSequence)
+  ) {
+    return true;
+  }
+
+  const existingThread = selectThreadByRef(
+    useStore.getState(),
+    scopeThreadRef(environmentId, snapshot.thread.id),
+  );
+  return (
+    existingThread === undefined ||
+    (existingThread.messages.length === 0 &&
+      existingThread.activities.length === 0 &&
+      existingThread.proposedPlans.length === 0 &&
+      existingThread.turnDiffSummaries.length === 0)
+  );
+}
+
+function shouldApplyThreadDetailEvent(
+  event: OrchestrationEvent,
+  environmentId: EnvironmentId,
+): boolean {
+  if (event.aggregateKind !== "thread") {
+    return true;
+  }
+  const threadId = ThreadId.make(event.aggregateId);
+  return (
+    event.sequence > readLastAppliedThreadDetailVersion(environmentId, threadId).latestEventSequence
+  );
+}
+
 function clearThreadDetailSubscriptionEviction(
   entry: ThreadDetailSubscriptionEntry,
 ): ThreadDetailSubscriptionEntry {
@@ -286,7 +385,11 @@ function attachThreadDetailSubscription(entry: ThreadDetailSubscriptionEntry): b
     { threadId: entry.threadId },
     (item) => {
       if (item.kind === "snapshot") {
+        if (!shouldApplyThreadDetailSnapshot(item.snapshot, entry.environmentId)) {
+          return;
+        }
         useStore.getState().syncServerThreadDetail(item.snapshot.thread, entry.environmentId);
+        markAppliedThreadDetailSnapshot(entry.environmentId, item.snapshot);
         return;
       }
       applyEnvironmentThreadDetailEvent(item.event, entry.environmentId);
@@ -318,6 +421,7 @@ function disposeThreadDetailSubscriptionByKey(key: string): boolean {
   entry.unsubscribeConnectionListener?.();
   entry.unsubscribeConnectionListener = null;
   threadDetailSubscriptions.delete(key);
+  lastAppliedThreadDetailVersionByKey.delete(key);
   entry.unsubscribe();
   entry.unsubscribe = NOOP;
   return true;
@@ -329,6 +433,7 @@ function disposeThreadDetailSubscriptionsForEnvironment(environmentId: Environme
       disposeThreadDetailSubscriptionByKey(key);
     }
   }
+  clearThreadDetailVersionsForEnvironment(environmentId);
 }
 
 function reconcileThreadDetailSubscriptionsForEnvironment(
@@ -700,7 +805,11 @@ export function applyEnvironmentThreadDetailEvent(
   event: OrchestrationEvent,
   environmentId: EnvironmentId,
 ) {
+  if (!shouldApplyThreadDetailEvent(event, environmentId)) {
+    return;
+  }
   applyRecoveredEventBatch([event], environmentId);
+  markAppliedThreadDetailEvent(environmentId, event);
 }
 
 function applyShellEvent(event: OrchestrationShellStreamEvent, environmentId: EnvironmentId) {
@@ -1086,6 +1195,7 @@ export async function reconnectSavedEnvironment(environmentId: EnvironmentId): P
 export async function refreshPrimaryEnvironmentProjectionSnapshot(): Promise<void> {
   const connection = getPrimaryEnvironmentConnection();
   lastAppliedProjectionVersionByEnvironment.delete(connection.environmentId);
+  clearThreadDetailVersionsForEnvironment(connection.environmentId);
   await connection.reconnect();
 }
 
@@ -1230,6 +1340,7 @@ export function startEnvironmentConnectionService(queryClient: QueryClient): () 
 export async function resetEnvironmentServiceForTests(): Promise<void> {
   stopActiveService();
   lastAppliedProjectionVersionByEnvironment.clear();
+  lastAppliedThreadDetailVersionByKey.clear();
   for (const key of Array.from(threadDetailSubscriptions.keys())) {
     disposeThreadDetailSubscriptionByKey(key);
   }
