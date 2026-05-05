@@ -706,6 +706,51 @@ describe("ProviderRuntimeIngestion", () => {
     expect(message?.streaming).toBe(false);
   });
 
+  it("deduplicates replayed provider events before buffered state can duplicate output", async () => {
+    const harness = await createHarness({ serverSettings: { enableAssistantStreaming: false } });
+    const now = new Date().toISOString();
+    const replayedDelta = {
+      type: "content.delta",
+      eventId: asEventId("evt-buffered-delta-replayed"),
+      provider: ProviderDriverKind.make("codex"),
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("turn-buffered-replay"),
+      itemId: asItemId("item-buffered-replay"),
+      payload: {
+        streamKind: "assistant_text",
+        delta: "hello",
+      },
+    } satisfies LegacyProviderRuntimeEvent;
+
+    harness.emit(replayedDelta);
+    harness.emit(replayedDelta);
+    harness.emit({
+      type: "item.completed",
+      eventId: asEventId("evt-buffered-replay-completed"),
+      provider: ProviderDriverKind.make("codex"),
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("turn-buffered-replay"),
+      itemId: asItemId("item-buffered-replay"),
+      payload: {
+        itemType: "assistant_message",
+        status: "completed",
+      },
+    });
+
+    const thread = await waitForThread(harness.engine, (entry) =>
+      entry.messages.some(
+        (message: ProviderRuntimeTestMessage) =>
+          message.id === "assistant:item-buffered-replay" && !message.streaming,
+      ),
+    );
+    const message = thread.messages.find(
+      (entry: ProviderRuntimeTestMessage) => entry.id === "assistant:item-buffered-replay",
+    );
+    expect(message?.text).toBe("hello");
+  });
+
   it("uses assistant item completion detail when no assistant deltas were streamed", async () => {
     const harness = await createHarness();
     const now = new Date().toISOString();

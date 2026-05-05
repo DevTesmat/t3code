@@ -1027,8 +1027,8 @@ const ToolOutputPreview = memo(function ToolOutputPreview(props: { workEntry: Ti
         )}
         data-testid="tool-output-preview"
       >
-        {outputPreview?.lines.map((line, index) => (
-          <div key={`${workEntryToolKey(workEntry)}:output:${index}`} className="min-w-0">
+        {outputPreview?.lines.map((line) => (
+          <div key={`${workEntryToolKey(workEntry)}:output:${line}`} className="min-w-0">
             {line}
           </div>
         ))}

@@ -12,6 +12,8 @@ import {
 
 type ThreadDeletedEvent = Extract<OrchestrationEvent, { type: "thread.deleted" }>;
 
+const THREAD_DELETION_REACTOR_QUEUE_CAPACITY = 1_000;
+
 export const logCleanupCauseUnlessInterrupted = <R, E>({
   effect,
   message,
@@ -74,7 +76,9 @@ const make = Effect.gen(function* () {
       }),
     );
 
-  const worker = yield* makeDrainableWorker(processThreadDeletedSafely);
+  const worker = yield* makeDrainableWorker(processThreadDeletedSafely, {
+    capacity: THREAD_DELETION_REACTOR_QUEUE_CAPACITY,
+  });
 
   const start: ThreadDeletionReactorShape["start"] = Effect.fn("start")(function* () {
     yield* Effect.forkScoped(

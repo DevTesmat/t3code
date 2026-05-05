@@ -18,6 +18,8 @@ import { Cache, Cause, Duration, Effect, Layer, Option, Stream } from "effect";
 import { makeDrainableWorker } from "@t3tools/shared/DrainableWorker";
 
 import { ProviderService } from "../../provider/Services/ProviderService.ts";
+import { OrchestrationCommandReceiptRepository } from "../../persistence/Services/OrchestrationCommandReceipts.ts";
+import { OrchestrationCommandReceiptRepositoryLive } from "../../persistence/Layers/OrchestrationCommandReceipts.ts";
 import { ProjectionTurnRepository } from "../../persistence/Services/ProjectionTurns.ts";
 import { ProjectionTurnRepositoryLive } from "../../persistence/Layers/ProjectionTurns.ts";
 import { resolveThreadWorkspaceCwd } from "../../checkpointing/Utils.ts";
@@ -30,8 +32,28 @@ import {
 import { ServerSettingsService } from "../../serverSettings.ts";
 
 const providerTurnKey = (threadId: ThreadId, turnId: TurnId) => `${threadId}:${turnId}`;
+const stableIdentityPart = (value: unknown): string =>
+  encodeURIComponent(String(value ?? "")).replaceAll("%", "~");
+
+const providerEventIdentity = (event: ProviderRuntimeEvent): string =>
+  [
+    event.provider,
+    event.providerInstanceId ?? "",
+    event.threadId,
+    event.turnId ?? "",
+    event.itemId ?? "",
+    event.requestId ?? "",
+    event.type,
+    event.eventId,
+  ]
+    .map(stableIdentityPart)
+    .join(":");
+
 const providerCommandId = (event: ProviderRuntimeEvent, tag: string): CommandId =>
-  CommandId.make(`provider:${event.eventId}:${tag}:${crypto.randomUUID()}`);
+  CommandId.make(`provider:${providerEventIdentity(event)}:${stableIdentityPart(tag)}`);
+
+const providerEventReceiptCommandId = (event: ProviderRuntimeEvent): CommandId =>
+  providerCommandId(event, "runtime-event-processed");
 
 interface AssistantSegmentState {
   baseKey: string;
@@ -45,6 +67,7 @@ const BUFFERED_MESSAGE_TEXT_BY_MESSAGE_ID_CACHE_CAPACITY = 20_000;
 const BUFFERED_MESSAGE_TEXT_BY_MESSAGE_ID_TTL = Duration.minutes(120);
 const BUFFERED_PROPOSED_PLAN_BY_ID_CACHE_CAPACITY = 10_000;
 const BUFFERED_PROPOSED_PLAN_BY_ID_TTL = Duration.minutes(120);
+const PROVIDER_RUNTIME_INGESTION_QUEUE_CAPACITY = 10_000;
 const MAX_BUFFERED_ASSISTANT_CHARS = 24_000;
 const STRICT_PROVIDER_LIFECYCLE_GUARD = process.env.T3CODE_STRICT_PROVIDER_LIFECYCLE_GUARD !== "0";
 const TERMINAL_OUTPUT_PREVIEW_LINE_COUNT = 4;
@@ -238,6 +261,14 @@ function terminalOutputPreviewFromRawOutput(data: unknown): TerminalOutputPrevie
     return terminalOutputPreviewFromText(stdout, "stdout");
   }
   return undefined;
+}
+
+function commandOutputPreviewKey(
+  threadId: ThreadId,
+  turnId: TurnId | undefined,
+  itemId: string,
+): string {
+  return `${threadId}:${turnId ?? ""}:${itemId}`;
 }
 
 function normalizedToolLifecycleData(
@@ -731,6 +762,7 @@ function runtimeEventToActivities(
 
 const make = Effect.gen(function* () {
   const orchestrationEngine = yield* OrchestrationEngineService;
+  const commandReceiptRepository = yield* OrchestrationCommandReceiptRepository;
   const providerService = yield* ProviderService;
   const projectionTurnRepository = yield* ProjectionTurnRepository;
   const serverSettingsService = yield* ServerSettingsService;
@@ -956,12 +988,6 @@ const make = Effect.gen(function* () {
 
   const clearBufferedProposedPlan = (planId: string) =>
     Cache.invalidate(bufferedProposedPlanById, planId);
-
-  const commandOutputPreviewKey = (
-    threadId: ThreadId,
-    turnId: TurnId | undefined,
-    itemId: string,
-  ) => `${threadId}:${turnId ?? ""}:${itemId}`;
 
   const appendCommandOutputPreview = (input: {
     threadId: ThreadId;
@@ -1343,7 +1369,7 @@ const make = Effect.gen(function* () {
       yield* orchestrationEngine.dispatch({
         type: "thread.proposed-plan.upsert",
         commandId: CommandId.make(
-          `provider:source-proposed-plan-implemented:${implementationThreadId}:${crypto.randomUUID()}`,
+          `provider:source-proposed-plan-implemented:${sourceThreadId}:${sourcePlanId}:${implementationThreadId}`,
         ),
         threadId: sourceThread.id,
         proposedPlan: {
@@ -1356,6 +1382,27 @@ const make = Effect.gen(function* () {
       });
     },
   );
+
+  const hasProcessedProviderEvent = (event: ProviderRuntimeEvent) =>
+    commandReceiptRepository
+      .getByCommandId({
+        commandId: providerEventReceiptCommandId(event),
+      })
+      .pipe(Effect.map(Option.isSome));
+
+  const markProviderEventProcessed = (event: ProviderRuntimeEvent) =>
+    Effect.gen(function* () {
+      const readModel = yield* orchestrationEngine.getReadModel();
+      yield* commandReceiptRepository.upsert({
+        commandId: providerEventReceiptCommandId(event),
+        aggregateKind: "thread",
+        aggregateId: event.threadId,
+        acceptedAt: event.createdAt,
+        resultSequence: readModel.snapshotSequence,
+        status: "accepted",
+        error: null,
+      });
+    });
 
   const processRuntimeEvent = (event: ProviderRuntimeEvent) =>
     Effect.gen(function* () {
@@ -1863,10 +1910,27 @@ const make = Effect.gen(function* () {
       ).pipe(Effect.asVoid);
     });
 
+  const processRuntimeEventOnce = (event: ProviderRuntimeEvent) =>
+    Effect.gen(function* () {
+      if (yield* hasProcessedProviderEvent(event)) {
+        yield* Effect.logDebug("provider runtime event already processed", {
+          eventId: event.eventId,
+          eventType: event.type,
+          threadId: event.threadId,
+        });
+        return;
+      }
+
+      yield* processRuntimeEvent(event);
+      yield* markProviderEventProcessed(event);
+    });
+
   const processDomainEvent = (_event: TurnStartRequestedDomainEvent) => Effect.void;
 
   const processInput = (input: RuntimeIngestionInput) =>
-    input.source === "runtime" ? processRuntimeEvent(input.event) : processDomainEvent(input.event);
+    input.source === "runtime"
+      ? processRuntimeEventOnce(input.event)
+      : processDomainEvent(input.event);
 
   const processInputSafely = (input: RuntimeIngestionInput) =>
     processInput(input).pipe(
@@ -1883,7 +1947,9 @@ const make = Effect.gen(function* () {
       }),
     );
 
-  const worker = yield* makeDrainableWorker(processInputSafely);
+  const worker = yield* makeDrainableWorker(processInputSafely, {
+    capacity: PROVIDER_RUNTIME_INGESTION_QUEUE_CAPACITY,
+  });
 
   const start: ProviderRuntimeIngestionShape["start"] = () =>
     Effect.gen(function* () {
@@ -1911,4 +1977,7 @@ const make = Effect.gen(function* () {
 export const ProviderRuntimeIngestionLive = Layer.effect(
   ProviderRuntimeIngestionService,
   make,
-).pipe(Layer.provide(ProjectionTurnRepositoryLive));
+).pipe(
+  Layer.provide(ProjectionTurnRepositoryLive),
+  Layer.provide(OrchestrationCommandReceiptRepositoryLive),
+);

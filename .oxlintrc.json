@@ -17,6 +17,35 @@
   "rules": {
     "react-in-jsx-scope": "off",
     "eslint/no-shadow": "off",
-    "eslint/no-await-in-loop": "off"
+    "eslint/no-await-in-loop": "off",
+    "eslint/no-underscore-dangle": [
+      "warn",
+      {
+        "allow": [
+          "_meta",
+          "_tag",
+          "__dirname",
+          "_attempt",
+          "_message",
+          "_writer",
+          "__context",
+          "__kind",
+          "__key",
+          "__languages",
+          "__path",
+          "__resetClientSettingsPersistenceForTests",
+          "__resetClientTracingForTests",
+          "__resetEnvironmentApiOverridesForTests",
+          "__resetLocalApiForTests",
+          "__resetPrimaryEnvironmentBootstrapForTests",
+          "__resetPrimaryEnvironmentDescriptorBootstrapForTests",
+          "__resetServerAuthBootstrapForTests",
+          "__skillDescription",
+          "__skillLabel",
+          "__skillName",
+          "__setEnvironmentApiOverrideForTests"
+        ]
+      }
+    ]
   }
 }

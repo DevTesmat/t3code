@@ -11,6 +11,14 @@
 import type { Scope } from "effect";
 import { Effect, TxQueue, TxRef } from "effect";
 
+export interface DrainableWorkerOptions {
+  /**
+   * Maximum queued items. Defaults to the previous unbounded behavior for
+   * compatibility; server reactors should pass an explicit budget.
+   */
+  readonly capacity?: number;
+}
+
 export interface DrainableWorker<A> {
   /**
    * Enqueue a work item and track it for `drain()`.
@@ -19,6 +27,11 @@ export interface DrainableWorker<A> {
    * enqueue path instead of inferring it from queue internals.
    */
   readonly enqueue: (item: A) => Effect.Effect<void>;
+
+  /**
+   * Number of queued or actively processing items tracked by this worker.
+   */
+  readonly backlog: Effect.Effect<number>;
 
   /**
    * Resolves when the queue is empty and the worker is idle (not processing).
@@ -37,9 +50,15 @@ export interface DrainableWorker<A> {
  */
 export const makeDrainableWorker = <A, E, R>(
   process: (item: A) => Effect.Effect<void, E, R>,
+  options: DrainableWorkerOptions = {},
 ): Effect.Effect<DrainableWorker<A>, never, Scope.Scope | R> =>
   Effect.gen(function* () {
-    const queue = yield* Effect.acquireRelease(TxQueue.unbounded<A>(), TxQueue.shutdown);
+    const queue = yield* Effect.acquireRelease(
+      typeof options.capacity === "number"
+        ? TxQueue.bounded<A>(options.capacity)
+        : TxQueue.unbounded<A>(),
+      TxQueue.shutdown,
+    );
     const outstanding = yield* TxRef.make(0);
 
     yield* TxQueue.take(queue).pipe(
@@ -64,5 +83,7 @@ export const makeDrainableWorker = <A, E, R>(
         Effect.tx,
       );
 
-    return { enqueue, drain } satisfies DrainableWorker<A>;
+    const backlog: DrainableWorker<A>["backlog"] = TxRef.get(outstanding).pipe(Effect.tx);
+
+    return { enqueue, drain, backlog } satisfies DrainableWorker<A>;
   });

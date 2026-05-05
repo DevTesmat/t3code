@@ -61,6 +61,9 @@ const ReadFromSequenceRequestSchema = Schema.Struct({
   sequenceExclusive: NonNegativeInt,
   limit: Schema.Number,
 });
+const MaxSequenceRowSchema = Schema.Struct({
+  maxSequence: NonNegativeInt,
+});
 const DEFAULT_READ_FROM_SEQUENCE_LIMIT = 1_000;
 const READ_PAGE_SIZE = 500;
 
@@ -178,6 +181,16 @@ const makeEventStore = Effect.gen(function* () {
       `,
   });
 
+  const readMaxSequence = SqlSchema.findOne({
+    Request: Schema.Void,
+    Result: MaxSequenceRowSchema,
+    execute: () =>
+      sql`
+        SELECT COALESCE(MAX(sequence), 0) AS "maxSequence"
+        FROM orchestration_events
+      `,
+  });
+
   const append: OrchestrationEventStoreShape["append"] = (event) =>
     appendEventRow({
       eventId: event.eventId,
@@ -261,6 +274,11 @@ const makeEventStore = Effect.gen(function* () {
     append,
     readFromSequence,
     readAll: () => readFromSequence(0, Number.MAX_SAFE_INTEGER),
+    getMaxSequence: () =>
+      readMaxSequence(undefined).pipe(
+        Effect.mapError(toPersistenceSqlError("OrchestrationEventStore.getMaxSequence:query")),
+        Effect.map((row) => row.maxSequence),
+      ),
   } satisfies OrchestrationEventStoreShape;
 });
 

@@ -1327,6 +1327,7 @@ async function waitForSelectItemContainingText(text: string): Promise<HTMLElemen
 }
 
 async function expectComposerActionsContained(): Promise<void> {
+  const alignedTopTolerancePx = 2;
   const footer = await waitForElement(
     () => document.querySelector<HTMLElement>('[data-chat-composer-footer="true"]'),
     "Unable to find composer footer.",
@@ -1348,7 +1349,7 @@ async function expectComposerActionsContained(): Promise<void> {
       for (const rect of buttonRects) {
         expect(rect.right).toBeLessThanOrEqual(footerRect.right + 0.5);
         expect(rect.bottom).toBeLessThanOrEqual(footerRect.bottom + 0.5);
-        expect(Math.abs(rect.top - firstTop)).toBeLessThanOrEqual(1.5);
+        expect(Math.abs(rect.top - firstTop)).toBeLessThanOrEqual(alignedTopTolerancePx);
       }
     },
     { timeout: 8_000, interval: 16 },

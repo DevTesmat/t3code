@@ -37,6 +37,8 @@ type ReactorInput =
       readonly event: OrchestrationEvent;
     };
 
+const CHECKPOINT_REACTOR_QUEUE_CAPACITY = 2_000;
+
 function toTurnId(value: string | undefined): TurnId | null {
   return value === undefined ? null : TurnId.make(String(value));
 }
@@ -792,7 +794,9 @@ const make = Effect.gen(function* () {
       }),
     );
 
-  const worker = yield* makeDrainableWorker(processInputSafely);
+  const worker = yield* makeDrainableWorker(processInputSafely, {
+    capacity: CHECKPOINT_REACTOR_QUEUE_CAPACITY,
+  });
 
   const start: CheckpointReactorShape["start"] = Effect.fn("start")(function* () {
     yield* Effect.forkScoped(

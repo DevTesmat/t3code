@@ -95,9 +95,7 @@ describe("environment runtime catalog stores", () => {
   });
 
   it("does not let stale hydration overwrite records added while hydration is in flight", async () => {
-    let resolveRegistryRead: () => void = () => {
-      throw new Error("Registry read resolver was not initialized.");
-    };
+    let resolveRegistryRead!: () => void;
 
     vi.stubGlobal("window", {
       nativeApi: {

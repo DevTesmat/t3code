@@ -30,6 +30,8 @@ import {
 } from "../Services/ProviderCommandReactor.ts";
 import { ServerSettingsService } from "../../serverSettings.ts";
 
+const PROVIDER_COMMAND_REACTOR_QUEUE_CAPACITY = 2_000;
+
 type ProviderIntentEvent = Extract<
   OrchestrationEvent,
   {
@@ -970,7 +972,9 @@ const make = Effect.gen(function* () {
       }),
     );
 
-  const worker = yield* makeDrainableWorker(processDomainEventSafely);
+  const worker = yield* makeDrainableWorker(processDomainEventSafely, {
+    capacity: PROVIDER_COMMAND_REACTOR_QUEUE_CAPACITY,
+  });
 
   const start: ProviderCommandReactorShape["start"] = Effect.fn("start")(function* () {
     const processEvent = Effect.fn("processEvent")(function* (event: OrchestrationEvent) {

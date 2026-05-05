@@ -20,6 +20,7 @@ import { resolveAttachmentPathById } from "./attachmentStore.ts";
 import { resolveStaticDir, ServerConfig } from "./config.ts";
 import { decodeOtlpTraceRecords } from "./observability/TraceRecord.ts";
 import { BrowserTraceCollector } from "./observability/Services/BrowserTraceCollector.ts";
+import { OperationalHealthService } from "./operationalHealth.ts";
 import { ProjectFaviconResolver } from "./project/Services/ProjectFaviconResolver.ts";
 import { ServerAuth } from "./auth/Services/ServerAuth.ts";
 import { respondToAuthError } from "./auth/http.ts";
@@ -218,6 +219,42 @@ export const projectFaviconRouteLayer = HttpRouter.add(
       ),
     );
   }).pipe(Effect.catchTag("AuthError", respondToAuthError)),
+);
+
+export const operationalHealthRouteLayer = HttpRouter.add(
+  "GET",
+  "/api/debug/health",
+  Effect.gen(function* () {
+    const request = yield* HttpServerRequest.HttpServerRequest;
+    const url = HttpServerRequest.toURL(request);
+    if (Option.isNone(url)) {
+      return HttpServerResponse.text("Bad Request", { status: 400 });
+    }
+    if (!isLoopbackHostname(url.value.hostname)) {
+      return HttpServerResponse.text("Not Found", { status: 404 });
+    }
+
+    const operationalHealth = yield* Effect.serviceOption(OperationalHealthService);
+    if (Option.isNone(operationalHealth)) {
+      return HttpServerResponse.text("Operational health is unavailable.", { status: 503 });
+    }
+
+    const snapshot = yield* operationalHealth.value.snapshot.pipe(
+      Effect.catch((cause) =>
+        Effect.logWarning("operational health endpoint failed", { cause }).pipe(Effect.as(null)),
+      ),
+    );
+    if (snapshot === null) {
+      return HttpServerResponse.text("Operational health failed.", { status: 500 });
+    }
+
+    return HttpServerResponse.jsonUnsafe(snapshot, {
+      status: 200,
+      headers: {
+        "Cache-Control": "no-store",
+      },
+    });
+  }),
 );
 
 export const staticAndDevRouteLayer = HttpRouter.add(
