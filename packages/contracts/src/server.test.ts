@@ -88,6 +88,61 @@ describe("HistorySyncStatus", () => {
     }
     expect(parsed.progress?.phase).toBe("projecting");
   });
+
+  it("decodes retrying connection status", () => {
+    const parsed = Schema.decodeUnknownSync(HistorySyncStatus)({
+      state: "retrying",
+      configured: true,
+      message: "connect ETIMEDOUT",
+      startedAt: "2026-05-05T18:00:00.000Z",
+      lastSyncedAt: "2026-05-05T17:47:06.073Z",
+      firstFailedAt: "2026-05-05T18:01:00.000Z",
+      nextRetryAt: "2026-05-05T18:01:10.000Z",
+      attempt: 1,
+      maxAttempts: 5,
+      recentFailures: [
+        {
+          failedAt: "2026-05-05T18:01:00.000Z",
+          message: "connect ETIMEDOUT",
+          attempt: 1,
+        },
+      ],
+    });
+
+    expect(parsed.state).toBe("retrying");
+    if (parsed.state !== "retrying") {
+      throw new Error("Expected retrying status.");
+    }
+    expect(parsed.nextRetryAt).toBe("2026-05-05T18:01:10.000Z");
+  });
+
+  it("decodes exhausted retry metadata on error status", () => {
+    const parsed = Schema.decodeUnknownSync(HistorySyncStatus)({
+      state: "error",
+      configured: true,
+      message: "connect ETIMEDOUT",
+      lastSyncedAt: "2026-05-05T17:47:06.073Z",
+      retry: {
+        firstFailedAt: "2026-05-05T18:01:00.000Z",
+        finalFailedAt: "2026-05-05T18:44:10.000Z",
+        attempt: 5,
+        maxAttempts: 5,
+        recentFailures: [
+          {
+            failedAt: "2026-05-05T18:44:10.000Z",
+            message: "connect ETIMEDOUT",
+            attempt: 5,
+          },
+        ],
+      },
+    });
+
+    expect(parsed.state).toBe("error");
+    if (parsed.state !== "error") {
+      throw new Error("Expected error status.");
+    }
+    expect(parsed.retry?.maxAttempts).toBe(5);
+  });
 });
 
 describe("HistorySyncProjectMappingPlan", () => {

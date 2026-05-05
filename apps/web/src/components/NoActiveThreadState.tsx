@@ -3,6 +3,7 @@ import { SidebarInset, SidebarTrigger } from "./ui/sidebar";
 import { isElectron } from "../env";
 import { cn } from "~/lib/utils";
 import { AppTopbarBrand } from "./AppTopbarBrand";
+import { HistorySyncTopbarStatus } from "./HistorySyncTopbarStatus";
 
 export function NoActiveThreadState() {
   return (
@@ -33,6 +34,9 @@ export function NoActiveThreadState() {
               >
                 No active thread
               </h2>
+            </div>
+            <div className="ms-auto flex shrink-0 items-center justify-end gap-2">
+              <HistorySyncTopbarStatus />
             </div>
           </div>
         </header>

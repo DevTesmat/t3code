@@ -18,6 +18,7 @@ import { SidebarTrigger } from "../ui/sidebar";
 import { OpenInPicker } from "./OpenInPicker";
 import { usePrimaryEnvironmentId } from "../../environments/primary";
 import { AppTopbarBrand } from "../AppTopbarBrand";
+import { HistorySyncTopbarStatus } from "../HistorySyncTopbarStatus";
 
 interface ChatHeaderProps {
   activeThreadEnvironmentId: EnvironmentId;
@@ -171,6 +172,7 @@ export const ChatHeader = memo(function ChatHeader({
                 : "Toggle diff panel"}
           </TooltipPopup>
         </Tooltip>
+        <HistorySyncTopbarStatus />
       </div>
     </div>
   );

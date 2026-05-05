@@ -16,7 +16,9 @@ import {
   filterUnpushedLocalEvents,
   isAutosyncEligibleThread,
   isRemoteBehindLocal,
+  isRetryableHistorySyncConnectionFailure,
   nextSyncedRemoteSequenceAfterPush,
+  nextHistorySyncRetryDelayMs,
   normalizeRemoteEventForLocalImport,
   rewriteRemoteEventsForLocalMappings,
   selectAutosaveCandidateLocalEvents,
@@ -1227,5 +1229,33 @@ describe("history sync mysql batching", () => {
     expect(() => chunkHistorySyncEvents([], 0)).toThrow(
       "History sync batch size must be a positive integer.",
     );
+  });
+});
+
+describe("history sync connection retry", () => {
+  test("uses the expected retry ladder", () => {
+    expect([1, 2, 3, 4, 5, 6].map(nextHistorySyncRetryDelayMs)).toEqual([
+      10_000,
+      180_000,
+      600_000,
+      600_000,
+      600_000,
+      null,
+    ]);
+  });
+
+  test("classifies wrapped mysql connection failures as retryable", () => {
+    const wrapped = {
+      _tag: "HistorySyncMysqlError",
+      cause: Object.assign(new Error("connect ETIMEDOUT"), { code: "ETIMEDOUT" }),
+    };
+
+    expect(isRetryableHistorySyncConnectionFailure(wrapped)).toBe(true);
+    expect(
+      isRetryableHistorySyncConnectionFailure(
+        Object.assign(new Error("bad data"), { code: "ER_PARSE_ERROR" }),
+      ),
+    ).toBe(false);
+    expect(isRetryableHistorySyncConnectionFailure(new Error("unknown remote events"))).toBe(false);
   });
 });

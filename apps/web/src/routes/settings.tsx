@@ -10,6 +10,7 @@ import {
 import { useCallback, useEffect, useState } from "react";
 
 import { AppTopbarBrand } from "../components/AppTopbarBrand";
+import { HistorySyncTopbarStatus } from "../components/HistorySyncTopbarStatus";
 import { useSettingsRestore } from "../components/settings/SettingsPanels";
 import { Button } from "../components/ui/button";
 import { SidebarInset, SidebarTrigger } from "../components/ui/sidebar";
@@ -71,11 +72,10 @@ function SettingsContentLayout() {
               <AppTopbarBrand />
               <div className="h-4 w-px shrink-0 bg-border" />
               <span className="text-sm font-medium text-foreground">Settings</span>
-              {showRestoreDefaults ? (
-                <div className="ms-auto flex items-center gap-2">
-                  <RestoreDefaultsButton onRestored={handleRestored} />
-                </div>
-              ) : null}
+              <div className="ms-auto flex items-center gap-2">
+                {showRestoreDefaults ? <RestoreDefaultsButton onRestored={handleRestored} /> : null}
+                <HistorySyncTopbarStatus />
+              </div>
             </div>
           </header>
         )}
@@ -87,11 +87,10 @@ function SettingsContentLayout() {
             <span className="text-xs font-medium tracking-wide text-muted-foreground/70">
               Settings
             </span>
-            {showRestoreDefaults ? (
-              <div className="ms-auto flex items-center gap-2">
-                <RestoreDefaultsButton onRestored={handleRestored} />
-              </div>
-            ) : null}
+            <div className="ms-auto flex items-center gap-2">
+              {showRestoreDefaults ? <RestoreDefaultsButton onRestored={handleRestored} /> : null}
+              <HistorySyncTopbarStatus />
+            </div>
           </div>
         )}
 

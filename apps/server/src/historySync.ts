@@ -59,12 +59,26 @@ const HISTORY_SYNC_OPERATION_TIMEOUT_MS = 10 * 60_000;
 const HISTORY_SYNC_STARTUP_DELAY_MS = 15_000;
 const HISTORY_SYNC_AUTOSAVE_DEBOUNCE_MS = 5_000;
 const HISTORY_SYNC_BACKUP_FILE_NAME = "history-sync-pre-sync.sqlite";
+const HISTORY_SYNC_MYSQL_CONNECT_TIMEOUT_MS = 10_000;
+const HISTORY_SYNC_RETRY_DELAYS_MS = [10_000, 3 * 60_000, 10 * 60_000, 10 * 60_000, 10 * 60_000];
+const HISTORY_SYNC_RECENT_FAILURE_LIMIT = 5;
 
 interface HistorySyncProgress {
   readonly phase: string;
   readonly label: string;
   readonly current: number;
   readonly total: number;
+}
+
+interface HistorySyncRetryFailure {
+  readonly failedAt: string;
+  readonly message: string;
+  readonly attempt: number;
+}
+
+interface HistorySyncRetryContext {
+  readonly firstFailedAt: string;
+  readonly recentFailures: readonly HistorySyncRetryFailure[];
 }
 
 class HistorySyncMysqlError extends Data.TaggedError("HistorySyncMysqlError")<{
@@ -91,6 +105,56 @@ function describeSyncFailure(error: unknown): string {
       ? (error as { readonly cause?: unknown }).cause
       : undefined;
   return describeUnknownError(wrappedCause ?? error) || "History sync failed.";
+}
+
+function getErrorCode(error: unknown): string | null {
+  if (typeof error !== "object" || error === null || !("code" in error)) {
+    return null;
+  }
+  const code = (error as { readonly code?: unknown }).code;
+  return typeof code === "string" ? code : null;
+}
+
+function unwrapHistorySyncMysqlCause(error: unknown): unknown {
+  if (
+    typeof error === "object" &&
+    error !== null &&
+    "_tag" in error &&
+    (error as { readonly _tag?: unknown })._tag === "HistorySyncMysqlError" &&
+    "cause" in error
+  ) {
+    return (error as { readonly cause?: unknown }).cause;
+  }
+  if (error instanceof HistorySyncMysqlError) {
+    return error.cause;
+  }
+  return error;
+}
+
+export function isRetryableHistorySyncConnectionFailure(error: unknown): boolean {
+  const cause = unwrapHistorySyncMysqlCause(error);
+  const code = getErrorCode(cause);
+  return (
+    code === "ETIMEDOUT" ||
+    code === "ECONNREFUSED" ||
+    code === "ECONNRESET" ||
+    code === "EHOSTUNREACH" ||
+    code === "ENETUNREACH" ||
+    code === "EAI_AGAIN" ||
+    code === "ENOTFOUND"
+  );
+}
+
+export function nextHistorySyncRetryDelayMs(attempt: number): number | null {
+  if (!Number.isInteger(attempt) || attempt < 1) return null;
+  return HISTORY_SYNC_RETRY_DELAYS_MS[attempt - 1] ?? null;
+}
+
+function appendHistorySyncRetryFailure(
+  failures: readonly HistorySyncRetryFailure[],
+  failure: HistorySyncRetryFailure,
+): readonly HistorySyncRetryFailure[] {
+  return [...failures, failure].slice(-HISTORY_SYNC_RECENT_FAILURE_LIMIT);
 }
 
 function clampHistorySyncProgress(progress: HistorySyncProgress): HistorySyncProgress {
@@ -121,6 +185,15 @@ function logHistorySyncStatus(status: HistorySyncStatus): void {
     case "syncing":
       console.info("[history-sync] syncing", {
         startedAt: status.startedAt,
+        lastSyncedAt: status.lastSyncedAt,
+      });
+      return;
+    case "retrying":
+      console.warn("[history-sync] retrying after connection failure", {
+        message: status.message,
+        attempt: status.attempt,
+        maxAttempts: status.maxAttempts,
+        nextRetryAt: status.nextRetryAt,
         lastSyncedAt: status.lastSyncedAt,
       });
       return;
@@ -1147,6 +1220,7 @@ function buildMysqlConnectionString(input: HistorySyncMysqlFields): string {
   url.pathname = `/${encodeURIComponent(validated.database)}`;
   url.username = validated.username;
   url.password = validated.password;
+  url.searchParams.set("connectTimeout", String(HISTORY_SYNC_MYSQL_CONNECT_TIMEOUT_MS));
   if (validated.tlsEnabled) {
     url.searchParams.set("ssl", "{}");
   }
@@ -2459,6 +2533,8 @@ export const HistorySyncServiceLive = Layer.effect(
     const performSync = (options: {
       readonly mode: HistorySyncMode;
       readonly autosaveMaxSequence?: number;
+      readonly retryAttempt?: number;
+      readonly retryContext?: HistorySyncRetryContext;
     }): Effect.Effect<void> =>
       Effect.gen(function* () {
         const settings = yield* settingsService.getSettings;
@@ -2890,11 +2966,11 @@ export const HistorySyncServiceLive = Layer.effect(
         Effect.timeout(HISTORY_SYNC_OPERATION_TIMEOUT_MS),
         Effect.catch((cause) =>
           Effect.gen(function* () {
-            yield* Ref.set(stoppedRef, true);
             const previousStatus = yield* Ref.get(statusRef);
             const lastSyncedAt =
               previousStatus.state === "idle" ||
               previousStatus.state === "syncing" ||
+              previousStatus.state === "retrying" ||
               previousStatus.state === "error" ||
               previousStatus.state === "needs-project-mapping" ||
               previousStatus.state === "needs-initial-sync"
@@ -2907,11 +2983,72 @@ export const HistorySyncServiceLive = Layer.effect(
               cause,
             });
             yield* Effect.logWarning("history sync failed", { cause });
+            const retryAttempt = options.retryAttempt ?? 1;
+            const retryDelayMs =
+              options.mode === "autosave" && isRetryableHistorySyncConnectionFailure(cause)
+                ? nextHistorySyncRetryDelayMs(retryAttempt)
+                : null;
+            if (retryDelayMs !== null) {
+              const failedAt = new Date().toISOString();
+              const firstFailedAt = options.retryContext?.firstFailedAt ?? failedAt;
+              const recentFailures = appendHistorySyncRetryFailure(
+                options.retryContext?.recentFailures ?? [],
+                { failedAt, message: message || "History sync failed.", attempt: retryAttempt },
+              );
+              const nextRetryAt = new Date(Date.now() + retryDelayMs).toISOString();
+              yield* publishStatus({
+                state: "retrying",
+                configured: true,
+                message: message || "History sync failed.",
+                startedAt:
+                  previousStatus.state === "syncing" || previousStatus.state === "retrying"
+                    ? previousStatus.startedAt
+                    : failedAt,
+                lastSyncedAt,
+                firstFailedAt,
+                nextRetryAt,
+                attempt: retryAttempt,
+                maxAttempts: HISTORY_SYNC_RETRY_DELAYS_MS.length,
+                recentFailures,
+              });
+              yield* Effect.sleep(retryDelayMs);
+              yield* performSync({
+                ...options,
+                retryAttempt: retryAttempt + 1,
+                retryContext: { firstFailedAt, recentFailures },
+              });
+              return;
+            }
+
+            yield* Ref.set(stoppedRef, true);
+            const retryFailures = options.retryContext?.recentFailures;
             yield* publishStatus({
               state: "error",
               configured: true,
               message: message || "History sync failed.",
               lastSyncedAt,
+              ...(retryFailures
+                ? {
+                    retry: {
+                      firstFailedAt:
+                        options.retryContext?.firstFailedAt ?? new Date().toISOString(),
+                      finalFailedAt: new Date().toISOString(),
+                      attempt: Math.min(
+                        options.retryAttempt ?? HISTORY_SYNC_RETRY_DELAYS_MS.length,
+                        HISTORY_SYNC_RETRY_DELAYS_MS.length,
+                      ),
+                      maxAttempts: HISTORY_SYNC_RETRY_DELAYS_MS.length,
+                      recentFailures: appendHistorySyncRetryFailure(retryFailures, {
+                        failedAt: new Date().toISOString(),
+                        message: message || "History sync failed.",
+                        attempt: Math.min(
+                          options.retryAttempt ?? HISTORY_SYNC_RETRY_DELAYS_MS.length,
+                          HISTORY_SYNC_RETRY_DELAYS_MS.length,
+                        ),
+                      }),
+                    },
+                  }
+                : {}),
             });
           }),
         ),

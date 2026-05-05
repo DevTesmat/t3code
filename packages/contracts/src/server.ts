@@ -197,10 +197,43 @@ export const HistorySyncStatus = Schema.Union([
     ),
   }),
   Schema.Struct({
+    state: Schema.Literal("retrying"),
+    configured: Schema.Boolean,
+    message: TrimmedNonEmptyString,
+    startedAt: IsoDateTime,
+    lastSyncedAt: Schema.NullOr(IsoDateTime),
+    firstFailedAt: IsoDateTime,
+    nextRetryAt: IsoDateTime,
+    attempt: NonNegativeInt,
+    maxAttempts: NonNegativeInt,
+    recentFailures: Schema.Array(
+      Schema.Struct({
+        failedAt: IsoDateTime,
+        message: TrimmedNonEmptyString,
+        attempt: NonNegativeInt,
+      }),
+    ),
+  }),
+  Schema.Struct({
     state: Schema.Literal("error"),
     configured: Schema.Boolean,
     message: TrimmedNonEmptyString,
     lastSyncedAt: Schema.NullOr(IsoDateTime),
+    retry: Schema.optionalKey(
+      Schema.Struct({
+        firstFailedAt: IsoDateTime,
+        finalFailedAt: IsoDateTime,
+        attempt: NonNegativeInt,
+        maxAttempts: NonNegativeInt,
+        recentFailures: Schema.Array(
+          Schema.Struct({
+            failedAt: IsoDateTime,
+            message: TrimmedNonEmptyString,
+            attempt: NonNegativeInt,
+          }),
+        ),
+      }),
+    ),
   }),
   Schema.Struct({
     state: Schema.Literal("needs-project-mapping"),
