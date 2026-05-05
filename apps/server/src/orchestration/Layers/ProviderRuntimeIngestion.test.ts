@@ -1002,6 +1002,221 @@ describe("ProviderRuntimeIngestion", () => {
     });
   });
 
+  it("keeps known child provider events out of parent messages and normal activities", async () => {
+    const harness = await createHarness({ serverSettings: { enableAssistantStreaming: true } });
+    const now = new Date().toISOString();
+
+    harness.emit({
+      type: "thread.started",
+      eventId: asEventId("evt-parent-thread-started"),
+      provider: ProviderDriverKind.make("codex"),
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      payload: {
+        providerThreadId: "parent-codex-thread",
+      },
+    });
+    harness.emit({
+      type: "item.completed",
+      eventId: asEventId("evt-unknown-child-assistant-completed"),
+      provider: ProviderDriverKind.make("codex"),
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("parent-turn"),
+      itemId: asItemId("unknown-child-msg"),
+      providerRefs: {
+        providerThreadId: "future-child-thread",
+        providerTurnId: "future-child-turn",
+        providerItemId: "unknown-child-msg",
+      },
+      payload: {
+        itemType: "assistant_message",
+        status: "completed",
+        title: "Assistant message",
+        detail: "Too early child finding.",
+        data: {
+          threadId: "future-child-thread",
+          turnId: "future-child-turn",
+          item: {
+            id: "unknown-child-msg",
+            type: "agentMessage",
+            phase: "final_answer",
+            text: "Too early child finding.",
+          },
+        },
+      },
+    });
+    harness.emit({
+      type: "item.completed",
+      eventId: asEventId("evt-collab-agent-spawn-batch"),
+      provider: ProviderDriverKind.make("codex"),
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("parent-turn"),
+      itemId: asItemId("spawn-call"),
+      providerRefs: {
+        providerThreadId: "parent-codex-thread",
+        providerTurnId: "parent-turn",
+        providerItemId: "spawn-call",
+      },
+      payload: {
+        itemType: "collab_agent_tool_call",
+        status: "completed",
+        title: "Subagent task",
+        data: {
+          item: {
+            id: "spawn-call",
+            type: "collabAgentToolCall",
+            tool: "spawnAgent",
+            senderThreadId: "parent-codex-thread",
+            receiverThreadIds: ["child-a", "child-b", "child-c"],
+            status: "completed",
+          },
+        },
+      },
+    });
+    await waitForThread(harness.engine, (entry) =>
+      entry.activities.some(
+        (activity: ProviderRuntimeTestActivity) => activity.id === "evt-collab-agent-spawn-batch",
+      ),
+    );
+
+    harness.emit({
+      type: "content.delta",
+      eventId: asEventId("evt-child-assistant-delta"),
+      provider: ProviderDriverKind.make("codex"),
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("parent-turn"),
+      itemId: asItemId("child-a-msg"),
+      providerRefs: {
+        providerThreadId: "child-a",
+        providerTurnId: "child-a-turn",
+        providerItemId: "child-a-msg",
+      },
+      payload: {
+        streamKind: "assistant_text",
+        delta: "Leaked child streaming text.",
+      },
+    });
+    harness.emit({
+      type: "content.delta",
+      eventId: asEventId("evt-child-command-output"),
+      provider: ProviderDriverKind.make("codex"),
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("parent-turn"),
+      itemId: asItemId("child-command"),
+      providerRefs: {
+        providerThreadId: "child-b",
+        providerTurnId: "child-b-turn",
+        providerItemId: "child-command",
+      },
+      payload: {
+        streamKind: "command_output",
+        delta: "child command output",
+      },
+    });
+    harness.emit({
+      type: "item.completed",
+      eventId: asEventId("evt-child-command-completed"),
+      provider: ProviderDriverKind.make("codex"),
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("parent-turn"),
+      itemId: asItemId("child-command"),
+      providerRefs: {
+        providerThreadId: "child-b",
+        providerTurnId: "child-b-turn",
+        providerItemId: "child-command",
+      },
+      payload: {
+        itemType: "command_execution",
+        status: "completed",
+        title: "Ran command",
+        detail: "/bin/zsh -lc ls",
+        data: {
+          threadId: "child-b",
+          turnId: "child-b-turn",
+          item: {
+            id: "child-command",
+            type: "commandExecution",
+          },
+        },
+      },
+    });
+    harness.emit({
+      type: "item.completed",
+      eventId: asEventId("evt-child-assistant-completed-after-spawn"),
+      provider: ProviderDriverKind.make("codex"),
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("parent-turn"),
+      itemId: asItemId("child-a-msg"),
+      providerRefs: {
+        providerThreadId: "child-a",
+        providerTurnId: "child-a-turn",
+        providerItemId: "child-a-msg",
+      },
+      payload: {
+        itemType: "assistant_message",
+        status: "completed",
+        title: "Assistant message",
+        detail: "Child final finding.",
+        data: {
+          threadId: "child-a",
+          turnId: "child-a-turn",
+          item: {
+            id: "child-a-msg",
+            type: "agentMessage",
+            phase: "final_answer",
+            text: "Child final finding.",
+          },
+        },
+      },
+    });
+
+    const thread = await waitForThread(harness.engine, (entry) =>
+      entry.activities.some(
+        (activity: ProviderRuntimeTestActivity) =>
+          activity.id === "evt-child-assistant-completed-after-spawn:subagent-transcript",
+      ),
+    );
+
+    expect(
+      thread.messages.map((message: ProviderRuntimeTestMessage) => message.text),
+    ).not.toContain("Leaked child streaming text.");
+    expect(
+      thread.messages.map((message: ProviderRuntimeTestMessage) => message.text),
+    ).not.toContain("Child final finding.");
+    expect(
+      thread.activities.some(
+        (activity: ProviderRuntimeTestActivity) =>
+          activity.kind === "tool.completed" && activity.id === "evt-child-command-completed",
+      ),
+    ).toBe(false);
+    expect(
+      thread.activities.some(
+        (activity: ProviderRuntimeTestActivity) =>
+          activity.id === "evt-unknown-child-assistant-completed:subagent-transcript",
+      ),
+    ).toBe(false);
+    expect(
+      thread.activities.filter((activity: ProviderRuntimeTestActivity) =>
+        activity.kind.startsWith("subagent."),
+      ),
+    ).toHaveLength(2);
+    const childAssistant = thread.activities.find(
+      (activity: ProviderRuntimeTestActivity) =>
+        activity.id === "evt-child-assistant-completed-after-spawn:subagent-transcript",
+    );
+    expect(childAssistant?.payload).toMatchObject({
+      providerThreadId: "child-a",
+      providerTurnId: "child-a-turn",
+      text: "Child final finding.",
+    });
+  });
+
   it("does not project parent-thread assistant messages as subagent transcript activities", async () => {
     const harness = await createHarness();
     const now = new Date().toISOString();

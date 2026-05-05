@@ -2,6 +2,7 @@
 import "../index.css";
 
 import {
+  CheckpointRef,
   EventId,
   ORCHESTRATION_WS_METHODS,
   EnvironmentId,
@@ -371,6 +372,41 @@ function createSnapshotForTargetUser(options: {
       },
     ],
     updatedAt: NOW_ISO,
+  };
+}
+
+function createSnapshotWithChangedFilesBar(): OrchestrationReadModel {
+  const snapshot = createSnapshotForTargetUser({
+    targetMessageId: "msg-user-changed-files-scroll-target" as MessageId,
+    targetText: "changed files scroll thread",
+  });
+  const turnId = "turn-changed-files-scroll" as TurnId;
+  const assistantMessageId = "msg-assistant-21" as MessageId;
+
+  return {
+    ...snapshot,
+    threads: snapshot.threads.map((thread) =>
+      thread.id === THREAD_ID
+        ? Object.assign({}, thread, {
+            checkpoints: [
+              {
+                turnId,
+                completedAt: isoAt(70),
+                status: "ready",
+                assistantMessageId,
+                checkpointTurnCount: 1,
+                checkpointRef: CheckpointRef.make("checkpoint-changed-files-scroll"),
+                files: Array.from({ length: 16 }, (_, index) => ({
+                  path: `apps/web/src/changed-file-${index + 1}.tsx`,
+                  kind: "modified",
+                  additions: index + 1,
+                  deletions: index % 3,
+                })),
+              },
+            ],
+          })
+        : thread,
+    ),
   };
 }
 
@@ -1683,6 +1719,48 @@ describe("ChatView timeline estimator parity (full app)", () => {
     customWsRpcResolver = null;
     document.body.innerHTML = "";
   });
+
+  it("hides the scroll-to-bottom button when composer changed-files expansion leaves the viewport at bottom", async () => {
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot: createSnapshotWithChangedFilesBar(),
+    });
+
+    try {
+      const scrollViewport = await waitForElement(
+        () => document.querySelector<HTMLElement>('[data-chat-messages-scroll="true"]'),
+        "Unable to find messages scroll viewport.",
+      );
+      const changedFilesToggle = await waitForElement(
+        () =>
+          Array.from(document.querySelectorAll<HTMLButtonElement>("button")).find((button) =>
+            button.textContent?.includes("Changed files"),
+          ) ?? null,
+        "Unable to find composer changed files toggle.",
+      );
+
+      scrollViewport.scrollTop = 0;
+      scrollViewport.dispatchEvent(new Event("scroll", { bubbles: true }));
+
+      await vi.waitFor(() => {
+        expect(findButtonByText("Scroll to bottom")).not.toBeNull();
+      });
+
+      scrollViewport.scrollTop = scrollViewport.scrollHeight - scrollViewport.clientHeight;
+      await changedFilesToggle.click();
+      await waitForLayout();
+
+      await vi.waitFor(
+        () => {
+          expect(findButtonByText("Scroll to bottom")).toBeNull();
+        },
+        { timeout: 4_000, interval: 16 },
+      );
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
   it("re-expands the bootstrap project using its logical key", async () => {
     useUiStateStore.setState({
       projectExpandedById: {

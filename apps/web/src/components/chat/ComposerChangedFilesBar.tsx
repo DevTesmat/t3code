@@ -13,6 +13,7 @@ export interface ComposerChangedFilesBarProps {
   turnSummary: TurnDiffSummary | null;
   resolvedTheme: "light" | "dark";
   onOpenTurnDiff: (turnId: TurnId, filePath?: string) => void;
+  onExpandedChangeRequest?: () => void;
   maxExpandedHeightPx?: number | null;
 }
 
@@ -20,6 +21,7 @@ export const ComposerChangedFilesBar = memo(function ComposerChangedFilesBar({
   turnSummary,
   resolvedTheme,
   onOpenTurnDiff,
+  onExpandedChangeRequest,
   maxExpandedHeightPx = null,
 }: ComposerChangedFilesBarProps) {
   const [expanded, setExpanded] = useState(false);
@@ -43,7 +45,10 @@ export const ComposerChangedFilesBar = memo(function ComposerChangedFilesBar({
           data-scroll-anchor-ignore
           aria-expanded={expanded}
           className="group flex min-w-0 flex-1 items-center gap-1.5 text-left"
-          onClick={() => setExpanded((value) => !value)}
+          onClick={() => {
+            onExpandedChangeRequest?.();
+            setExpanded((value) => !value);
+          }}
         >
           <ChevronRightIcon
             aria-hidden="true"

@@ -557,6 +557,43 @@ lifecycleLayer("CodexAdapterLive lifecycle", (it) => {
     }),
   );
 
+  it.effect("preserves provider-native turn refs for child-thread notifications", () =>
+    Effect.gen(function* () {
+      const { adapter, runtime } = yield* startLifecycleRuntime();
+      const firstEventFiber = yield* Stream.runHead(adapter.streamEvents).pipe(Effect.forkChild);
+
+      yield* runtime.emit({
+        id: asEventId("evt-child-agent-delta"),
+        kind: "notification",
+        provider: ProviderDriverKind.make("codex"),
+        createdAt: new Date().toISOString(),
+        method: "item/agentMessage/delta",
+        threadId: asThreadId("thread-1"),
+        turnId: asTurnId("parent-turn"),
+        itemId: asItemId("child-msg"),
+        textDelta: "child text",
+        payload: {
+          threadId: "child-provider-thread",
+          turnId: "child-provider-turn",
+          itemId: "child-msg",
+          delta: "child text",
+        },
+      } satisfies ProviderEvent);
+
+      const firstEvent = yield* Fiber.join(firstEventFiber);
+
+      assert.equal(firstEvent._tag, "Some");
+      if (firstEvent._tag !== "Some") {
+        return;
+      }
+      assert.equal(firstEvent.value.type, "content.delta");
+      assert.equal(firstEvent.value.turnId, "parent-turn");
+      assert.equal(firstEvent.value.providerRefs?.providerThreadId, "child-provider-thread");
+      assert.equal(firstEvent.value.providerRefs?.providerTurnId, "child-provider-turn");
+      assert.equal(firstEvent.value.providerRefs?.providerItemId, "child-msg");
+    }),
+  );
+
   it.effect("maps session/closed lifecycle events to canonical session.exited runtime events", () =>
     Effect.gen(function* () {
       const { adapter, runtime } = yield* startLifecycleRuntime();

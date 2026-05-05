@@ -14,6 +14,7 @@ import {
   Menu,
   nativeImage,
   nativeTheme,
+  powerSaveBlocker,
   protocol,
   safeStorage,
   shell,
@@ -67,6 +68,7 @@ import {
   normalizeRunningThreadsState,
   shouldPromptBeforeQuitWithRunningThreads,
 } from "./runningThreadsQuitGuard.ts";
+import { createRunningThreadsPowerSaveBlocker } from "./runningThreadsPowerSaveBlocker.ts";
 import {
   createInitialDesktopUpdateState,
   reduceDesktopUpdateStateOnCheckFailure,
@@ -257,6 +259,7 @@ let restoreStdIoCapture: (() => void) | null = null;
 let backendObservabilitySettings = readPersistedBackendObservabilitySettings();
 let desktopSettings = readDesktopSettings(DESKTOP_SETTINGS_PATH, app.getVersion());
 let desktopServerExposureMode: DesktopServerExposureMode = desktopSettings.serverExposureMode;
+const runningThreadsPowerSaveBlocker = createRunningThreadsPowerSaveBlocker(powerSaveBlocker);
 
 let destructiveMenuIconCache: Electron.NativeImage | null | undefined;
 const expectedBackendExitChildren = new WeakSet<ChildProcess.ChildProcess>();
@@ -398,6 +401,7 @@ function relaunchDesktopApp(reason: string): void {
   writeDesktopLogHeader(`desktop relaunch requested reason=${reason}`);
   setImmediate(() => {
     isQuitting = true;
+    runningThreadsPowerSaveBlocker.release();
     clearUpdatePollTimer();
     cancelBackendReadinessWait();
     void stopBackendAndWaitForExit()
@@ -827,6 +831,7 @@ function handleFatalStartupError(stage: string, error: unknown): void {
     isQuitting = true;
     dialog.showErrorBox("T3 Code failed to start", `Stage: ${stage}\n${message}${detail}`);
   }
+  runningThreadsPowerSaveBlocker.release();
   stopBackend();
   restoreStdIoCapture?.();
   app.quit();
@@ -1242,6 +1247,7 @@ async function installDownloadedUpdate(): Promise<{ accepted: boolean; completed
 
   isQuitting = true;
   updateInstallInFlight = true;
+  runningThreadsPowerSaveBlocker.release();
   clearUpdatePollTimer();
   try {
     await stopBackendAndWaitForExit();
@@ -1710,6 +1716,7 @@ function registerIpcHandlers(): void {
     }
 
     runningThreadsState = nextState;
+    runningThreadsPowerSaveBlocker.syncRunningThreadCount(nextState.count);
   });
 
   ipcMain.removeHandler(GET_WINDOW_STATE_CHANNEL);
@@ -2231,6 +2238,7 @@ app.on("before-quit", () => {
 
   isQuitting = true;
   updateInstallInFlight = false;
+  runningThreadsPowerSaveBlocker.release();
   writeDesktopLogHeader("before-quit received");
   clearUpdatePollTimer();
   cancelBackendReadinessWait();
@@ -2280,6 +2288,7 @@ if (process.platform !== "win32") {
   process.on("SIGINT", () => {
     if (isQuitting) return;
     isQuitting = true;
+    runningThreadsPowerSaveBlocker.release();
     writeDesktopLogHeader("SIGINT received");
     clearUpdatePollTimer();
     cancelBackendReadinessWait();
@@ -2291,6 +2300,7 @@ if (process.platform !== "win32") {
   process.on("SIGTERM", () => {
     if (isQuitting) return;
     isQuitting = true;
+    runningThreadsPowerSaveBlocker.release();
     writeDesktopLogHeader("SIGTERM received");
     clearUpdatePollTimer();
     stopBackend();

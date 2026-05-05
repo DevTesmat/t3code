@@ -813,6 +813,28 @@ function providerThreadIdFromRuntimeEvent(event: ProviderRuntimeEvent): string |
   return asTrimmedString(data?.threadId) ?? undefined;
 }
 
+type ProviderThreadScope = "parent" | "knownChild" | "unknownChild" | "unscoped";
+
+function providerThreadScopeFromRuntimeEvent(
+  event: ProviderRuntimeEvent,
+  input: {
+    readonly parentProviderThreadId?: string | undefined;
+    readonly childProviderThreadIds: ReadonlySet<string>;
+  },
+): ProviderThreadScope {
+  const providerThreadId = providerThreadIdFromRuntimeEvent(event);
+  if (!providerThreadId) {
+    return "unscoped";
+  }
+  if (providerThreadId === input.parentProviderThreadId) {
+    return "parent";
+  }
+  if (input.childProviderThreadIds.has(providerThreadId)) {
+    return "knownChild";
+  }
+  return "unknownChild";
+}
+
 function runtimeEventToSubagentTranscriptActivity(
   event: ProviderRuntimeEvent,
   input: {
@@ -832,13 +854,7 @@ function runtimeEventToSubagentTranscriptActivity(
   }
 
   const providerThreadId = providerThreadIdFromRuntimeEvent(event);
-  if (!providerThreadId) {
-    return null;
-  }
-  if (providerThreadId === input.parentProviderThreadId) {
-    return null;
-  }
-  if (!input.childProviderThreadIds.has(providerThreadId)) {
+  if (!providerThreadId || providerThreadScopeFromRuntimeEvent(event, input) !== "knownChild") {
     return null;
   }
 
@@ -846,6 +862,7 @@ function runtimeEventToSubagentTranscriptActivity(
   const rawItem = asRecord(data?.item);
   const rawText = asTrimmedString(rawItem?.text ?? event.payload.detail);
   const phase = asTrimmedString(rawItem?.phase);
+  const providerTurnId = event.providerRefs?.providerTurnId ?? asTrimmedString(data?.turnId);
   const status =
     "status" in event.payload && typeof event.payload.status === "string"
       ? event.payload.status
@@ -865,7 +882,7 @@ function runtimeEventToSubagentTranscriptActivity(
       providerThreadId,
       itemType: event.payload.itemType,
       ...(event.itemId ? { itemId: event.itemId } : {}),
-      ...(event.turnId ? { providerTurnId: event.turnId } : {}),
+      ...(providerTurnId ? { providerTurnId } : {}),
       ...(status ? { status } : {}),
       ...(rawText ? { text: rawText } : {}),
       ...(phase ? { phase } : {}),
@@ -1560,14 +1577,20 @@ const make = Effect.gen(function* () {
         parentProviderThreadIdByThreadId.set(thread.id, event.payload.providerThreadId);
       }
       const collabReceiverThreadIds = collabReceiverThreadIdsFromRuntimeEvent(event);
+      const childProviderThreadIds =
+        childProviderThreadIdsByThreadId.get(thread.id) ?? new Set<string>();
       if (collabReceiverThreadIds.length > 0) {
-        const childProviderThreadIds =
-          childProviderThreadIdsByThreadId.get(thread.id) ?? new Set<string>();
         for (const receiverThreadId of collabReceiverThreadIds) {
           childProviderThreadIds.add(receiverThreadId);
         }
         childProviderThreadIdsByThreadId.set(thread.id, childProviderThreadIds);
       }
+      const providerThreadScope = providerThreadScopeFromRuntimeEvent(event, {
+        parentProviderThreadId: parentProviderThreadIdByThreadId.get(thread.id),
+        childProviderThreadIds,
+      });
+      const shouldProjectToParentThread =
+        providerThreadScope === "parent" || providerThreadScope === "unscoped";
 
       const conflictsWithActiveTurn =
         activeTurnId !== null && eventTurnId !== undefined && !sameId(activeTurnId, eventTurnId);
@@ -1584,8 +1607,14 @@ const make = Effect.gen(function* () {
           case "thread.started":
             return true;
           case "turn.started":
+            if (!shouldProjectToParentThread) {
+              return false;
+            }
             return !conflictsWithActiveTurn;
           case "turn.completed":
+            if (!shouldProjectToParentThread) {
+              return false;
+            }
             if (conflictsWithActiveTurn || missingTurnForActiveTurn) {
               return false;
             }
@@ -1605,12 +1634,13 @@ const make = Effect.gen(function* () {
           : null;
 
       if (
-        event.type === "session.started" ||
-        event.type === "session.state.changed" ||
-        event.type === "session.exited" ||
-        event.type === "thread.started" ||
-        event.type === "turn.started" ||
-        event.type === "turn.completed"
+        shouldProjectToParentThread &&
+        (event.type === "session.started" ||
+          event.type === "session.state.changed" ||
+          event.type === "session.exited" ||
+          event.type === "thread.started" ||
+          event.type === "turn.started" ||
+          event.type === "turn.completed")
       ) {
         const nextActiveTurnId =
           event.type === "turn.started"
@@ -1700,7 +1730,7 @@ const make = Effect.gen(function* () {
       const proposedPlanDelta =
         event.type === "turn.proposed.delta" ? event.payload.delta : undefined;
 
-      if (assistantDelta && assistantDelta.length > 0) {
+      if (shouldProjectToParentThread && assistantDelta && assistantDelta.length > 0) {
         const turnId = toTurnId(event.turnId);
         const assistantMessageId = yield* getOrCreateAssistantMessageId({
           threadId: thread.id,
@@ -1741,7 +1771,12 @@ const make = Effect.gen(function* () {
         }
       }
 
-      if (commandOutputDelta && commandOutputDelta.length > 0 && event.itemId) {
+      if (
+        shouldProjectToParentThread &&
+        commandOutputDelta &&
+        commandOutputDelta.length > 0 &&
+        event.itemId
+      ) {
         const turnId = toTurnId(event.turnId);
         yield* appendCommandOutputPreview({
           threadId: thread.id,
@@ -1763,7 +1798,7 @@ const make = Effect.gen(function* () {
         event.type === "request.opened" || event.type === "user-input.requested"
           ? toTurnId(event.turnId)
           : undefined;
-      if (pauseForUserTurnId) {
+      if (shouldProjectToParentThread && pauseForUserTurnId) {
         const assistantDeliveryMode: AssistantDeliveryMode = yield* Effect.map(
           serverSettingsService.getSettings,
           (settings) => (settings.enableAssistantStreaming ? "streaming" : "buffered"),
@@ -1802,7 +1837,7 @@ const make = Effect.gen(function* () {
         });
       }
 
-      if (proposedPlanDelta && proposedPlanDelta.length > 0) {
+      if (shouldProjectToParentThread && proposedPlanDelta && proposedPlanDelta.length > 0) {
         const planId = proposedPlanIdFromEvent(event, thread.id);
         yield* appendBufferedProposedPlan(planId, proposedPlanDelta, now);
       }
@@ -1825,7 +1860,7 @@ const make = Effect.gen(function* () {
             }
           : undefined;
 
-      if (assistantCompletion) {
+      if (shouldProjectToParentThread && assistantCompletion) {
         const turnId = toTurnId(event.turnId);
         const activeAssistantMessageId = turnId
           ? yield* getActiveAssistantMessageIdForTurn(thread.id, turnId)
@@ -1879,7 +1914,7 @@ const make = Effect.gen(function* () {
         }
       }
 
-      if (proposedPlanCompletion) {
+      if (shouldProjectToParentThread && proposedPlanCompletion) {
         yield* finalizeBufferedProposedPlan({
           event,
           threadId: thread.id,
@@ -1891,7 +1926,7 @@ const make = Effect.gen(function* () {
         });
       }
 
-      if (event.type === "turn.completed") {
+      if (shouldProjectToParentThread && event.type === "turn.completed") {
         const turnId = toTurnId(event.turnId);
         if (turnId) {
           const assistantMessageIds = yield* getAssistantMessageIdsForTurn(thread.id, turnId);
@@ -1926,11 +1961,11 @@ const make = Effect.gen(function* () {
         }
       }
 
-      if (event.type === "session.exited") {
+      if (shouldProjectToParentThread && event.type === "session.exited") {
         yield* clearTurnStateForSession(thread.id);
       }
 
-      if (event.type === "runtime.error") {
+      if (shouldProjectToParentThread && event.type === "runtime.error") {
         const runtimeErrorMessage = event.payload.message;
 
         const shouldApplyRuntimeError = !STRICT_PROVIDER_LIFECYCLE_GUARD
@@ -1959,7 +1994,11 @@ const make = Effect.gen(function* () {
         }
       }
 
-      if (event.type === "thread.metadata.updated" && event.payload.name) {
+      if (
+        shouldProjectToParentThread &&
+        event.type === "thread.metadata.updated" &&
+        event.payload.name
+      ) {
         yield* orchestrationEngine.dispatch({
           type: "thread.meta.update",
           commandId: providerCommandId(event, "thread-meta-update"),
@@ -1968,7 +2007,7 @@ const make = Effect.gen(function* () {
         });
       }
 
-      if (event.type === "turn.diff.updated") {
+      if (shouldProjectToParentThread && event.type === "turn.diff.updated") {
         const turnId = toTurnId(event.turnId);
         if (turnId && (yield* isGitRepoForThread(thread.id))) {
           // Skip if a checkpoint already exists for this turn. A real
@@ -2003,7 +2042,9 @@ const make = Effect.gen(function* () {
       }
 
       const eventForActivities =
-        event.type === "item.completed" && event.payload.itemType === "command_execution"
+        shouldProjectToParentThread &&
+        event.type === "item.completed" &&
+        event.payload.itemType === "command_execution"
           ? yield* Effect.gen(function* () {
               if (!event.itemId) {
                 return event;
@@ -2032,20 +2073,22 @@ const make = Effect.gen(function* () {
             })
           : event;
 
-      const activities = runtimeEventToActivities(eventForActivities);
-      yield* Effect.forEach(activities, (activity) =>
-        orchestrationEngine.dispatch({
-          type: "thread.activity.append",
-          commandId: providerCommandId(event, "thread-activity-append"),
-          threadId: thread.id,
-          activity,
-          createdAt: activity.createdAt,
-        }),
-      ).pipe(Effect.asVoid);
+      if (shouldProjectToParentThread) {
+        const activities = runtimeEventToActivities(eventForActivities);
+        yield* Effect.forEach(activities, (activity) =>
+          orchestrationEngine.dispatch({
+            type: "thread.activity.append",
+            commandId: providerCommandId(event, "thread-activity-append"),
+            threadId: thread.id,
+            activity,
+            createdAt: activity.createdAt,
+          }),
+        ).pipe(Effect.asVoid);
+      }
 
       const subagentTranscriptActivity = runtimeEventToSubagentTranscriptActivity(event, {
         parentProviderThreadId: parentProviderThreadIdByThreadId.get(thread.id),
-        childProviderThreadIds: childProviderThreadIdsByThreadId.get(thread.id) ?? new Set(),
+        childProviderThreadIds,
       });
       if (subagentTranscriptActivity) {
         yield* orchestrationEngine.dispatch({

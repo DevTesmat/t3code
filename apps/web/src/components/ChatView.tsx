@@ -203,6 +203,7 @@ const EMPTY_MESSAGES: ChatMessage[] = [];
 const EMPTY_PROPOSED_PLANS: Thread["proposedPlans"] = [];
 const EMPTY_PROVIDERS: ServerProvider[] = [];
 const EMPTY_PENDING_USER_INPUT_ANSWERS: Record<string, PendingUserInputDraftAnswer> = {};
+const SCROLL_TO_BOTTOM_VISIBILITY_THRESHOLD_PX = 8;
 
 type QueuedComposerFlushReason = "agent-finished" | "empty-enter-force";
 
@@ -2274,6 +2275,53 @@ export default function ChatView(props: ChatViewProps) {
     return null;
   }, []);
 
+  // Debounce *showing* the scroll-to-bottom pill so it doesn't flash during
+  // thread switches.  LegendList fires scroll events with isAtEnd=false while
+  // initialScrollAtEnd is settling; hiding is always immediate.
+  const showScrollDebouncer = useRef(
+    new Debouncer(
+      () => {
+        const scrollViewport = findMessagesScrollViewport();
+        if (scrollViewport) {
+          const distanceFromBottom =
+            scrollViewport.scrollHeight - scrollViewport.clientHeight - scrollViewport.scrollTop;
+          if (distanceFromBottom <= SCROLL_TO_BOTTOM_VISIBILITY_THRESHOLD_PX) {
+            isAtEndRef.current = true;
+            setShowScrollToBottom(false);
+            return;
+          }
+        }
+        setShowScrollToBottom(true);
+      },
+      { wait: 150 },
+    ),
+  );
+
+  const syncScrollToBottomVisibility = useCallback(
+    (legendListIsAtEnd?: boolean) => {
+      const scrollViewport = findMessagesScrollViewport();
+      const measuredIsAtEnd = scrollViewport
+        ? scrollViewport.scrollHeight - scrollViewport.clientHeight - scrollViewport.scrollTop <=
+          SCROLL_TO_BOTTOM_VISIBILITY_THRESHOLD_PX
+        : legendListIsAtEnd;
+      const isAtEnd = measuredIsAtEnd ?? isAtEndRef.current;
+
+      if (isAtEndRef.current !== isAtEnd) {
+        isAtEndRef.current = isAtEnd;
+      }
+
+      if (isAtEnd) {
+        showScrollDebouncer.current.cancel();
+        setShowScrollToBottom(false);
+        return true;
+      }
+
+      showScrollDebouncer.current.maybeExecute();
+      return false;
+    },
+    [findMessagesScrollViewport],
+  );
+
   const preserveTimelineViewport = useCallback(
     (anchor: HTMLElement, mutate: () => void) => {
       const scrollViewport = findMessagesScrollViewport();
@@ -2305,10 +2353,9 @@ export default function ChatView(props: ChatViewProps) {
         if (scrollViewport) {
           const nextBottomDistance =
             scrollViewport.scrollHeight - scrollViewport.clientHeight - scrollViewport.scrollTop;
-          const isExactlyAtBottom = Math.abs(nextBottomDistance) < 0.5;
+          const isExactlyAtBottom = nextBottomDistance <= SCROLL_TO_BOTTOM_VISIBILITY_THRESHOLD_PX;
           if (!wasExactlyAtBottom || !isExactlyAtBottom) {
-            isAtEndRef.current = false;
-            showScrollDebouncer.current.maybeExecute();
+            syncScrollToBottomVisibility(false);
           }
         }
         restoreMaintainScrollAtEndFrameRef.current = window.requestAnimationFrame(() => {
@@ -2318,25 +2365,15 @@ export default function ChatView(props: ChatViewProps) {
         });
       });
     },
-    [findMessagesScrollViewport],
+    [findMessagesScrollViewport, syncScrollToBottomVisibility],
   );
 
-  // Debounce *showing* the scroll-to-bottom pill so it doesn't flash during
-  // thread switches.  LegendList fires scroll events with isAtEnd=false while
-  // initialScrollAtEnd is settling; hiding is always immediate.
-  const showScrollDebouncer = useRef(
-    new Debouncer(() => setShowScrollToBottom(true), { wait: 150 }),
+  const onIsAtEndChange = useCallback(
+    (isAtEnd: boolean) => {
+      syncScrollToBottomVisibility(isAtEnd);
+    },
+    [syncScrollToBottomVisibility],
   );
-  const onIsAtEndChange = useCallback((isAtEnd: boolean) => {
-    if (isAtEndRef.current === isAtEnd) return;
-    isAtEndRef.current = isAtEnd;
-    if (isAtEnd) {
-      showScrollDebouncer.current.cancel();
-      setShowScrollToBottom(false);
-    } else {
-      showScrollDebouncer.current.maybeExecute();
-    }
-  }, []);
 
   useEffect(() => {
     const composerArea = composerAreaRef.current;
@@ -2349,15 +2386,27 @@ export default function ChatView(props: ChatViewProps) {
       const nextHeight = entry.contentRect.height;
       if (Math.abs(nextHeight - previousHeight) < 0.5) return;
       previousHeight = nextHeight;
-      if (suppressComposerStickToBottomRef.current || !isAtEndRef.current) return;
+      const isAtEnd = syncScrollToBottomVisibility();
+      if (suppressComposerStickToBottomRef.current || !isAtEnd) return;
       scrollToEnd(false);
+      window.requestAnimationFrame(() => syncScrollToBottomVisibility(true));
     });
 
     observer.observe(composerArea);
     return () => {
       observer.disconnect();
     };
-  }, [scrollToEnd]);
+  }, [scrollToEnd, syncScrollToBottomVisibility]);
+
+  useEffect(() => {
+    const handleResize = () => {
+      window.requestAnimationFrame(() => syncScrollToBottomVisibility());
+    };
+    window.addEventListener("resize", handleResize);
+    return () => {
+      window.removeEventListener("resize", handleResize);
+    };
+  }, [syncScrollToBottomVisibility]);
 
   useEffect(() => {
     setPullRequestDialogState(null);
@@ -4122,6 +4171,7 @@ export default function ChatView(props: ChatViewProps) {
                 turnSummary={latestChangedFilesSummary}
                 resolvedTheme={resolvedTheme}
                 onOpenTurnDiff={onOpenTurnDiff}
+                onExpandedChangeRequest={syncScrollToBottomVisibility}
                 maxExpandedHeightPx={changedFilesMaxHeight}
               />
               <ComposerQueuedMessagesBar

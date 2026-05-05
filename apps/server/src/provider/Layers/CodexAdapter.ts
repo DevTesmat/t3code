@@ -407,16 +407,27 @@ function providerRefsFromEvent(
   event: ProviderEvent,
 ): ProviderRuntimeEvent["providerRefs"] | undefined {
   const refs: Record<string, string> = {};
-  const payloadThreadId =
-    typeof event.payload === "object" &&
-    event.payload !== null &&
-    "threadId" in event.payload &&
-    typeof (event.payload as { threadId?: unknown }).threadId === "string"
-      ? (event.payload as { threadId: string }).threadId
+  const payloadRecord =
+    typeof event.payload === "object" && event.payload !== null
+      ? (event.payload as { itemId?: unknown; threadId?: unknown; turnId?: unknown })
       : undefined;
+  const payloadThreadId =
+    typeof payloadRecord?.threadId === "string" ? payloadRecord.threadId : undefined;
+  const payloadTurnId =
+    typeof payloadRecord?.turnId === "string" ? payloadRecord.turnId : undefined;
+  const payloadItemId =
+    typeof payloadRecord?.itemId === "string" ? payloadRecord.itemId : undefined;
   if (payloadThreadId) refs.providerThreadId = payloadThreadId;
-  if (event.turnId) refs.providerTurnId = event.turnId;
-  if (event.itemId) refs.providerItemId = event.itemId;
+  if (payloadTurnId) {
+    refs.providerTurnId = payloadTurnId;
+  } else if (event.turnId) {
+    refs.providerTurnId = event.turnId;
+  }
+  if (payloadItemId) {
+    refs.providerItemId = payloadItemId;
+  } else if (event.itemId) {
+    refs.providerItemId = event.itemId;
+  }
   if (event.requestId) refs.providerRequestId = event.requestId;
 
   return Object.keys(refs).length > 0 ? (refs as ProviderRuntimeEvent["providerRefs"]) : undefined;
