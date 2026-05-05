@@ -11,6 +11,10 @@ import {
   useRef,
   useState,
   type ReactNode,
+  type RefObject,
+  type WheelEvent,
+  type TouchEvent,
+  type PointerEvent,
 } from "react";
 import { LegendList, type LegendListRef } from "@legendapp/list/react";
 import {
@@ -62,6 +66,7 @@ import { useSettings } from "../../hooks/useSettings";
 import { useTheme } from "../../hooks/useTheme";
 import { checkpointDiffQueryOptions } from "../../lib/providerReactQuery";
 import { resolveDiffThemeName } from "../../lib/diffRendering";
+import { isScrollViewportAtBottom } from "./scrollStickiness";
 import {
   buildFileDiffRenderKey,
   DIFF_RENDER_UNSAFE_CSS,
@@ -113,7 +118,7 @@ interface MessagesTimelineProps {
   activeTurnId?: TurnId | null;
   activeTurnStartedAt: string | null;
   activeTurnActivityState?: ActiveTurnActivityState | undefined;
-  listRef: React.RefObject<LegendListRef | null>;
+  listRef: RefObject<LegendListRef | null>;
   timelineEntries: ReturnType<typeof deriveTimelineEntries>;
   completionDividerBeforeEntryId: string | null;
   turnDiffSummaryByAssistantMessageId: Map<MessageId, TurnDiffSummary>;
@@ -129,6 +134,8 @@ interface MessagesTimelineProps {
   timestampFormat: TimestampFormat;
   workspaceRoot: string | undefined;
   onIsAtEndChange: (isAtEnd: boolean) => void;
+  onScrollViewportChange?: ((scrollViewport: HTMLElement) => void) | undefined;
+  onUserScrollAwayFromEnd?: (() => void) | undefined;
   onPreserveViewportRequest?: ((anchor: HTMLElement, mutate: () => void) => void) | undefined;
   suppressMaintainScrollAtEnd?: boolean | undefined;
 }
@@ -159,6 +166,8 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   timestampFormat,
   workspaceRoot,
   onIsAtEndChange,
+  onScrollViewportChange,
+  onUserScrollAwayFromEnd,
   onPreserveViewportRequest,
   suppressMaintainScrollAtEnd = false,
 }: MessagesTimelineProps) {
@@ -185,12 +194,80 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   );
   const rows = useStableRows(rawRows);
 
-  const handleScroll = useCallback(() => {
-    const state = listRef.current?.getState?.();
-    if (state) {
-      onIsAtEndChange(state.isAtEnd);
-    }
-  }, [listRef, onIsAtEndChange]);
+  const handleScroll = useCallback(
+    (event: unknown) => {
+      const currentTarget =
+        typeof event === "object" && event !== null && "currentTarget" in event
+          ? event.currentTarget
+          : null;
+      if (currentTarget instanceof HTMLElement) {
+        onScrollViewportChange?.(currentTarget);
+      }
+
+      const state = listRef.current?.getState?.();
+      if (state) {
+        onIsAtEndChange(state.isAtEnd);
+      }
+    },
+    [listRef, onIsAtEndChange, onScrollViewportChange],
+  );
+
+  const releaseStickinessIfAwayFromEnd = useCallback(
+    (scrollViewport: HTMLElement) => {
+      if (!isScrollViewportAtBottom(scrollViewport)) {
+        onUserScrollAwayFromEnd?.();
+      }
+    },
+    [onUserScrollAwayFromEnd],
+  );
+
+  const handleWheel = useCallback(
+    (event: WheelEvent<HTMLElement>) => {
+      if (event.deltaY < 0) {
+        onUserScrollAwayFromEnd?.();
+        return;
+      }
+      releaseStickinessIfAwayFromEnd(event.currentTarget);
+    },
+    [onUserScrollAwayFromEnd, releaseStickinessIfAwayFromEnd],
+  );
+
+  const touchStartYRef = useRef<number | null>(null);
+  const handleTouchStart = useCallback((event: TouchEvent<HTMLElement>) => {
+    touchStartYRef.current = event.touches[0]?.clientY ?? null;
+  }, []);
+
+  const handleTouchMove = useCallback(
+    (event: TouchEvent<HTMLElement>) => {
+      const nextY = event.touches[0]?.clientY;
+      if (
+        touchStartYRef.current !== null &&
+        nextY !== undefined &&
+        nextY > touchStartYRef.current
+      ) {
+        onUserScrollAwayFromEnd?.();
+        return;
+      }
+      releaseStickinessIfAwayFromEnd(event.currentTarget);
+    },
+    [onUserScrollAwayFromEnd, releaseStickinessIfAwayFromEnd],
+  );
+
+  const handlePointerDown = useCallback(
+    (event: PointerEvent<HTMLElement>) => {
+      if (event.currentTarget === event.target) {
+        releaseStickinessIfAwayFromEnd(event.currentTarget);
+      }
+    },
+    [releaseStickinessIfAwayFromEnd],
+  );
+
+  const handlePointerUp = useCallback(
+    (event: PointerEvent<HTMLElement>) => {
+      releaseStickinessIfAwayFromEnd(event.currentTarget);
+    },
+    [releaseStickinessIfAwayFromEnd],
+  );
 
   const previousRowCountRef = useRef(rows.length);
   useEffect(() => {
@@ -281,6 +358,11 @@ export const MessagesTimeline = memo(function MessagesTimeline({
         maintainScrollAtEndThreshold={0.1}
         maintainVisibleContentPosition
         onScroll={handleScroll}
+        onWheel={handleWheel}
+        onTouchStart={handleTouchStart}
+        onTouchMove={handleTouchMove}
+        onPointerDown={handlePointerDown}
+        onPointerUp={handlePointerUp}
         data-chat-messages-scroll="true"
         className="h-full overflow-x-hidden overscroll-y-contain px-3 sm:px-5"
         ListHeaderComponent={<div className="h-3 sm:h-4" />}

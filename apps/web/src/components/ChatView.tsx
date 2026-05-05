@@ -195,6 +195,10 @@ import {
 import { sanitizeThreadErrorMessage } from "~/rpc/transportError";
 import { retainThreadDetailSubscription } from "../environments/runtime/service";
 import { RightPanelSheet } from "./RightPanelSheet";
+import {
+  distanceFromScrollViewportBottom,
+  isScrollViewportAtBottom,
+} from "./chat/scrollStickiness";
 
 const IMAGE_ONLY_BOOTSTRAP_PROMPT =
   "[User attached one or more images without additional text. Respond using the conversation context and the attached image(s).]";
@@ -203,8 +207,6 @@ const EMPTY_MESSAGES: ChatMessage[] = [];
 const EMPTY_PROPOSED_PLANS: Thread["proposedPlans"] = [];
 const EMPTY_PROVIDERS: ServerProvider[] = [];
 const EMPTY_PENDING_USER_INPUT_ANSWERS: Record<string, PendingUserInputDraftAnswer> = {};
-const SCROLL_TO_BOTTOM_VISIBILITY_THRESHOLD_PX = 8;
-
 type QueuedComposerFlushReason = "agent-finished" | "empty-enter-force";
 
 async function dispatchAndApplyCommittedEvents(input: {
@@ -2256,6 +2258,9 @@ export default function ChatView(props: ChatViewProps) {
     legendListRef.current?.scrollToEnd?.({ animated });
   }, []);
 
+  const distanceFromMessagesBottom = useCallback(distanceFromScrollViewportBottom, []);
+  const isMessagesViewportAtBottom = useCallback(isScrollViewportAtBottom, []);
+
   const findMessagesScrollViewport = useCallback(() => {
     const explicitViewport = chatColumnRef.current?.querySelector<HTMLElement>(
       "[data-chat-messages-scroll='true']",
@@ -2283,10 +2288,9 @@ export default function ChatView(props: ChatViewProps) {
       () => {
         const scrollViewport = findMessagesScrollViewport();
         if (scrollViewport) {
-          const distanceFromBottom =
-            scrollViewport.scrollHeight - scrollViewport.clientHeight - scrollViewport.scrollTop;
-          if (distanceFromBottom <= SCROLL_TO_BOTTOM_VISIBILITY_THRESHOLD_PX) {
+          if (isMessagesViewportAtBottom(scrollViewport)) {
             isAtEndRef.current = true;
+            setSuppressTimelineMaintainScrollAtEnd(false);
             setShowScrollToBottom(false);
             return;
           }
@@ -2297,37 +2301,58 @@ export default function ChatView(props: ChatViewProps) {
     ),
   );
 
+  const setTimelineBottomStickiness = useCallback((isAtEnd: boolean) => {
+    if (isAtEndRef.current !== isAtEnd) {
+      isAtEndRef.current = isAtEnd;
+    }
+
+    if (isAtEnd) {
+      showScrollDebouncer.current.cancel();
+      setShowScrollToBottom(false);
+      setSuppressTimelineMaintainScrollAtEnd(false);
+      return true;
+    }
+
+    setSuppressTimelineMaintainScrollAtEnd(true);
+    showScrollDebouncer.current.maybeExecute();
+    return false;
+  }, []);
+
   const syncScrollToBottomVisibility = useCallback(
     (legendListIsAtEnd?: boolean) => {
       const scrollViewport = findMessagesScrollViewport();
       const measuredIsAtEnd = scrollViewport
-        ? scrollViewport.scrollHeight - scrollViewport.clientHeight - scrollViewport.scrollTop <=
-          SCROLL_TO_BOTTOM_VISIBILITY_THRESHOLD_PX
+        ? isMessagesViewportAtBottom(scrollViewport)
         : legendListIsAtEnd;
       const isAtEnd = measuredIsAtEnd ?? isAtEndRef.current;
 
-      if (isAtEndRef.current !== isAtEnd) {
-        isAtEndRef.current = isAtEnd;
-      }
-
-      if (isAtEnd) {
-        showScrollDebouncer.current.cancel();
-        setShowScrollToBottom(false);
-        return true;
-      }
-
-      showScrollDebouncer.current.maybeExecute();
-      return false;
+      return setTimelineBottomStickiness(isAtEnd);
     },
-    [findMessagesScrollViewport],
+    [findMessagesScrollViewport, isMessagesViewportAtBottom, setTimelineBottomStickiness],
   );
+
+  const releaseTimelineBottomStickiness = useCallback(() => {
+    setTimelineBottomStickiness(false);
+  }, [setTimelineBottomStickiness]);
+
+  const syncTimelineScrollViewportStickiness = useCallback(
+    (scrollViewport: HTMLElement) => {
+      return setTimelineBottomStickiness(isMessagesViewportAtBottom(scrollViewport));
+    },
+    [isMessagesViewportAtBottom, setTimelineBottomStickiness],
+  );
+
+  const scrollToEndFromPill = useCallback(() => {
+    setTimelineBottomStickiness(true);
+    scrollToEnd(true);
+  }, [scrollToEnd, setTimelineBottomStickiness]);
 
   const preserveTimelineViewport = useCallback(
     (anchor: HTMLElement, mutate: () => void) => {
       const scrollViewport = findMessagesScrollViewport();
       const previousTop = anchor.getBoundingClientRect().top;
       const previousBottomDistance = scrollViewport
-        ? scrollViewport.scrollHeight - scrollViewport.clientHeight - scrollViewport.scrollTop
+        ? distanceFromMessagesBottom(scrollViewport)
         : null;
       const wasExactlyAtBottom =
         previousBottomDistance !== null && Math.abs(previousBottomDistance) < 0.5;
@@ -2351,9 +2376,7 @@ export default function ChatView(props: ChatViewProps) {
           scrollViewport.scrollTop += delta;
         }
         if (scrollViewport) {
-          const nextBottomDistance =
-            scrollViewport.scrollHeight - scrollViewport.clientHeight - scrollViewport.scrollTop;
-          const isExactlyAtBottom = nextBottomDistance <= SCROLL_TO_BOTTOM_VISIBILITY_THRESHOLD_PX;
+          const isExactlyAtBottom = isMessagesViewportAtBottom(scrollViewport);
           if (!wasExactlyAtBottom || !isExactlyAtBottom) {
             syncScrollToBottomVisibility(false);
           }
@@ -2365,7 +2388,12 @@ export default function ChatView(props: ChatViewProps) {
         });
       });
     },
-    [findMessagesScrollViewport, syncScrollToBottomVisibility],
+    [
+      distanceFromMessagesBottom,
+      findMessagesScrollViewport,
+      isMessagesViewportAtBottom,
+      syncScrollToBottomVisibility,
+    ],
   );
 
   const onIsAtEndChange = useCallback(
@@ -2856,6 +2884,7 @@ export default function ChatView(props: ChatViewProps) {
       isAtEndRef.current = true;
       showScrollDebouncer.current.cancel();
       setShowScrollToBottom(false);
+      setSuppressTimelineMaintainScrollAtEnd(false);
       await legendListRef.current?.scrollToEnd?.({ animated: false });
 
       setOptimisticUserMessages((existing) => [
@@ -3124,6 +3153,7 @@ export default function ChatView(props: ChatViewProps) {
     isAtEndRef.current = true;
     showScrollDebouncer.current.cancel();
     setShowScrollToBottom(false);
+    setSuppressTimelineMaintainScrollAtEnd(false);
     await legendListRef.current?.scrollToEnd?.({ animated: false });
 
     setOptimisticUserMessages((existing) => [
@@ -3531,6 +3561,7 @@ export default function ChatView(props: ChatViewProps) {
       isAtEndRef.current = true;
       showScrollDebouncer.current.cancel();
       setShowScrollToBottom(false);
+      setSuppressTimelineMaintainScrollAtEnd(false);
       await legendListRef.current?.scrollToEnd?.({ animated: false });
 
       setOptimisticUserMessages((existing) => [
@@ -4123,6 +4154,8 @@ export default function ChatView(props: ChatViewProps) {
               timestampFormat={timestampFormat}
               workspaceRoot={activeWorkspaceRoot}
               onIsAtEndChange={onIsAtEndChange}
+              onScrollViewportChange={syncTimelineScrollViewportStickiness}
+              onUserScrollAwayFromEnd={releaseTimelineBottomStickiness}
               onPreserveViewportRequest={preserveTimelineViewport}
               suppressMaintainScrollAtEnd={suppressTimelineMaintainScrollAtEnd}
             />
@@ -4132,7 +4165,7 @@ export default function ChatView(props: ChatViewProps) {
               <div className="pointer-events-none absolute bottom-1 left-1/2 z-30 flex -translate-x-1/2 justify-center py-1.5">
                 <button
                   type="button"
-                  onClick={() => scrollToEnd(true)}
+                  onClick={scrollToEndFromPill}
                   className="pointer-events-auto flex items-center gap-1.5 rounded-full border border-border/60 bg-card px-3 py-1 text-muted-foreground text-xs shadow-sm transition-colors hover:border-border hover:text-foreground hover:cursor-pointer"
                 >
                   <ChevronDownIcon className="size-3.5" />

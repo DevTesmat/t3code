@@ -1761,6 +1761,69 @@ describe("ChatView timeline estimator parity (full app)", () => {
     }
   });
 
+  it("keeps user scroll position detached while assistant text streams", async () => {
+    const snapshot = createSnapshotForTargetUser({
+      targetMessageId: "msg-user-stream-scroll" as MessageId,
+      targetText: "streaming scroll thread",
+      sessionStatus: "running",
+    });
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot,
+    });
+
+    try {
+      const scrollViewport = await waitForElement(
+        () => document.querySelector<HTMLElement>('[data-chat-messages-scroll="true"]'),
+        "Unable to find messages scroll viewport.",
+      );
+
+      await vi.waitFor(() => {
+        expect(scrollViewport.scrollHeight).toBeGreaterThan(scrollViewport.clientHeight);
+      });
+
+      scrollViewport.scrollTop = scrollViewport.scrollHeight - scrollViewport.clientHeight;
+      scrollViewport.dispatchEvent(new Event("scroll", { bubbles: true }));
+      await waitForLayout();
+
+      scrollViewport.dispatchEvent(new WheelEvent("wheel", { bubbles: true, deltaY: -120 }));
+      scrollViewport.scrollTop = Math.max(0, scrollViewport.scrollTop - 240);
+      scrollViewport.dispatchEvent(new Event("scroll", { bubbles: true }));
+
+      await vi.waitFor(() => {
+        expect(findButtonByText("Scroll to bottom")).not.toBeNull();
+      });
+
+      const [thread] = snapshot.threads;
+      if (!thread) {
+        throw new Error("Expected streaming scroll test thread.");
+      }
+      const messages = thread.messages.map((message, index) =>
+        index === thread.messages.length - 1 && message.role === "assistant"
+          ? {
+              ...message,
+              text: `${message.text} streamed token`,
+              streaming: true,
+              updatedAt: isoAt(500),
+            }
+          : message,
+      );
+      useStore.getState().syncServerThreadDetail({ ...thread, messages }, LOCAL_ENVIRONMENT_ID);
+      await waitForLayout();
+
+      expect(findButtonByText("Scroll to bottom")).not.toBeNull();
+
+      findButtonByText("Scroll to bottom")?.click();
+      await waitForLayout();
+
+      await vi.waitFor(() => {
+        expect(findButtonByText("Scroll to bottom")).toBeNull();
+      });
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
   it("re-expands the bootstrap project using its logical key", async () => {
     useUiStateStore.setState({
       projectExpandedById: {

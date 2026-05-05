@@ -1,8 +1,14 @@
 import "../../index.css";
 
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { EnvironmentId, ThreadId, TurnId, type EnvironmentApi } from "@t3tools/contracts";
-import { createRef } from "react";
+import {
+  EnvironmentId,
+  MessageId,
+  ThreadId,
+  TurnId,
+  type EnvironmentApi,
+} from "@t3tools/contracts";
+import { createRef, useState } from "react";
 import type { LegendListRef } from "@legendapp/list/react";
 import { page } from "vitest/browser";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -24,6 +30,11 @@ vi.mock("@legendapp/list/react", async () => {
     className?: string;
     maintainScrollAtEnd?: boolean;
     onScroll?: () => void;
+    onWheel?: React.WheelEventHandler<HTMLDivElement>;
+    onTouchStart?: React.TouchEventHandler<HTMLDivElement>;
+    onTouchMove?: React.TouchEventHandler<HTMLDivElement>;
+    onPointerDown?: React.PointerEventHandler<HTMLDivElement>;
+    onPointerUp?: React.PointerEventHandler<HTMLDivElement>;
     "data-chat-messages-scroll"?: string;
   }
 
@@ -56,6 +67,11 @@ vi.mock("@legendapp/list/react", async () => {
           className={className}
           data-chat-messages-scroll={dataChatMessagesScroll}
           onScroll={onScroll}
+          onWheel={props.onWheel}
+          onTouchStart={props.onTouchStart}
+          onTouchMove={props.onTouchMove}
+          onPointerDown={props.onPointerDown}
+          onPointerUp={props.onPointerUp}
         >
           {ListHeaderComponent}
           {data.map((item) => (
@@ -290,6 +306,89 @@ describe("MessagesTimeline", () => {
       expect(legendListPropsSpy).toHaveBeenLastCalledWith(
         expect.objectContaining({ maintainScrollAtEnd: false }),
       );
+    } finally {
+      await screen.unmount();
+    }
+  });
+
+  it("suppresses bottom pinning when a streaming update arrives after the viewport is scrolled upward", async () => {
+    const baseEntry = {
+      id: "assistant-1",
+      kind: "message" as const,
+      createdAt: "2026-04-13T12:00:00.000Z",
+      message: {
+        id: MessageId.make("assistant-1"),
+        role: "assistant" as const,
+        text: "Initial streaming text",
+        turnId: null,
+        streaming: true,
+        createdAt: "2026-04-13T12:00:00.000Z",
+        updatedAt: "2026-04-13T12:00:00.000Z",
+      },
+    };
+
+    function Harness({ text }: { text: string }) {
+      const [suppressMaintainScrollAtEnd, setSuppressMaintainScrollAtEnd] = useState(false);
+      return (
+        <MessagesTimeline
+          {...buildProps()}
+          onScrollViewportChange={(viewport) => {
+            setSuppressMaintainScrollAtEnd(
+              viewport.scrollHeight - viewport.clientHeight - viewport.scrollTop > 8,
+            );
+          }}
+          onUserScrollAwayFromEnd={() => setSuppressMaintainScrollAtEnd(true)}
+          suppressMaintainScrollAtEnd={suppressMaintainScrollAtEnd}
+          timelineEntries={[
+            {
+              ...baseEntry,
+              message: {
+                ...baseEntry.message,
+                text,
+              },
+            },
+          ]}
+        />
+      );
+    }
+
+    const screen = await render(<Harness text="Initial streaming text" />);
+
+    try {
+      const scrollViewport = document.querySelector<HTMLElement>(
+        '[data-chat-messages-scroll="true"]',
+      );
+      expect(scrollViewport).not.toBeNull();
+      Object.defineProperties(scrollViewport!, {
+        scrollHeight: { configurable: true, value: 1_000 },
+        clientHeight: { configurable: true, value: 200 },
+        scrollTop: { configurable: true, writable: true, value: 600 },
+      });
+
+      scrollViewport!.dispatchEvent(new Event("scroll", { bubbles: true }));
+
+      await vi.waitFor(() => {
+        expect(legendListPropsSpy).toHaveBeenLastCalledWith(
+          expect.objectContaining({ maintainScrollAtEnd: false }),
+        );
+      });
+
+      await screen.rerender(<Harness text="Initial streaming text plus a streamed token" />);
+
+      expect(legendListPropsSpy).toHaveBeenLastCalledWith(
+        expect.objectContaining({ maintainScrollAtEnd: false }),
+      );
+      expect(scrollToEndSpy).not.toHaveBeenCalled();
+
+      scrollViewport!.scrollTop = 792;
+      scrollViewport!.dispatchEvent(new Event("scroll", { bubbles: true }));
+
+      await vi.waitFor(() => {
+        expect(legendListPropsSpy).toHaveBeenLastCalledWith(
+          expect.objectContaining({ maintainScrollAtEnd: true }),
+        );
+      });
+      expect(scrollToEndSpy).not.toHaveBeenCalled();
     } finally {
       await screen.unmount();
     }
