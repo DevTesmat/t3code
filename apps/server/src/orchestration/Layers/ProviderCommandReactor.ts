@@ -32,6 +32,28 @@ import { ServerSettingsService } from "../../serverSettings.ts";
 
 const PROVIDER_COMMAND_REACTOR_QUEUE_CAPACITY = 2_000;
 
+function asRecord(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === "object" ? (value as Record<string, unknown>) : null;
+}
+
+function collectCollabReceiverThreadIds(activities: ReadonlyArray<{ payload: unknown }>): string[] {
+  const ids = new Set<string>();
+  for (const activity of activities) {
+    const payload = asRecord(activity.payload);
+    if (payload?.itemType !== "collab_agent_tool_call") {
+      continue;
+    }
+    const data = asRecord(payload.data);
+    const receiverThreadIds = Array.isArray(data?.receiverThreadIds)
+      ? data.receiverThreadIds.filter((value): value is string => typeof value === "string")
+      : [];
+    for (const receiverThreadId of receiverThreadIds) {
+      ids.add(receiverThreadId);
+    }
+  }
+  return [...ids];
+}
+
 type ProviderIntentEvent = Extract<
   OrchestrationEvent,
   {
@@ -896,6 +918,32 @@ const make = Effect.gen(function* () {
     const now = event.payload.createdAt;
     if (thread.session && thread.session.status !== "stopped") {
       yield* providerService.stopSession({ threadId: thread.id });
+    }
+
+    const receiverThreadIds = collectCollabReceiverThreadIds(thread.activities);
+    if (receiverThreadIds.length > 0) {
+      yield* orchestrationEngine.dispatch({
+        type: "thread.activity.append",
+        commandId: serverCommandId("provider-session-stop-subagents"),
+        threadId: thread.id,
+        activity: {
+          id: EventId.make(crypto.randomUUID()),
+          tone: "tool",
+          kind: "tool.completed",
+          summary: "Stopped subagents",
+          payload: {
+            itemType: "collab_agent_tool_call",
+            data: {
+              collabTool: "closeAgent",
+              receiverThreadIds,
+              status: "closed",
+            },
+          },
+          turnId: thread.session?.activeTurnId ?? null,
+          createdAt: now,
+        },
+        createdAt: now,
+      });
     }
 
     yield* setThreadSession({

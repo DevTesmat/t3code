@@ -3,6 +3,7 @@ import * as Arr from "effect/Array";
 import {
   ApprovalRequestId,
   isToolLifecycleItemType,
+  MessageId,
   type OrchestrationLatestTurn,
   type OrchestrationThreadActivity,
   type OrchestrationProposedPlanId,
@@ -10,7 +11,7 @@ import {
   type ToolLifecycleItemType,
   type UserInputQuestion,
   type ThreadId,
-  type TurnId,
+  TurnId,
 } from "@t3tools/contracts";
 import { classifyToolActivityGroup } from "@t3tools/shared/toolActivity";
 import { deriveUserInputPauseDurationMs as deriveSharedUserInputPauseDurationMs } from "@t3tools/shared/workDuration";
@@ -87,6 +88,12 @@ export interface ThreadSubagent {
   model?: string;
   reasoningEffort?: string;
   promptPreview?: string;
+}
+
+export interface ThreadSubagentTranscript {
+  subagent: ThreadSubagent;
+  messages: ChatMessage[];
+  activities: OrchestrationThreadActivity[];
 }
 
 interface DerivedWorkLogEntry extends WorkLogEntry {
@@ -615,6 +622,7 @@ export function deriveWorkLogEntries(
     .filter((activity) => (latestTurnId ? activity.turnId === latestTurnId : true))
     .filter((activity) => activity.kind !== "task.started")
     .filter((activity) => activity.kind !== "context-window.updated")
+    .filter((activity) => !activity.kind.startsWith("subagent."))
     .filter((activity) => activity.summary !== "Checkpoint captured")
     .filter((activity) => !isPlanBoundaryToolActivity(activity))
     .map(toDerivedWorkLogEntry);
@@ -646,7 +654,11 @@ function toDerivedWorkLogEntry(activity: OrchestrationThreadActivity): DerivedWo
   const itemType = extractWorkLogItemType(payload);
   const outputPreview = extractCommandOutputPreview(payload, itemType);
   const commandStatus = extractCommandStatus(payload, activity.kind, itemType);
+  const collabStatus = extractCollabWorkLogStatus(payload, activity.kind, itemType);
   const exitCode = extractCommandExitCode(payload);
+  const collabTool = extractCollabTool(payload);
+  const collabLabel =
+    itemType === "collab_agent_tool_call" ? formatCollabWorkLogLabel(payload, collabTool) : null;
   const isTaskActivity = activity.kind === "task.progress" || activity.kind === "task.completed";
   const taskSummary =
     isTaskActivity && typeof payload?.summary === "string" && payload.summary.length > 0
@@ -673,7 +685,7 @@ function toDerivedWorkLogEntry(activity: OrchestrationThreadActivity): DerivedWo
     id: activity.id,
     createdAt: activity.createdAt,
     ...(activity.turnId ? { turnId: activity.turnId } : {}),
-    label: taskLabel || activity.summary,
+    label: collabLabel ?? taskLabel ?? activity.summary,
     tone:
       activity.kind === "task.progress"
         ? "thinking"
@@ -697,6 +709,8 @@ function toDerivedWorkLogEntry(activity: OrchestrationThreadActivity): DerivedWo
   }
   if (commandStatus) {
     entry.status = commandStatus;
+  } else if (collabStatus) {
+    entry.status = collabStatus;
   }
   if (exitCode !== null) {
     entry.exitCode = exitCode;
@@ -716,9 +730,11 @@ function toDerivedWorkLogEntry(activity: OrchestrationThreadActivity): DerivedWo
   if (toolCallId) {
     entry.toolCallId = toolCallId;
   }
-  const collabTool = extractCollabTool(payload);
   if (collabTool) {
     entry.collabTool = collabTool;
+  }
+  if (collabLabel) {
+    entry.toolTitle = collabLabel;
   }
   const collapseKey = deriveToolLifecycleCollapseKey(entry);
   if (collapseKey) {
@@ -802,6 +818,111 @@ export function deriveThreadSubagents(
   return [...subagentsByThreadId.values()].toSorted((left, right) =>
     left.createdAt.localeCompare(right.createdAt),
   );
+}
+
+export function deriveThreadSubagentTranscripts(
+  activities: ReadonlyArray<OrchestrationThreadActivity>,
+): ThreadSubagentTranscript[] {
+  const subagents = deriveThreadSubagents(activities);
+  const knownSubagentIds = new Set(subagents.map((subagent) => subagent.threadId));
+  const messagesByThreadId = new Map<string, ChatMessage[]>();
+  const activitiesByThreadId = new Map<string, OrchestrationThreadActivity[]>();
+
+  for (const subagent of subagents) {
+    messagesByThreadId.set(subagent.threadId, []);
+    activitiesByThreadId.set(subagent.threadId, []);
+    if (subagent.promptPreview) {
+      messagesByThreadId.get(subagent.threadId)?.push({
+        id: MessageId.make(`subagent:${subagent.threadId}:prompt`),
+        role: "user",
+        text: subagent.promptPreview,
+        createdAt: subagent.createdAt,
+        streaming: false,
+      });
+    }
+  }
+
+  const ordered = [...activities].toSorted(compareActivitiesByOrder);
+  const fallbackMessageKeys = new Set<string>();
+
+  for (const activity of ordered) {
+    const payload = asRecord(activity.payload);
+    const providerThreadId = asTrimmedString(payload?.providerThreadId);
+    if (providerThreadId && knownSubagentIds.has(providerThreadId)) {
+      activitiesByThreadId.get(providerThreadId)?.push(activity);
+      const itemType = asTrimmedString(payload?.itemType);
+      const text = asTrimmedString(payload?.text ?? payload?.detail);
+      const phase = asTrimmedString(payload?.phase);
+      const providerTurnId = asTrimmedString(payload?.providerTurnId);
+      if (activity.kind === "subagent.item.completed" && itemType === "assistant_message" && text) {
+        messagesByThreadId.get(providerThreadId)?.push({
+          id: MessageId.make(
+            `subagent:${providerThreadId}:${asTrimmedString(payload?.itemId) ?? activity.id}`,
+          ),
+          role: "assistant",
+          text,
+          ...(providerTurnId ? { turnId: TurnId.make(providerTurnId) } : {}),
+          createdAt: activity.createdAt,
+          completedAt: activity.createdAt,
+          streaming: false,
+        });
+      }
+      if (activity.kind === "subagent.item.completed" && itemType === "user_message" && text) {
+        messagesByThreadId.get(providerThreadId)?.push({
+          id: MessageId.make(
+            `subagent:${providerThreadId}:${asTrimmedString(payload?.itemId) ?? activity.id}`,
+          ),
+          role: "user",
+          text,
+          ...(providerTurnId ? { turnId: TurnId.make(providerTurnId) } : {}),
+          createdAt: activity.createdAt,
+          completedAt: activity.createdAt,
+          streaming: false,
+        });
+      }
+      if (phase === "final_answer" && text) {
+        fallbackMessageKeys.add(`${providerThreadId}:${text}`);
+      }
+      continue;
+    }
+
+    if (extractWorkLogItemType(payload) !== "collab_agent_tool_call") {
+      continue;
+    }
+    const data = asRecord(payload?.data);
+    const agentsStates = asRecord(data?.agentsStates);
+    if (!agentsStates) {
+      continue;
+    }
+    for (const subagent of subagents) {
+      const state = asRecord(agentsStates[subagent.threadId]);
+      const message = asTrimmedString(state?.message);
+      if (!message) {
+        continue;
+      }
+      const key = `${subagent.threadId}:${message}`;
+      if (fallbackMessageKeys.has(key)) {
+        continue;
+      }
+      fallbackMessageKeys.add(key);
+      messagesByThreadId.get(subagent.threadId)?.push({
+        id: MessageId.make(`subagent:${subagent.threadId}:state:${activity.id}`),
+        role: "assistant",
+        text: message,
+        createdAt: activity.createdAt,
+        completedAt: activity.createdAt,
+        streaming: false,
+      });
+    }
+  }
+
+  return subagents.map((subagent) => ({
+    subagent,
+    messages: (messagesByThreadId.get(subagent.threadId) ?? []).toSorted((left, right) =>
+      left.createdAt.localeCompare(right.createdAt),
+    ),
+    activities: activitiesByThreadId.get(subagent.threadId) ?? [],
+  }));
 }
 
 function collapseDerivedWorkLogEntries(
@@ -925,6 +1046,9 @@ function mergeChangedFiles(
 function deriveToolLifecycleCollapseKey(entry: DerivedWorkLogEntry): string | undefined {
   if (!isToolLifecycleActivityKind(entry.activityKind)) {
     return undefined;
+  }
+  if (entry.itemType === "collab_agent_tool_call" && entry.collabTool === "wait") {
+    return `collab:wait:${entry.turnId ?? "unknown"}`;
   }
   if (entry.toolCallId) {
     return `tool:${entry.toolCallId}`;
@@ -1126,6 +1250,30 @@ function extractCommandStatus(
     payloadStatus === "completed" ||
     rawStatus === "completed"
   ) {
+    return "completed";
+  }
+  return "running";
+}
+
+function extractCollabWorkLogStatus(
+  payload: Record<string, unknown> | null,
+  activityKind: OrchestrationThreadActivity["kind"],
+  itemType: WorkLogEntry["itemType"] | undefined,
+): WorkLogEntry["status"] | undefined {
+  if (itemType !== "collab_agent_tool_call") {
+    return undefined;
+  }
+  const statuses = collabAgentStatuses(payload);
+  if (statuses.some((status) => status === "failed")) {
+    return "failed";
+  }
+  if (
+    statuses.length > 0 &&
+    statuses.every((status) => status === "completed" || status === "closed")
+  ) {
+    return "completed";
+  }
+  if (activityKind === "tool.completed") {
     return "completed";
   }
   return "running";
@@ -1364,6 +1512,53 @@ function extractToolCallId(payload: Record<string, unknown> | null): string | nu
 function extractCollabTool(payload: Record<string, unknown> | null): string | null {
   const data = asRecord(payload?.data);
   return asTrimmedString(data?.collabTool);
+}
+
+function extractCollabReceiverThreadIds(payload: Record<string, unknown> | null): string[] {
+  const data = asRecord(payload?.data);
+  return extractStringArray(data?.receiverThreadIds);
+}
+
+function collabAgentStatuses(payload: Record<string, unknown> | null): ThreadSubagentStatus[] {
+  const data = asRecord(payload?.data);
+  const agentsStates = asRecord(data?.agentsStates);
+  const receiverThreadIds = extractCollabReceiverThreadIds(payload);
+  const statuses: ThreadSubagentStatus[] = [];
+  for (const receiverThreadId of receiverThreadIds) {
+    const agentState = asRecord(agentsStates?.[receiverThreadId]);
+    const status = normalizeSubagentStatus(
+      asTrimmedString(agentState?.status ?? agentState?.state),
+    );
+    if (status) {
+      statuses.push(status);
+    }
+  }
+  const dataStatus = normalizeSubagentStatus(asTrimmedString(data?.status));
+  if (statuses.length === 0 && dataStatus) {
+    statuses.push(dataStatus);
+  }
+  return statuses;
+}
+
+function isTerminalSubagentStatus(status: ThreadSubagentStatus): boolean {
+  return status === "completed" || status === "failed" || status === "closed";
+}
+
+function formatCollabWorkLogLabel(
+  payload: Record<string, unknown> | null,
+  collabTool: string | null,
+): string | null {
+  if (collabTool !== "wait") {
+    return null;
+  }
+  const receiverThreadIds = extractCollabReceiverThreadIds(payload);
+  const total = receiverThreadIds.length;
+  if (total <= 1) {
+    return "Waiting on subagent";
+  }
+  const statuses = collabAgentStatuses(payload);
+  const completeCount = statuses.filter(isTerminalSubagentStatus).length;
+  return `Waiting on subagents (${completeCount}/${total} complete)`;
 }
 
 function normalizeSubagentStatus(value: string | null): ThreadSubagentStatus | null {
@@ -1721,7 +1916,7 @@ function labelForToolActivity(entry: WorkLogEntry): string {
         case "resumeAgent":
           return "Resumed subagent";
         case "wait":
-          return "Waiting on subagent";
+          return entry.label;
         case "closeAgent":
           return "Closed subagent";
         default:

@@ -2,6 +2,7 @@ import {
   ApprovalRequestId,
   type AssistantDeliveryMode,
   CommandId,
+  EventId,
   MessageId,
   type OrchestrationEvent,
   type OrchestrationProposedPlanId,
@@ -799,6 +800,105 @@ function runtimeEventToActivities(
   return [];
 }
 
+function providerThreadIdFromRuntimeEvent(event: ProviderRuntimeEvent): string | undefined {
+  const fromRefs = event.providerRefs?.providerThreadId;
+  if (fromRefs) {
+    return fromRefs;
+  }
+  const data = asRecord(
+    "payload" in event && "data" in event.payload ? event.payload.data : undefined,
+  );
+  return asTrimmedString(data?.threadId) ?? undefined;
+}
+
+function runtimeEventToSubagentTranscriptActivity(
+  event: ProviderRuntimeEvent,
+  input: {
+    readonly parentProviderThreadId?: string | undefined;
+    readonly childProviderThreadIds: ReadonlySet<string>;
+  },
+): OrchestrationThreadActivity | null {
+  if (
+    event.type !== "item.started" &&
+    event.type !== "item.updated" &&
+    event.type !== "item.completed"
+  ) {
+    return null;
+  }
+  if (event.payload.itemType === "collab_agent_tool_call") {
+    return null;
+  }
+
+  const providerThreadId = providerThreadIdFromRuntimeEvent(event);
+  if (!providerThreadId) {
+    return null;
+  }
+  if (providerThreadId === input.parentProviderThreadId) {
+    return null;
+  }
+  if (!input.childProviderThreadIds.has(providerThreadId)) {
+    return null;
+  }
+
+  const data = asRecord("data" in event.payload ? event.payload.data : undefined);
+  const rawItem = asRecord(data?.item);
+  const rawText = asTrimmedString(rawItem?.text ?? event.payload.detail);
+  const phase = asTrimmedString(rawItem?.phase);
+  const status =
+    "status" in event.payload && typeof event.payload.status === "string"
+      ? event.payload.status
+      : event.type === "item.completed"
+        ? "completed"
+        : event.type === "item.started"
+          ? "inProgress"
+          : undefined;
+
+  return {
+    id: EventId.make(`${event.eventId}:subagent-transcript`),
+    createdAt: event.createdAt,
+    tone: event.payload.itemType === "command_execution" ? "tool" : "info",
+    kind: `subagent.${event.type}`,
+    summary: event.payload.title ?? "Subagent activity",
+    payload: {
+      providerThreadId,
+      itemType: event.payload.itemType,
+      ...(event.itemId ? { itemId: event.itemId } : {}),
+      ...(event.turnId ? { providerTurnId: event.turnId } : {}),
+      ...(status ? { status } : {}),
+      ...(rawText ? { text: rawText } : {}),
+      ...(phase ? { phase } : {}),
+      ...(event.payload.detail ? { detail: truncateDetail(event.payload.detail, 1_000) } : {}),
+      ...(data ? { data } : {}),
+    },
+    turnId: toTurnId(event.turnId) ?? null,
+    ...(() => {
+      const eventWithSequence = event as ProviderRuntimeEvent & { sessionSequence?: number };
+      return eventWithSequence.sessionSequence !== undefined
+        ? { sequence: eventWithSequence.sessionSequence }
+        : {};
+    })(),
+  };
+}
+
+function collabReceiverThreadIdsFromRuntimeEvent(event: ProviderRuntimeEvent): string[] {
+  if (
+    event.type !== "item.started" &&
+    event.type !== "item.updated" &&
+    event.type !== "item.completed"
+  ) {
+    return [];
+  }
+  if (event.payload.itemType !== "collab_agent_tool_call") {
+    return [];
+  }
+  const data = normalizedToolLifecycleData(event, "collab_agent_tool_call", undefined);
+  const normalized = asRecord(data);
+  const receiverThreadIds = normalized?.receiverThreadIds;
+  return Array.isArray(receiverThreadIds)
+    ? receiverThreadIds.filter((value): value is string => typeof value === "string")
+    : [];
+}
+
 const make = Effect.gen(function* () {
   const orchestrationEngine = yield* OrchestrationEngineService;
   const commandReceiptRepository = yield* OrchestrationCommandReceiptRepository;
@@ -834,6 +934,8 @@ const make = Effect.gen(function* () {
   });
 
   const commandOutputPreviewByItemKey = new Map<string, TerminalOutputPreviewBuffer>();
+  const parentProviderThreadIdByThreadId = new Map<string, string>();
+  const childProviderThreadIdsByThreadId = new Map<string, Set<string>>();
 
   const isGitRepoForThread = Effect.fn("isGitRepoForThread")(function* (threadId: ThreadId) {
     const readModel = yield* orchestrationEngine.getReadModel();
@@ -1452,6 +1554,18 @@ const make = Effect.gen(function* () {
       const now = event.createdAt;
       const eventTurnId = toTurnId(event.turnId);
       const activeTurnId = thread.session?.activeTurnId ?? null;
+      if (event.type === "thread.started" && event.payload?.providerThreadId) {
+        parentProviderThreadIdByThreadId.set(thread.id, event.payload.providerThreadId);
+      }
+      const collabReceiverThreadIds = collabReceiverThreadIdsFromRuntimeEvent(event);
+      if (collabReceiverThreadIds.length > 0) {
+        const childProviderThreadIds =
+          childProviderThreadIdsByThreadId.get(thread.id) ?? new Set<string>();
+        for (const receiverThreadId of collabReceiverThreadIds) {
+          childProviderThreadIds.add(receiverThreadId);
+        }
+        childProviderThreadIdsByThreadId.set(thread.id, childProviderThreadIds);
+      }
 
       const conflictsWithActiveTurn =
         activeTurnId !== null && eventTurnId !== undefined && !sameId(activeTurnId, eventTurnId);
@@ -1947,6 +2061,20 @@ const make = Effect.gen(function* () {
           createdAt: activity.createdAt,
         }),
       ).pipe(Effect.asVoid);
+
+      const subagentTranscriptActivity = runtimeEventToSubagentTranscriptActivity(event, {
+        parentProviderThreadId: parentProviderThreadIdByThreadId.get(thread.id),
+        childProviderThreadIds: childProviderThreadIdsByThreadId.get(thread.id) ?? new Set(),
+      });
+      if (subagentTranscriptActivity) {
+        yield* orchestrationEngine.dispatch({
+          type: "thread.activity.append",
+          commandId: providerCommandId(event, "subagent-transcript-activity-append"),
+          threadId: thread.id,
+          activity: subagentTranscriptActivity,
+          createdAt: subagentTranscriptActivity.createdAt,
+        });
+      }
     });
 
   const processRuntimeEventOnce = (event: ProviderRuntimeEvent) =>

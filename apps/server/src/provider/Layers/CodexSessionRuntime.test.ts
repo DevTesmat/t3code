@@ -86,6 +86,8 @@ describe("buildTurnStartParams", () => {
       CODEX_PLAN_MODE_DEVELOPER_INSTRUCTIONS,
       /repetitive "Risk" \/ "Plan" \/ "Verification" subsections/,
     );
+    assert.match(CODEX_PLAN_MODE_DEVELOPER_INSTRUCTIONS, /After the batch is done/);
+    assert.match(CODEX_PLAN_MODE_DEVELOPER_INSTRUCTIONS, /receiver thread ID/);
   });
 
   it("includes default collaboration mode and image attachments", () => {
@@ -131,6 +133,8 @@ describe("buildTurnStartParams", () => {
         },
       },
     });
+    assert.match(CODEX_DEFAULT_MODE_DEVELOPER_INSTRUCTIONS, /After the batch is done/);
+    assert.match(CODEX_DEFAULT_MODE_DEVELOPER_INSTRUCTIONS, /receiver thread ID/);
   });
 
   it("omits collaboration mode when interaction mode is absent", () => {

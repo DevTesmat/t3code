@@ -912,6 +912,154 @@ describe("ProviderRuntimeIngestion", () => {
     });
   });
 
+  it("projects provider child-thread item completions as subagent transcript activities", async () => {
+    const harness = await createHarness();
+    const now = new Date().toISOString();
+
+    harness.emit({
+      type: "item.completed",
+      eventId: asEventId("evt-collab-agent-spawn"),
+      provider: ProviderDriverKind.make("codex"),
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("turn-collab-agent"),
+      itemId: asItemId("collab-call-1"),
+      payload: {
+        itemType: "collab_agent_tool_call",
+        status: "completed",
+        title: "Subagent task",
+        data: {
+          item: {
+            id: "collab-call-1",
+            type: "collabAgentToolCall",
+            tool: "spawnAgent",
+            senderThreadId: "parent-codex-thread",
+            receiverThreadIds: ["child-codex-thread"],
+            status: "completed",
+          },
+        },
+      },
+    });
+    await waitForThread(harness.engine, (entry) =>
+      entry.activities.some(
+        (activity: ProviderRuntimeTestActivity) => activity.id === "evt-collab-agent-spawn",
+      ),
+    );
+
+    harness.emit({
+      type: "item.completed",
+      eventId: asEventId("evt-child-assistant-completed"),
+      provider: ProviderDriverKind.make("codex"),
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("child-turn-1"),
+      itemId: asItemId("child-msg-1"),
+      providerRefs: {
+        providerThreadId: "child-codex-thread",
+        providerTurnId: "child-turn-1",
+        providerItemId: "child-msg-1",
+      },
+      payload: {
+        itemType: "assistant_message",
+        status: "completed",
+        title: "Assistant message",
+        detail: "Subagent finding.",
+        data: {
+          threadId: "child-codex-thread",
+          turnId: "child-turn-1",
+          item: {
+            id: "child-msg-1",
+            type: "agentMessage",
+            phase: "final_answer",
+            text: "Subagent finding.",
+          },
+        },
+      },
+    });
+
+    const thread = await waitForThread(harness.engine, (entry) =>
+      entry.activities.some(
+        (activity: ProviderRuntimeTestActivity) =>
+          activity.kind === "subagent.item.completed" &&
+          activity.id === "evt-child-assistant-completed:subagent-transcript",
+      ),
+    );
+    const activity = thread.activities.find(
+      (entry: ProviderRuntimeTestActivity) =>
+        entry.id === "evt-child-assistant-completed:subagent-transcript",
+    );
+    const payload = activity?.payload as Record<string, unknown> | undefined;
+
+    expect(activity?.summary).toBe("Assistant message");
+    expect(payload).toMatchObject({
+      providerThreadId: "child-codex-thread",
+      providerTurnId: "child-turn-1",
+      itemId: "child-msg-1",
+      itemType: "assistant_message",
+      status: "completed",
+      text: "Subagent finding.",
+      phase: "final_answer",
+    });
+  });
+
+  it("does not project parent-thread assistant messages as subagent transcript activities", async () => {
+    const harness = await createHarness();
+    const now = new Date().toISOString();
+
+    harness.emit({
+      type: "thread.started",
+      eventId: asEventId("evt-parent-thread-started"),
+      provider: ProviderDriverKind.make("codex"),
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      payload: {
+        providerThreadId: "parent-codex-thread",
+      },
+    });
+    await waitForThread(
+      harness.engine,
+      (entry) => entry.session?.status === "ready" && entry.activities.length === 0,
+    );
+
+    harness.emit({
+      type: "item.completed",
+      eventId: asEventId("evt-parent-assistant-completed"),
+      provider: ProviderDriverKind.make("codex"),
+      createdAt: new Date().toISOString(),
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("turn-parent"),
+      itemId: asItemId("parent-msg-1"),
+      providerRefs: {
+        providerThreadId: "parent-codex-thread",
+        providerTurnId: "turn-parent",
+        providerItemId: "parent-msg-1",
+      },
+      payload: {
+        itemType: "assistant_message",
+        status: "completed",
+        title: "Assistant message",
+        detail: "Parent answer.",
+        data: {
+          threadId: "parent-codex-thread",
+          turnId: "turn-parent",
+          item: {
+            id: "parent-msg-1",
+            type: "agentMessage",
+            phase: "final_answer",
+            text: "Parent answer.",
+          },
+        },
+      },
+    });
+
+    await harness.drain();
+    const readModel = await Effect.runPromise(harness.engine.getReadModel());
+    const thread = readModel.threads.find((entry) => entry.id === "thread-1");
+    expect(thread?.activities.some((activity) => activity.kind.startsWith("subagent."))).toBe(
+      false,
+    );
+  });
+
   it("normalizes command execution activities to ran-command summaries", async () => {
     const harness = await createHarness();
     const now = new Date().toISOString();

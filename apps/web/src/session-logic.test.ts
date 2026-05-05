@@ -13,6 +13,7 @@ import {
   deriveActiveWorkStartedAt,
   deriveThreadWorkDurationMs,
   deriveThreadSubagents,
+  deriveThreadSubagentTranscripts,
   deriveActivePlanState,
   derivePendingApprovals,
   derivePendingUserInputs,
@@ -159,6 +160,140 @@ describe("deriveThreadSubagents", () => {
         updatedAt: "2026-02-23T00:00:03.000Z",
         status: "failed",
         running: false,
+      },
+    ]);
+  });
+});
+
+describe("deriveThreadSubagentTranscripts", () => {
+  it("builds read-only subagent messages from spawn metadata and child transcript activities", () => {
+    const activities: OrchestrationThreadActivity[] = [
+      makeActivity({
+        id: "spawn-child",
+        createdAt: "2026-02-23T00:00:01.000Z",
+        kind: "tool.completed",
+        summary: "Subagent task",
+        payload: {
+          itemType: "collab_agent_tool_call",
+          data: {
+            collabTool: "spawnAgent",
+            receiverThreadIds: ["child-1"],
+            promptPreview: "Inspect the server projection.",
+            agentsStates: {
+              "child-1": { status: "running", agent_nickname: "Explorer" },
+            },
+          },
+        },
+      }),
+      makeActivity({
+        id: "child-answer",
+        createdAt: "2026-02-23T00:00:02.000Z",
+        kind: "subagent.item.completed",
+        summary: "Assistant message",
+        tone: "info",
+        payload: {
+          providerThreadId: "child-1",
+          providerTurnId: "child-turn-1",
+          itemId: "child-message-1",
+          itemType: "assistant_message",
+          text: "Projection stores activity rows.",
+          phase: "final_answer",
+        },
+      }),
+    ];
+
+    const transcripts = deriveThreadSubagentTranscripts(activities);
+
+    expect(transcripts).toHaveLength(1);
+    expect(transcripts[0]?.subagent.threadId).toBe("child-1");
+    expect(transcripts[0]?.messages).toMatchObject([
+      {
+        role: "user",
+        text: "Inspect the server projection.",
+        streaming: false,
+      },
+      {
+        role: "assistant",
+        text: "Projection stores activity rows.",
+        streaming: false,
+      },
+    ]);
+    expect(transcripts[0]?.activities.map((activity) => activity.id)).toEqual(["child-answer"]);
+  });
+});
+
+describe("deriveWorkLogEntries subagent coordination", () => {
+  it("filters subagent transcript rows out of the parent work log", () => {
+    const activities: OrchestrationThreadActivity[] = [
+      makeActivity({
+        id: "child-answer",
+        createdAt: "2026-02-23T00:00:01.000Z",
+        kind: "subagent.item.completed",
+        summary: "Assistant message",
+        tone: "info",
+        payload: {
+          providerThreadId: "child-1",
+          itemType: "assistant_message",
+          text: "Subagent finding.",
+        },
+        turnId: "turn-1",
+      }),
+    ];
+
+    expect(deriveWorkLogEntries(activities, TurnId.make("turn-1"))).toEqual([]);
+  });
+
+  it("collapses repeated wait calls in one parent turn into a progress row", () => {
+    const activities: OrchestrationThreadActivity[] = [
+      makeActivity({
+        id: "wait-all",
+        createdAt: "2026-02-23T00:00:01.000Z",
+        kind: "tool.completed",
+        summary: "Subagent task",
+        payload: {
+          itemType: "collab_agent_tool_call",
+          data: {
+            toolCallId: "wait-1",
+            collabTool: "wait",
+            receiverThreadIds: ["child-1", "child-2", "child-3"],
+            agentsStates: {
+              "child-1": { status: "completed" },
+              "child-2": { status: "running" },
+              "child-3": { status: "running" },
+            },
+          },
+        },
+        turnId: "turn-1",
+      }),
+      makeActivity({
+        id: "wait-remaining",
+        createdAt: "2026-02-23T00:00:02.000Z",
+        kind: "tool.completed",
+        summary: "Subagent task",
+        payload: {
+          itemType: "collab_agent_tool_call",
+          data: {
+            toolCallId: "wait-2",
+            collabTool: "wait",
+            receiverThreadIds: ["child-1", "child-2", "child-3"],
+            agentsStates: {
+              "child-1": { status: "completed" },
+              "child-2": { status: "completed" },
+              "child-3": { status: "completed" },
+            },
+          },
+        },
+        turnId: "turn-1",
+      }),
+    ];
+
+    expect(deriveWorkLogEntries(activities, TurnId.make("turn-1"))).toMatchObject([
+      {
+        id: "wait-remaining",
+        label: "Waiting on subagents (3/3 complete)",
+        status: "completed",
+        itemType: "collab_agent_tool_call",
+        collabTool: "wait",
       },
     ]);
   });

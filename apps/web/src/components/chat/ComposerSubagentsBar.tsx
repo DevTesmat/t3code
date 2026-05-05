@@ -6,6 +6,8 @@ import { cn } from "../../lib/utils";
 
 export interface ComposerSubagentsBarProps {
   subagents: ReadonlyArray<ThreadSubagent>;
+  selectedThreadId?: string | null | undefined;
+  onSelectSubagent?: ((threadId: string) => void) | undefined;
 }
 
 const SUBAGENT_ROW_HEIGHT_PX = 38;
@@ -38,6 +40,8 @@ function statusLabel(status: ThreadSubagent["status"]): string {
 
 export const ComposerSubagentsBar = memo(function ComposerSubagentsBar({
   subagents,
+  selectedThreadId,
+  onSelectSubagent,
 }: ComposerSubagentsBarProps) {
   const [expanded, setExpanded] = useState(false);
 
@@ -94,9 +98,15 @@ export const ComposerSubagentsBar = memo(function ComposerSubagentsBar({
                   .filter(Boolean)
                   .join(" · ");
                 return (
-                  <div
+                  <button
+                    type="button"
                     key={subagent.threadId}
-                    className="flex min-h-[38px] items-center gap-2 rounded-sm px-1.5 text-[11px] hover:bg-muted/35"
+                    onClick={() => onSelectSubagent?.(subagent.threadId)}
+                    aria-current={selectedThreadId === subagent.threadId ? "true" : undefined}
+                    className={cn(
+                      "flex min-h-[38px] w-full items-center gap-2 rounded-sm px-1.5 text-left text-[11px] hover:bg-muted/35",
+                      selectedThreadId === subagent.threadId && "bg-muted/45",
+                    )}
                     data-composer-subagent-row="true"
                   >
                     <CpuIcon
@@ -118,7 +128,7 @@ export const ComposerSubagentsBar = memo(function ComposerSubagentsBar({
                       <CircleIcon aria-hidden="true" className="size-2 fill-current" />
                       {statusLabel(subagent.status)}
                     </span>
-                  </div>
+                  </button>
                 );
               })}
             </div>

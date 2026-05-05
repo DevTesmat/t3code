@@ -4,6 +4,7 @@ export interface DiffRouteSearch {
   diff?: "1" | undefined;
   diffTurnId?: TurnId | undefined;
   diffFilePath?: string | undefined;
+  subagent?: string | undefined;
 }
 
 function isDiffOpenValue(value: unknown): boolean {
@@ -35,5 +36,8 @@ export function parseDiffRouteSearch(search: Record<string, unknown>): DiffRoute
     ...(diff ? { diff } : {}),
     ...(diffTurnId ? { diffTurnId } : {}),
     ...(diffFilePath ? { diffFilePath } : {}),
+    ...(normalizeSearchString(search.subagent)
+      ? { subagent: normalizeSearchString(search.subagent) }
+      : {}),
   };
 }

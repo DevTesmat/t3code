@@ -5,6 +5,7 @@
 - All of `bun fmt`, `bun lint`, and `bun typecheck` must pass before considering tasks completed.
 - CI and release preflight use `bun run fmt:check`; run it when checking formatting without writing changes.
 - NEVER run `bun test`. Always use `bun run test` (runs Vitest).
+- Do not pass individual test file paths to the root `bun run test` command; Turbo interprets them as task names. For a focused test, run the package-local test script from that package directory, or use the full root `bun run test`.
 
 ## Planning Style
 

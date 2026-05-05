@@ -686,6 +686,7 @@ export const makeCodexSessionRuntime = (
     const approvalCorrelationsRef = yield* Ref.make(new Map<string, ApprovalCorrelation>());
     const pendingUserInputsRef = yield* Ref.make(new Map<ApprovalRequestId, PendingUserInput>());
     const collabReceiverTurnsRef = yield* Ref.make(new Map<string, TurnId>());
+    const collabReceiverActiveTurnsRef = yield* Ref.make(new Map<string, TurnId>());
     const closedRef = yield* Ref.make(false);
 
     // `~` is not shell-expanded when env vars are set via
@@ -794,6 +795,27 @@ export const makeCodexSessionRuntime = (
         })();
 
         rememberCollabReceiverTurns(collabReceiverTurns, notification, route.turnId);
+        if (childParentTurnId && notification.method === "turn/started") {
+          const providerConversationId = readNotificationThreadId(notification);
+          const childTurnId = route.turnId;
+          if (providerConversationId && childTurnId) {
+            yield* Ref.update(collabReceiverActiveTurnsRef, (current) => {
+              const next = new Map(current);
+              next.set(providerConversationId, childTurnId);
+              return next;
+            });
+          }
+        }
+        if (childParentTurnId && notification.method === "turn/completed") {
+          const providerConversationId = readNotificationThreadId(notification);
+          if (providerConversationId) {
+            yield* Ref.update(collabReceiverActiveTurnsRef, (current) => {
+              const next = new Map(current);
+              next.delete(providerConversationId);
+              return next;
+            });
+          }
+        }
         if (childParentTurnId && shouldSuppressChildConversationNotification(notification.method)) {
           yield* Ref.set(collabReceiverTurnsRef, collabReceiverTurns);
           return;
@@ -1264,6 +1286,18 @@ export const makeCodexSessionRuntime = (
             threadId: providerThreadId,
             turnId: effectiveTurnId,
           });
+          const childActiveTurns = yield* Ref.get(collabReceiverActiveTurnsRef);
+          yield* Effect.forEach(
+            childActiveTurns,
+            ([childThreadId, childTurnId]) =>
+              client
+                .request("turn/interrupt", {
+                  threadId: childThreadId,
+                  turnId: childTurnId,
+                })
+                .pipe(Effect.ignore),
+            { concurrency: "unbounded", discard: true },
+          );
         }),
       readThread: Effect.gen(function* () {
         const providerThreadId = yield* readProviderThreadId;

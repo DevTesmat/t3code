@@ -407,6 +407,14 @@ function providerRefsFromEvent(
   event: ProviderEvent,
 ): ProviderRuntimeEvent["providerRefs"] | undefined {
   const refs: Record<string, string> = {};
+  const payloadThreadId =
+    typeof event.payload === "object" &&
+    event.payload !== null &&
+    "threadId" in event.payload &&
+    typeof (event.payload as { threadId?: unknown }).threadId === "string"
+      ? (event.payload as { threadId: string }).threadId
+      : undefined;
+  if (payloadThreadId) refs.providerThreadId = payloadThreadId;
   if (event.turnId) refs.providerTurnId = event.turnId;
   if (event.itemId) refs.providerItemId = event.itemId;
   if (event.requestId) refs.providerRequestId = event.requestId;

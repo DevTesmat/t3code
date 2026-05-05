@@ -60,6 +60,7 @@ import {
   deriveActiveWorkStartedAt,
   deriveThreadWorkDurationMs,
   deriveThreadSubagents,
+  deriveThreadSubagentTranscripts,
   deriveActivePlanState,
   findSidebarProposedPlan,
   findLatestProposedPlan,
@@ -111,7 +112,7 @@ import { BranchToolbar } from "./BranchToolbar";
 import { resolveShortcutCommand, shortcutLabelForCommand } from "../keybindings";
 import PlanSidebar from "./PlanSidebar";
 import ThreadTerminalDrawer from "./ThreadTerminalDrawer";
-import { ChevronDownIcon } from "lucide-react";
+import { ArrowLeftIcon, ChevronDownIcon } from "lucide-react";
 import { cn, randomUUID } from "~/lib/utils";
 import { stackedThreadToast, toastManager } from "./ui/toast";
 import { decodeProjectScriptKeybindingRule } from "~/lib/projectScriptKeybindings";
@@ -1211,6 +1212,51 @@ export default function ChatView(props: ChatViewProps) {
     () => deriveThreadSubagents(threadActivities),
     [threadActivities],
   );
+  const threadSubagentTranscripts = useMemo(
+    () => deriveThreadSubagentTranscripts(threadActivities),
+    [threadActivities],
+  );
+  const selectedSubagentThreadId = rawSearch.subagent ?? null;
+  const selectedSubagentTranscript = useMemo(
+    () =>
+      selectedSubagentThreadId
+        ? (threadSubagentTranscripts.find(
+            (entry) => entry.subagent.threadId === selectedSubagentThreadId,
+          ) ?? null)
+        : null,
+    [selectedSubagentThreadId, threadSubagentTranscripts],
+  );
+  const selectSubagentThread = useCallback(
+    (subagentThreadId: string) => {
+      if (!isServerThread) {
+        return;
+      }
+      void navigate({
+        to: "/$environmentId/$threadId",
+        params: { environmentId, threadId },
+        replace: false,
+        search: (previous) => ({
+          ...previous,
+          subagent: subagentThreadId,
+        }),
+      });
+    },
+    [environmentId, isServerThread, navigate, threadId],
+  );
+  const closeSubagentThread = useCallback(() => {
+    if (!isServerThread) {
+      return;
+    }
+    void navigate({
+      to: "/$environmentId/$threadId",
+      params: { environmentId, threadId },
+      replace: false,
+      search: (previous) => ({
+        ...previous,
+        subagent: undefined,
+      }),
+    });
+  }, [environmentId, isServerThread, navigate, threadId]);
   const latestTurnHasToolActivity = useMemo(
     () => hasToolActivityForTurn(threadActivities, activeLatestTurn?.turnId),
     [activeLatestTurn?.turnId, threadActivities],
@@ -1530,6 +1576,17 @@ export default function ChatView(props: ChatViewProps) {
     () =>
       deriveTimelineEntries(timelineMessages, activeThread?.proposedPlans ?? [], workLogEntries),
     [activeThread?.proposedPlans, timelineMessages, workLogEntries],
+  );
+  const selectedSubagentTimelineEntries = useMemo(
+    () =>
+      selectedSubagentTranscript
+        ? deriveTimelineEntries(
+            selectedSubagentTranscript.messages,
+            [],
+            deriveWorkLogEntries(selectedSubagentTranscript.activities, undefined),
+          )
+        : [],
+    [selectedSubagentTranscript],
   );
   const { turnDiffSummaries, inferredCheckpointTurnCountByTurnId } =
     useTurnDiffSummaries(activeThread);
@@ -3959,17 +4016,51 @@ export default function ChatView(props: ChatViewProps) {
         <div ref={chatColumnRef} className="flex min-h-0 min-w-0 flex-1 flex-col">
           {/* Messages Wrapper */}
           <div className="relative flex min-h-0 flex-1 flex-col">
+            {selectedSubagentTranscript ? (
+              <div className="flex min-h-10 items-center gap-2 border-border/60 border-b px-3 text-sm">
+                <button
+                  type="button"
+                  onClick={closeSubagentThread}
+                  className="inline-flex size-7 items-center justify-center rounded-md text-muted-foreground hover:bg-muted hover:text-foreground"
+                  aria-label="Back to parent thread"
+                >
+                  <ArrowLeftIcon className="size-4" aria-hidden="true" />
+                </button>
+                <div className="min-w-0 flex-1">
+                  <div className="truncate font-medium">
+                    {selectedSubagentTranscript.subagent.nickname ||
+                      selectedSubagentTranscript.subagent.role ||
+                      selectedSubagentTranscript.subagent.threadId}
+                  </div>
+                  <div className="truncate text-muted-foreground text-xs">
+                    Read-only subagent transcript
+                  </div>
+                </div>
+              </div>
+            ) : null}
             {/* Messages — LegendList handles virtualization and scrolling internally */}
             <MessagesTimeline
-              key={activeThread.id}
-              isWorking={isWorking}
-              activeTurnInProgress={isWorking || !latestTurnSettled}
-              activeTurnId={activeLatestTurn?.turnId ?? null}
-              activeTurnStartedAt={activeWorkStartedAt}
-              activeTurnActivityState={activeTurnActivityState}
+              key={
+                selectedSubagentTranscript
+                  ? `${activeThread.id}:subagent:${selectedSubagentTranscript.subagent.threadId}`
+                  : activeThread.id
+              }
+              isWorking={selectedSubagentTranscript ? false : isWorking}
+              activeTurnInProgress={
+                selectedSubagentTranscript ? false : isWorking || !latestTurnSettled
+              }
+              activeTurnId={selectedSubagentTranscript ? null : (activeLatestTurn?.turnId ?? null)}
+              activeTurnStartedAt={selectedSubagentTranscript ? null : activeWorkStartedAt}
+              activeTurnActivityState={
+                selectedSubagentTranscript ? undefined : activeTurnActivityState
+              }
               listRef={legendListRef}
-              timelineEntries={timelineEntries}
-              completionDividerBeforeEntryId={completionDividerBeforeEntryId}
+              timelineEntries={
+                selectedSubagentTranscript ? selectedSubagentTimelineEntries : timelineEntries
+              }
+              completionDividerBeforeEntryId={
+                selectedSubagentTranscript ? null : completionDividerBeforeEntryId
+              }
               turnDiffSummaryByAssistantMessageId={turnDiffSummaryByAssistantMessageId}
               turnDiffSummaryByTurnId={turnDiffSummaryByTurnId}
               inferredCheckpointTurnCountByTurnId={inferredCheckpointTurnCountByTurnId}
@@ -4037,77 +4128,90 @@ export default function ChatView(props: ChatViewProps) {
                 messages={queuedComposerMessages}
                 onDeleteMessage={onDeleteQueuedComposerMessage}
               />
-              <ComposerSubagentsBar subagents={threadSubagents} />
-              <ChatComposer
-                ref={composerRef}
-                composerDraftTarget={composerDraftTarget}
-                environmentId={environmentId}
-                routeKind={routeKind}
-                routeThreadRef={routeThreadRef}
-                draftId={draftId}
-                activeThreadId={activeThreadId}
-                activeThreadEnvironmentId={activeThread?.environmentId}
-                activeThread={activeThread}
-                isServerThread={isServerThread}
-                isLocalDraftThread={isLocalDraftThread}
-                phase={composerPhase}
-                isConnecting={isConnecting}
-                isSendBusy={isSendBusy}
-                isPreparingWorktree={isPreparingWorktree}
-                activePendingApproval={activePendingApproval}
-                pendingApprovals={pendingApprovals}
-                pendingUserInputs={pendingUserInputs}
-                activePendingProgress={activePendingProgress}
-                activePendingResolvedAnswers={activePendingResolvedAnswers}
-                activePendingIsResponding={activePendingIsResponding}
-                activePendingDraftAnswers={activePendingDraftAnswers}
-                activePendingQuestionIndex={activePendingQuestionIndex}
-                respondingRequestIds={respondingRequestIds}
-                showPlanFollowUpPrompt={showPlanFollowUpPrompt}
-                activeProposedPlan={activeProposedPlan}
-                activePlan={activePlan as { turnId?: TurnId } | null}
-                sidebarProposedPlan={sidebarProposedPlan as { turnId?: TurnId } | null}
-                planSidebarLabel={planSidebarLabel}
-                planSidebarOpen={planSidebarOpen}
-                runtimeMode={runtimeMode}
-                interactionMode={interactionMode}
-                lockedProvider={lockedProvider}
-                providerStatuses={providerStatuses as ServerProvider[]}
-                activeProjectDefaultModelSelection={activeProject?.defaultModelSelection}
-                activeThreadModelSelection={activeThread?.modelSelection}
-                activeThreadActivities={activeThread?.activities}
-                resolvedTheme={resolvedTheme}
-                settings={settings}
-                keybindings={keybindings}
-                terminalOpen={Boolean(terminalState.terminalOpen)}
-                gitCwd={gitCwd}
-                promptRef={promptRef}
-                composerImagesRef={composerImagesRef}
-                composerTerminalContextsRef={composerTerminalContextsRef}
-                shouldAutoScrollRef={isAtEndRef}
-                scheduleStickToBottom={scrollToEnd}
-                onSend={onSend}
-                onInterrupt={onInterrupt}
-                onImplementPlanInNewThread={onImplementPlanInNewThread}
-                onImportPlanMarkdown={onImportPlanMarkdown}
-                onRespondToApproval={onRespondToApproval}
-                onSelectActivePendingUserInputOption={onSelectActivePendingUserInputOption}
-                onAdvanceActivePendingUserInput={onAdvanceActivePendingUserInput}
-                onPreviousActivePendingUserInputQuestion={onPreviousActivePendingUserInputQuestion}
-                onChangeActivePendingUserInputCustomAnswer={
-                  onChangeActivePendingUserInputCustomAnswer
-                }
-                onProviderModelSelect={onProviderModelSelect}
-                toggleInteractionMode={toggleInteractionMode}
-                handleRuntimeModeChange={handleRuntimeModeChange}
-                handleInteractionModeChange={handleInteractionModeChange}
-                togglePlanSidebar={togglePlanSidebar}
-                focusComposer={focusComposer}
-                scheduleComposerFocus={scheduleComposerFocus}
-                setThreadError={setThreadError}
-                onExpandImage={onExpandTimelineImage}
+              <ComposerSubagentsBar
+                subagents={threadSubagents}
+                selectedThreadId={selectedSubagentThreadId}
+                onSelectSubagent={selectSubagentThread}
               />
-              {isGitRepo && (
+              {selectedSubagentTranscript ? (
+                <div className="rounded-md border border-border/70 bg-card/45 px-3 py-2 text-muted-foreground text-xs">
+                  Viewing a read-only subagent transcript. Return to the parent thread to send
+                  input.
+                </div>
+              ) : (
+                <ChatComposer
+                  ref={composerRef}
+                  composerDraftTarget={composerDraftTarget}
+                  environmentId={environmentId}
+                  routeKind={routeKind}
+                  routeThreadRef={routeThreadRef}
+                  draftId={draftId}
+                  activeThreadId={activeThreadId}
+                  activeThreadEnvironmentId={activeThread?.environmentId}
+                  activeThread={activeThread}
+                  isServerThread={isServerThread}
+                  isLocalDraftThread={isLocalDraftThread}
+                  phase={composerPhase}
+                  isConnecting={isConnecting}
+                  isSendBusy={isSendBusy}
+                  isPreparingWorktree={isPreparingWorktree}
+                  activePendingApproval={activePendingApproval}
+                  pendingApprovals={pendingApprovals}
+                  pendingUserInputs={pendingUserInputs}
+                  activePendingProgress={activePendingProgress}
+                  activePendingResolvedAnswers={activePendingResolvedAnswers}
+                  activePendingIsResponding={activePendingIsResponding}
+                  activePendingDraftAnswers={activePendingDraftAnswers}
+                  activePendingQuestionIndex={activePendingQuestionIndex}
+                  respondingRequestIds={respondingRequestIds}
+                  showPlanFollowUpPrompt={showPlanFollowUpPrompt}
+                  activeProposedPlan={activeProposedPlan}
+                  activePlan={activePlan as { turnId?: TurnId } | null}
+                  sidebarProposedPlan={sidebarProposedPlan as { turnId?: TurnId } | null}
+                  planSidebarLabel={planSidebarLabel}
+                  planSidebarOpen={planSidebarOpen}
+                  runtimeMode={runtimeMode}
+                  interactionMode={interactionMode}
+                  lockedProvider={lockedProvider}
+                  providerStatuses={providerStatuses as ServerProvider[]}
+                  activeProjectDefaultModelSelection={activeProject?.defaultModelSelection}
+                  activeThreadModelSelection={activeThread?.modelSelection}
+                  activeThreadActivities={activeThread?.activities}
+                  resolvedTheme={resolvedTheme}
+                  settings={settings}
+                  keybindings={keybindings}
+                  terminalOpen={Boolean(terminalState.terminalOpen)}
+                  gitCwd={gitCwd}
+                  promptRef={promptRef}
+                  composerImagesRef={composerImagesRef}
+                  composerTerminalContextsRef={composerTerminalContextsRef}
+                  shouldAutoScrollRef={isAtEndRef}
+                  scheduleStickToBottom={scrollToEnd}
+                  onSend={onSend}
+                  onInterrupt={onInterrupt}
+                  onImplementPlanInNewThread={onImplementPlanInNewThread}
+                  onImportPlanMarkdown={onImportPlanMarkdown}
+                  onRespondToApproval={onRespondToApproval}
+                  onSelectActivePendingUserInputOption={onSelectActivePendingUserInputOption}
+                  onAdvanceActivePendingUserInput={onAdvanceActivePendingUserInput}
+                  onPreviousActivePendingUserInputQuestion={
+                    onPreviousActivePendingUserInputQuestion
+                  }
+                  onChangeActivePendingUserInputCustomAnswer={
+                    onChangeActivePendingUserInputCustomAnswer
+                  }
+                  onProviderModelSelect={onProviderModelSelect}
+                  toggleInteractionMode={toggleInteractionMode}
+                  handleRuntimeModeChange={handleRuntimeModeChange}
+                  handleInteractionModeChange={handleInteractionModeChange}
+                  togglePlanSidebar={togglePlanSidebar}
+                  focusComposer={focusComposer}
+                  scheduleComposerFocus={scheduleComposerFocus}
+                  setThreadError={setThreadError}
+                  onExpandImage={onExpandTimelineImage}
+                />
+              )}
+              {!selectedSubagentTranscript && isGitRepo && (
                 <BranchToolbar
                   environmentId={activeThread.environmentId}
                   threadId={activeThread.id}
