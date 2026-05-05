@@ -480,15 +480,20 @@ function TimelineRowContent({ row }: { row: TimelineRow }) {
 
       {row.kind === "working" && (
         <div className="py-0.5 pl-1.5">
-          <div className="flex items-center gap-2 pt-1 text-[11px] text-muted-foreground/70">
+          <div className="flex min-h-4 items-center gap-2 pt-1 text-[11px] leading-4 text-muted-foreground/70">
             <span>{row.activityState.label}</span>
             {ctx.isWorking ? <WorkingDots className="text-muted-foreground/55" /> : null}
           </div>
-          {row.activityState.detail ? (
-            <div className="max-w-full truncate pt-0.5 text-[11px] text-muted-foreground/45">
-              {row.activityState.detail}
-            </div>
-          ) : null}
+          <div
+            className={cn(
+              "min-h-4 max-w-full truncate pt-0.5 text-[11px] leading-4 text-muted-foreground/45",
+              !row.activityState.detail && "invisible",
+            )}
+            data-testid="working-activity-detail"
+            aria-hidden={row.activityState.detail ? undefined : true}
+          >
+            {row.activityState.detail ?? "\u00a0"}
+          </div>
         </div>
       )}
     </div>

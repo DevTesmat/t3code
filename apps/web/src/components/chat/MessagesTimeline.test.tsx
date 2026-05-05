@@ -776,6 +776,31 @@ describe("MessagesTimeline", () => {
 
     expect(activeMarkup).toContain("Running command");
     expect(activeMarkup).toContain("animate-pulse");
+    expect(activeMarkup).toContain('data-testid="working-activity-detail"');
+    expect(activeMarkup).toContain("min-h-4");
+    expect(activeMarkup).toContain("invisible");
+    expect(activeMarkup).toContain('aria-hidden="true"');
     expect(idleMarkup).not.toContain("animate-pulse");
+  });
+
+  it("renders working activity detail in reserved second line", async () => {
+    const { MessagesTimeline } = await import("./MessagesTimeline");
+    const markup = renderToStaticMarkup(
+      <MessagesTimeline
+        {...buildProps()}
+        isWorking
+        activeTurnStartedAt="2026-03-17T19:12:28.000Z"
+        activeTurnActivityState={{
+          kind: "runningTool",
+          label: "Running command",
+          detail: "bun lint",
+        }}
+        timelineEntries={[]}
+      />,
+    );
+
+    expect(markup).toContain('data-testid="working-activity-detail"');
+    expect(markup).toContain("bun lint");
+    expect(markup).not.toContain("invisible");
   });
 });
