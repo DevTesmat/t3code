@@ -75,6 +75,7 @@ import {
   textContainsInlineTerminalContextLabels,
 } from "./userMessageTerminalContexts";
 import { formatWorkspaceRelativePath } from "../../filePathDisplay";
+import { useLiveCommandOutput } from "../../liveCommandOutput";
 
 // ---------------------------------------------------------------------------
 // Context — shared state consumed by every row component via useContext.
@@ -897,6 +898,9 @@ function terminalCopyCommand(workEntry: Pick<TimelineWorkEntry, "command" | "raw
 
 function shouldAutoShowTerminalOutput(workEntry: TimelineWorkEntry): boolean {
   const outputPreview = workEntry.outputPreview;
+  if (workEntry.status === "running" && workEntry.toolCallId) {
+    return true;
+  }
   if (!outputPreview || outputPreview.lines.length === 0) {
     return false;
   }
@@ -990,17 +994,31 @@ function workActivityGroupStatus(
 
 const ToolOutputPreview = memo(function ToolOutputPreview(props: { workEntry: TimelineWorkEntry }) {
   const { workEntry } = props;
+  const ctx = use(TimelineRowCtx);
   const outputPreview = workEntry.outputPreview;
   const outputPreviewLabel = commandOutputPreviewLabel(workEntry);
   const outputIsError = outputPreview?.stream === "stderr";
   const scrollerRef = useRef<HTMLDivElement | null>(null);
   const stickToBottomRef = useRef(true);
+  const liveKey =
+    workEntry.toolCallId && workEntry.status === "running"
+      ? {
+          environmentId: ctx.activeThreadEnvironmentId,
+          threadId: ctx.activeThreadId,
+          toolCallId: workEntry.toolCallId,
+        }
+      : null;
+  const liveOutput = useLiveCommandOutput(liveKey);
+  const outputText =
+    liveOutput.text.length > 0 ? liveOutput.text : (outputPreview?.lines.join("\n") ?? "");
+  const outputTruncated =
+    liveOutput.text.length > 0 ? liveOutput.truncated : outputPreview?.truncated;
 
   useEffect(() => {
     const scroller = scrollerRef.current;
     if (!scroller || !stickToBottomRef.current) return;
     scroller.scrollTop = scroller.scrollHeight;
-  }, [outputPreview?.lines, outputPreview?.truncated]);
+  }, [liveOutput.version, outputPreview?.lines, outputPreview?.truncated]);
 
   const handleScroll = useCallback(() => {
     const scroller = scrollerRef.current;
@@ -1020,18 +1038,17 @@ const ToolOutputPreview = memo(function ToolOutputPreview(props: { workEntry: Ti
         ref={scrollerRef}
         onScroll={handleScroll}
         className={cn(
-          "h-16 max-w-full overflow-y-auto rounded-md border px-2 py-1 font-mono text-[11px] leading-4 whitespace-pre-wrap wrap-break-word",
+          "h-24 max-w-full overflow-auto rounded-md border px-2 py-1 font-mono text-[11px] leading-4 whitespace-pre",
           outputIsError
             ? "border-destructive/25 bg-destructive/5 text-destructive/85"
             : "border-border/45 bg-muted/20 text-muted-foreground/85",
         )}
         data-testid="tool-output-preview"
       >
-        {outputPreview?.lines.map((line) => (
-          <div key={`${workEntryToolKey(workEntry)}:output:${line}`} className="min-w-0">
-            {line}
-          </div>
-        ))}
+        <pre className="m-0 min-w-max font-inherit leading-inherit whitespace-pre">
+          {outputText}
+          {outputTruncated ? "\n[output truncated]" : ""}
+        </pre>
       </div>
     </div>
   );
@@ -1276,7 +1293,9 @@ const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
     (workEntry.outputPreview?.lines.length ?? 0) > 0
       ? workEntry.outputPreview
       : null;
-  const isExpandable = outputPreview !== null;
+  const hasLiveOutput =
+    isTerminal && workEntry.status === "running" && Boolean(workEntry.toolCallId);
+  const isExpandable = outputPreview !== null || hasLiveOutput;
   const toolKey = workEntryToolKey(workEntry);
   const defaultOutputExpanded = isTerminal && shouldAutoShowTerminalOutput(workEntry);
   const showOutputPreview =

@@ -4,6 +4,7 @@ import {
   CommandId,
   EventId,
   MessageId,
+  ProviderItemId,
   type OrchestrationEvent,
   type OrchestrationProposedPlanId,
   CheckpointRef,
@@ -31,6 +32,7 @@ import {
   type ProviderRuntimeIngestionShape,
 } from "../Services/ProviderRuntimeIngestion.ts";
 import { ServerSettingsService } from "../../serverSettings.ts";
+import { publishCommandOutputDelta } from "../Services/CommandOutputDeltaBus.ts";
 
 const providerTurnKey = (threadId: ThreadId, turnId: TurnId) => `${threadId}:${turnId}`;
 const stableIdentityPart = (value: unknown): string =>
@@ -1741,41 +1743,20 @@ const make = Effect.gen(function* () {
 
       if (commandOutputDelta && commandOutputDelta.length > 0 && event.itemId) {
         const turnId = toTurnId(event.turnId);
-        const eventWithSequence = event as ProviderRuntimeEvent & { sessionSequence?: number };
-        const maybeCommandOutputSequence =
-          eventWithSequence.sessionSequence !== undefined
-            ? { sequence: eventWithSequence.sessionSequence }
-            : {};
-        const outputPreview = yield* appendCommandOutputPreview({
+        yield* appendCommandOutputPreview({
           threadId: thread.id,
           ...(turnId ? { turnId } : {}),
           itemId: event.itemId,
           delta: commandOutputDelta,
         });
-        if (outputPreview) {
-          yield* orchestrationEngine.dispatch({
-            type: "thread.activity.append",
-            commandId: providerCommandId(event, "command-output-preview-update"),
-            threadId: thread.id,
-            activity: {
-              id: event.eventId,
-              createdAt: event.createdAt,
-              tone: "tool",
-              kind: "tool.updated",
-              summary: "Terminal output",
-              payload: {
-                itemType: "command_execution",
-                data: {
-                  toolCallId: event.itemId,
-                  outputPreview,
-                },
-              },
-              turnId: turnId ?? null,
-              ...maybeCommandOutputSequence,
-            },
-            createdAt: event.createdAt,
-          });
-        }
+        yield* publishCommandOutputDelta({
+          threadId: thread.id,
+          turnId: turnId ?? null,
+          toolCallId: ProviderItemId.make(event.itemId),
+          chunkId: event.eventId,
+          createdAt: event.createdAt,
+          delta: commandOutputDelta,
+        });
       }
 
       const pauseForUserTurnId =

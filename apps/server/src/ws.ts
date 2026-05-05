@@ -38,6 +38,7 @@ import { Keybindings } from "./keybindings.ts";
 import { Open, resolveAvailableEditors } from "./open.ts";
 import { normalizeDispatchCommand } from "./orchestration/Normalizer.ts";
 import { OrchestrationEngineService } from "./orchestration/Services/OrchestrationEngine.ts";
+import { commandOutputDeltaStream as globalCommandOutputDeltaStream } from "./orchestration/Services/CommandOutputDeltaBus.ts";
 import { ProjectionSnapshotQuery } from "./orchestration/Services/ProjectionSnapshotQuery.ts";
 import {
   observeRpcEffect,
@@ -773,6 +774,13 @@ const makeWsRpcLayer = (currentSessionId: AuthSessionId) =>
                   event,
                 })),
               );
+              const commandOutputDeltaStream = globalCommandOutputDeltaStream.pipe(
+                Stream.filter((delta) => delta.threadId === input.threadId),
+                Stream.map((delta) => ({
+                  kind: "command-output-delta" as const,
+                  delta,
+                })),
+              );
               const historySyncSnapshotStream = Stream.callback<{
                 readonly kind: "snapshot";
                 readonly snapshot: {
@@ -822,7 +830,10 @@ const makeWsRpcLayer = (currentSessionId: AuthSessionId) =>
                     thread: threadDetail.value,
                   },
                 }),
-                Stream.merge(liveStream, historySyncSnapshotStream),
+                Stream.merge(
+                  Stream.merge(liveStream, commandOutputDeltaStream),
+                  historySyncSnapshotStream,
+                ),
               );
             }),
             { "rpc.aggregate": "orchestration" },

@@ -1102,7 +1102,7 @@ describe("ProviderRuntimeIngestion", () => {
     expect(payload?.detail).toBe("bun run lint");
   });
 
-  it("projects command output deltas into a live terminal output preview", async () => {
+  it("keeps command output deltas out of persisted activity projections", async () => {
     const harness = await createHarness();
     const now = new Date().toISOString();
 
@@ -1122,32 +1122,18 @@ describe("ProviderRuntimeIngestion", () => {
       });
     }
 
-    const thread = await waitForThread(harness.engine, (entry) =>
-      entry.activities.some(
-        (activity: ProviderRuntimeTestActivity) => activity.id === "evt-command-output-2",
-      ),
-    );
-    const activity = thread.activities.find(
-      (entry: ProviderRuntimeTestActivity) => entry.id === "evt-command-output-2",
-    );
-    const data =
-      activity?.payload &&
-      typeof activity.payload === "object" &&
-      "data" in activity.payload &&
-      activity.payload.data &&
-      typeof activity.payload.data === "object"
-        ? (activity.payload.data as Record<string, unknown>)
-        : undefined;
-    const outputPreview = data?.outputPreview as Record<string, unknown> | undefined;
+    await harness.drain();
+    const readModel = await Effect.runPromise(harness.engine.getReadModel());
+    const thread = readModel.threads.find((entry) => entry.id === asThreadId("thread-1"));
 
-    expect(activity?.kind).toBe("tool.updated");
-    expect(data?.toolCallId).toBe("item-output-preview");
-    expect(outputPreview?.lines).toEqual(["line2", "line3", "line4", "line5"]);
-    expect(outputPreview?.stream).toBe("unknown");
-    expect(outputPreview?.truncated).toBe(true);
+    expect(
+      thread?.activities.filter((activity: ProviderRuntimeTestActivity) =>
+        String(activity.id).startsWith("evt-command-output-"),
+      ),
+    ).toEqual([]);
   });
 
-  it("preserves terminal output line continuity across command delta chunks", async () => {
+  it("preserves terminal output line continuity across command delta chunks in final previews", async () => {
     const harness = await createHarness();
     const now = new Date().toISOString();
 
@@ -1177,14 +1163,32 @@ describe("ProviderRuntimeIngestion", () => {
         delta: "ial\nnext",
       },
     });
+    harness.emit({
+      type: "item.completed",
+      eventId: asEventId("evt-command-output-partial-completed"),
+      provider: ProviderDriverKind.make("codex"),
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("turn-output-partial"),
+      itemId: asItemId("item-output-partial"),
+      payload: {
+        itemType: "command_execution",
+        status: "completed",
+        title: "Ran command",
+        data: {
+          command: "bun run test",
+        },
+      },
+    });
 
     const thread = await waitForThread(harness.engine, (entry) =>
       entry.activities.some(
-        (activity: ProviderRuntimeTestActivity) => activity.id === "evt-command-output-partial-2",
+        (activity: ProviderRuntimeTestActivity) =>
+          activity.id === "evt-command-output-partial-completed",
       ),
     );
     const activity = thread.activities.find(
-      (entry: ProviderRuntimeTestActivity) => entry.id === "evt-command-output-partial-2",
+      (entry: ProviderRuntimeTestActivity) => entry.id === "evt-command-output-partial-completed",
     );
     const data =
       activity?.payload &&

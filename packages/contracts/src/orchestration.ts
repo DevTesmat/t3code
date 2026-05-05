@@ -467,6 +467,16 @@ export const OrchestrationThreadDetailSnapshot = Schema.Struct({
 });
 export type OrchestrationThreadDetailSnapshot = typeof OrchestrationThreadDetailSnapshot.Type;
 
+export const OrchestrationCommandOutputDelta = Schema.Struct({
+  threadId: ThreadId,
+  turnId: Schema.NullOr(TurnId),
+  toolCallId: ProviderItemId,
+  chunkId: EventId,
+  createdAt: IsoDateTime,
+  delta: Schema.String,
+});
+export type OrchestrationCommandOutputDelta = typeof OrchestrationCommandOutputDelta.Type;
+
 export const ProjectCreateCommand = Schema.Struct({
   type: Schema.Literal("project.create"),
   commandId: CommandId,
@@ -1181,6 +1191,10 @@ export const OrchestrationThreadStreamItem = Schema.Union([
   Schema.Struct({
     kind: Schema.Literal("event"),
     event: OrchestrationEvent,
+  }),
+  Schema.Struct({
+    kind: Schema.Literal("command-output-delta"),
+    delta: OrchestrationCommandOutputDelta,
   }),
 ]);
 export type OrchestrationThreadStreamItem = typeof OrchestrationThreadStreamItem.Type;

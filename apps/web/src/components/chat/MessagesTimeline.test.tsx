@@ -562,7 +562,38 @@ describe("MessagesTimeline", () => {
     expect(markup).toContain("bun run dev");
     expect(markup).toContain("last output");
     expect(markup).toContain("ready in 124ms");
+    expect(markup).toContain("whitespace-pre");
     expect(countOccurrences(markup, 'aria-label="Copy link"')).toBe(1);
+  });
+
+  it("renders a running terminal output envelope before persisted preview lines exist", async () => {
+    const { MessagesTimeline } = await import("./MessagesTimeline");
+    const markup = renderToStaticMarkup(
+      <MessagesTimeline
+        {...buildProps()}
+        timelineEntries={[
+          {
+            id: "entry-1",
+            kind: "work",
+            createdAt: "2026-03-17T19:12:28.000Z",
+            entry: {
+              id: "work-1",
+              createdAt: "2026-03-17T19:12:28.000Z",
+              label: "Ran command",
+              tone: "tool",
+              itemType: "command_execution",
+              command: "bun run dev",
+              status: "running",
+              toolCallId: "tool-1",
+            },
+          },
+        ]}
+      />,
+    );
+
+    expect(markup).toContain("tool-output-preview");
+    expect(markup).toContain("overflow-auto");
+    expect(markup).toContain("whitespace-pre");
   });
 
   it("keeps older terminal rows hidden behind show more in overflowing work groups", async () => {

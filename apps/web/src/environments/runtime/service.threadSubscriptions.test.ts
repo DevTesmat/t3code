@@ -5,6 +5,7 @@ import {
   EventId,
   type OrchestrationEvent,
   ProjectId,
+  ProviderItemId,
   ProviderInstanceId,
   ThreadId,
   TurnId,
@@ -520,6 +521,44 @@ describe("retainThreadDetailSubscription", () => {
 
     const thread = selectThreadByRef(useStore.getState(), scopeThreadRef(environmentId, threadId));
     expect(thread?.activities.map((activity) => activity.id)).toEqual(["snapshot-tool"]);
+
+    release();
+    stop();
+    await resetEnvironmentServiceForTests();
+  });
+
+  it("routes command output stream items into the live output envelope", async () => {
+    const {
+      retainThreadDetailSubscription,
+      startEnvironmentConnectionService,
+      resetEnvironmentServiceForTests,
+    } = await import("./service");
+    const { readLiveCommandOutputSnapshot } = await import("~/liveCommandOutput");
+
+    const stop = startEnvironmentConnectionService(new QueryClient());
+    const environmentId = EnvironmentId.make("env-1");
+    const threadId = ThreadId.make("thread-output-delta");
+
+    const release = retainThreadDetailSubscription(environmentId, threadId);
+    emitThreadItem({
+      kind: "command-output-delta",
+      delta: {
+        threadId,
+        turnId: TurnId.make("turn-1"),
+        toolCallId: ProviderItemId.make("tool-1"),
+        chunkId: EventId.make("chunk-1"),
+        createdAt: "2026-04-13T00:00:11.000Z",
+        delta: "line 1\n",
+      },
+    });
+
+    expect(
+      readLiveCommandOutputSnapshot({
+        environmentId,
+        threadId,
+        toolCallId: "tool-1",
+      }).text,
+    ).toBe("line 1\n");
 
     release();
     stop();

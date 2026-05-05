@@ -64,6 +64,7 @@ import {
 } from "~/store";
 import { useTerminalStateStore } from "~/terminalStateStore";
 import { useUiStateStore } from "~/uiStateStore";
+import { appendLiveCommandOutputDelta } from "~/liveCommandOutput";
 import { WsTransport } from "../../rpc/wsTransport";
 import { createWsRpcClient, type WsRpcClient } from "../../rpc/wsRpcClient";
 import {
@@ -390,6 +391,10 @@ function attachThreadDetailSubscription(entry: ThreadDetailSubscriptionEntry): b
         }
         useStore.getState().syncServerThreadDetail(item.snapshot.thread, entry.environmentId);
         markAppliedThreadDetailSnapshot(entry.environmentId, item.snapshot);
+        return;
+      }
+      if (item.kind === "command-output-delta") {
+        appendLiveCommandOutputDelta(entry.environmentId, item.delta);
         return;
       }
       applyEnvironmentThreadDetailEvent(item.event, entry.environmentId);
