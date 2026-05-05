@@ -12,6 +12,7 @@ import {
   deriveActiveTurnActivityState,
   deriveActiveWorkStartedAt,
   deriveThreadWorkDurationMs,
+  deriveThreadSubagents,
   deriveActivePlanState,
   derivePendingApprovals,
   derivePendingUserInputs,
@@ -72,6 +73,96 @@ function makeAssistantMessage(overrides: Partial<ChatMessage> = {}): ChatMessage
     ...overrides,
   };
 }
+
+describe("deriveThreadSubagents", () => {
+  it("folds collab agent lifecycle activities into stable subagent rows", () => {
+    const activities: OrchestrationThreadActivity[] = [
+      makeActivity({
+        id: "spawn-started",
+        createdAt: "2026-02-23T00:00:01.000Z",
+        kind: "tool.started",
+        summary: "Subagent task started",
+        payload: {
+          itemType: "collab_agent_tool_call",
+          data: {
+            toolCallId: "collab-1",
+            collabTool: "spawnAgent",
+            receiverThreadIds: ["child-1", "child-2"],
+            model: "gpt-5.5",
+            reasoningEffort: "high",
+            promptPreview: "Inspect the server projection.",
+            agentsStates: {
+              "child-1": { status: "running", agent_nickname: "Explorer", agent_role: "explorer" },
+              "child-2": { status: "completed", agent_role: "worker" },
+            },
+          },
+        },
+      }),
+      makeActivity({
+        id: "close-child-1",
+        createdAt: "2026-02-23T00:00:02.000Z",
+        kind: "tool.completed",
+        summary: "Subagent task",
+        payload: {
+          itemType: "collab_agent_tool_call",
+          data: {
+            toolCallId: "collab-2",
+            collabTool: "closeAgent",
+            receiverThreadIds: ["child-1"],
+          },
+        },
+      }),
+      makeActivity({
+        id: "spawn-failed",
+        createdAt: "2026-02-23T00:00:03.000Z",
+        kind: "tool.completed",
+        summary: "Subagent task",
+        payload: {
+          itemType: "collab_agent_tool_call",
+          data: {
+            toolCallId: "collab-3",
+            collabTool: "spawnAgent",
+            receiverThreadIds: ["child-3"],
+            status: "failed",
+          },
+        },
+      }),
+    ];
+
+    expect(deriveThreadSubagents(activities)).toEqual([
+      {
+        threadId: "child-1",
+        createdAt: "2026-02-23T00:00:01.000Z",
+        updatedAt: "2026-02-23T00:00:02.000Z",
+        status: "closed",
+        running: false,
+        nickname: "Explorer",
+        role: "explorer",
+        model: "gpt-5.5",
+        reasoningEffort: "high",
+        promptPreview: "Inspect the server projection.",
+      },
+      {
+        threadId: "child-2",
+        createdAt: "2026-02-23T00:00:01.000Z",
+        updatedAt: "2026-02-23T00:00:01.000Z",
+        status: "completed",
+        running: false,
+        role: "worker",
+        model: "gpt-5.5",
+        reasoningEffort: "high",
+        promptPreview: "Inspect the server projection.",
+      },
+      {
+        threadId: "child-3",
+        createdAt: "2026-02-23T00:00:03.000Z",
+        updatedAt: "2026-02-23T00:00:03.000Z",
+        status: "failed",
+        running: false,
+      },
+    ]);
+  });
+});
 
 describe("derivePendingApprovals", () => {
   it("tracks open approvals and removes resolved ones", () => {

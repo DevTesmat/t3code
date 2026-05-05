@@ -71,6 +71,22 @@ export interface WorkLogEntry {
   requestKind?: PendingApproval["requestKind"];
   toolCallId?: string;
   toolKey?: string;
+  collabTool?: string;
+}
+
+export type ThreadSubagentStatus = "running" | "completed" | "failed" | "closed" | "unknown";
+
+export interface ThreadSubagent {
+  threadId: string;
+  createdAt: string;
+  updatedAt: string;
+  status: ThreadSubagentStatus;
+  running: boolean;
+  nickname?: string;
+  role?: string;
+  model?: string;
+  reasoningEffort?: string;
+  promptPreview?: string;
 }
 
 interface DerivedWorkLogEntry extends WorkLogEntry {
@@ -700,12 +716,92 @@ function toDerivedWorkLogEntry(activity: OrchestrationThreadActivity): DerivedWo
   if (toolCallId) {
     entry.toolCallId = toolCallId;
   }
+  const collabTool = extractCollabTool(payload);
+  if (collabTool) {
+    entry.collabTool = collabTool;
+  }
   const collapseKey = deriveToolLifecycleCollapseKey(entry);
   if (collapseKey) {
     entry.collapseKey = collapseKey;
     entry.toolKey = collapseKey;
   }
   return entry;
+}
+
+export function deriveThreadSubagents(
+  activities: ReadonlyArray<OrchestrationThreadActivity>,
+): ThreadSubagent[] {
+  const subagentsByThreadId = new Map<string, ThreadSubagent>();
+  const ordered = [...activities].toSorted(compareActivitiesByOrder);
+
+  for (const activity of ordered) {
+    const payload = asRecord(activity.payload);
+    if (extractWorkLogItemType(payload) !== "collab_agent_tool_call") {
+      continue;
+    }
+    const data = asRecord(payload?.data);
+    const receiverThreadIds = extractStringArray(data?.receiverThreadIds);
+    if (receiverThreadIds.length === 0) {
+      continue;
+    }
+
+    const collabTool = asTrimmedString(data?.collabTool);
+    const lifecycleStatus =
+      extractCommandStatus(payload, activity.kind, "collab_agent_tool_call") ??
+      (activity.kind === "tool.completed" ? "completed" : undefined);
+    const agentsStates = asRecord(data?.agentsStates);
+    const dataStatus = normalizeSubagentStatus(asTrimmedString(data?.status));
+
+    for (const receiverThreadId of receiverThreadIds) {
+      const previous = subagentsByThreadId.get(receiverThreadId);
+      const agentState = asRecord(agentsStates?.[receiverThreadId]);
+      const agentStatus = normalizeSubagentStatus(
+        asTrimmedString(agentState?.status ?? agentState?.state),
+      );
+      const nextStatus = resolveSubagentStatus({
+        collabTool,
+        lifecycleStatus,
+        agentStatus: agentStatus ?? dataStatus,
+        previousStatus: previous?.status,
+      });
+      const nextSubagent: ThreadSubagent = {
+        threadId: receiverThreadId,
+        createdAt: previous?.createdAt ?? activity.createdAt,
+        updatedAt: activity.createdAt,
+        status: nextStatus,
+        running: nextStatus === "running",
+      };
+      const nickname = firstString(
+        asTrimmedString(agentState?.agent_nickname ?? agentState?.agentNickname),
+        asTrimmedString(data?.agentNickname),
+        previous?.nickname,
+      );
+      const role = firstString(
+        asTrimmedString(agentState?.agent_role ?? agentState?.agentRole),
+        asTrimmedString(data?.agentRole),
+        previous?.role,
+      );
+      const model = firstString(asTrimmedString(data?.model), previous?.model);
+      const reasoningEffort = firstString(
+        asTrimmedString(data?.reasoningEffort),
+        previous?.reasoningEffort,
+      );
+      const promptPreview = firstString(
+        asTrimmedString(data?.promptPreview),
+        previous?.promptPreview,
+      );
+      if (nickname) nextSubagent.nickname = nickname;
+      if (role) nextSubagent.role = role;
+      if (model) nextSubagent.model = model;
+      if (reasoningEffort) nextSubagent.reasoningEffort = reasoningEffort;
+      if (promptPreview) nextSubagent.promptPreview = promptPreview;
+      subagentsByThreadId.set(receiverThreadId, nextSubagent);
+    }
+  }
+
+  return [...subagentsByThreadId.values()].toSorted((left, right) =>
+    left.createdAt.localeCompare(right.createdAt),
+  );
 }
 
 function collapseDerivedWorkLogEntries(
@@ -876,6 +972,16 @@ function asTrimmedString(value: unknown): string | null {
 
 function asNumber(value: unknown): number | null {
   return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+function firstString(...values: Array<string | null | undefined>): string | undefined {
+  return values.find((value): value is string => typeof value === "string" && value.length > 0);
+}
+
+function extractStringArray(value: unknown): string[] {
+  return Array.isArray(value)
+    ? value.filter((entry): entry is string => typeof entry === "string" && entry.length > 0)
+    : [];
 }
 
 function isTerminalOutputPreviewStream(value: unknown): value is TerminalOutputPreview["stream"] {
@@ -1255,6 +1361,62 @@ function extractToolCallId(payload: Record<string, unknown> | null): string | nu
   return asTrimmedString(data?.toolCallId);
 }
 
+function extractCollabTool(payload: Record<string, unknown> | null): string | null {
+  const data = asRecord(payload?.data);
+  return asTrimmedString(data?.collabTool);
+}
+
+function normalizeSubagentStatus(value: string | null): ThreadSubagentStatus | null {
+  switch (value?.toLowerCase()) {
+    case "running":
+    case "active":
+    case "inprogress":
+    case "in_progress":
+    case "pending":
+      return "running";
+    case "completed":
+    case "complete":
+    case "idle":
+      return "completed";
+    case "failed":
+    case "error":
+      return "failed";
+    case "closed":
+    case "cancelled":
+    case "canceled":
+    case "stopped":
+      return "closed";
+    default:
+      return null;
+  }
+}
+
+function resolveSubagentStatus({
+  collabTool,
+  lifecycleStatus,
+  agentStatus,
+  previousStatus,
+}: {
+  collabTool: string | null;
+  lifecycleStatus: WorkLogEntry["status"] | undefined;
+  agentStatus: ThreadSubagentStatus | null;
+  previousStatus: ThreadSubagentStatus | undefined;
+}): ThreadSubagentStatus {
+  if (collabTool === "closeAgent" && lifecycleStatus === "completed") {
+    return "closed";
+  }
+  if (agentStatus) {
+    return agentStatus;
+  }
+  if (lifecycleStatus === "failed") {
+    return "failed";
+  }
+  if (collabTool === "spawnAgent" && lifecycleStatus === "completed") {
+    return previousStatus ?? "running";
+  }
+  return previousStatus ?? (lifecycleStatus === "completed" ? "completed" : "running");
+}
+
 function normalizeInlinePreview(value: string): string {
   return value.replace(/\s+/g, " ").trim();
 }
@@ -1551,7 +1713,20 @@ function labelForToolActivity(entry: WorkLogEntry): string {
     case "dynamic_tool_call":
       return "Running tool";
     case "collab_agent_tool_call":
-      return "Running agent";
+      switch (entry.collabTool) {
+        case "spawnAgent":
+          return "Spawned subagent";
+        case "sendInput":
+          return "Sent input to subagent";
+        case "resumeAgent":
+          return "Resumed subagent";
+        case "wait":
+          return "Waiting on subagent";
+        case "closeAgent":
+          return "Closed subagent";
+        default:
+          return "Running subagent";
+      }
     case "web_search":
       return "Searching web";
     case "image_view":

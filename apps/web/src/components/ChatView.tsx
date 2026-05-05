@@ -59,6 +59,7 @@ import {
   deriveActiveTurnActivityState,
   deriveActiveWorkStartedAt,
   deriveThreadWorkDurationMs,
+  deriveThreadSubagents,
   deriveActivePlanState,
   findSidebarProposedPlan,
   findLatestProposedPlan,
@@ -149,6 +150,7 @@ import { ChatComposer, type ChatComposerHandle } from "./chat/ChatComposer";
 import { WorkingDots } from "./chat/WorkingDots";
 import { ComposerChangedFilesBar } from "./chat/ComposerChangedFilesBar";
 import { ComposerQueuedMessagesBar } from "./chat/ComposerQueuedMessagesBar";
+import { ComposerSubagentsBar } from "./chat/ComposerSubagentsBar";
 import { ExpandedImageDialog } from "./chat/ExpandedImageDialog";
 import { PullRequestThreadDialog } from "./PullRequestThreadDialog";
 import { MessagesTimeline } from "./chat/MessagesTimeline";
@@ -1204,6 +1206,10 @@ export default function ChatView(props: ChatViewProps) {
   const workLogEntries = useMemo(
     () => deriveWorkLogEntries(threadActivities, activeLatestTurn?.turnId ?? undefined),
     [activeLatestTurn?.turnId, threadActivities],
+  );
+  const threadSubagents = useMemo(
+    () => deriveThreadSubagents(threadActivities),
+    [threadActivities],
   );
   const latestTurnHasToolActivity = useMemo(
     () => hasToolActivityForTurn(threadActivities, activeLatestTurn?.turnId),
@@ -4031,6 +4037,7 @@ export default function ChatView(props: ChatViewProps) {
                 messages={queuedComposerMessages}
                 onDeleteMessage={onDeleteQueuedComposerMessage}
               />
+              <ComposerSubagentsBar subagents={threadSubagents} />
               <ChatComposer
                 ref={composerRef}
                 composerDraftTarget={composerDraftTarget}

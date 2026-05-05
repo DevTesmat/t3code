@@ -287,7 +287,8 @@ function normalizedToolLifecycleData(
     event.itemId &&
     event.type !== "content.delta" &&
     "itemType" in event.payload &&
-    event.payload.itemType === "command_execution" &&
+    (event.payload.itemType === "command_execution" ||
+      event.payload.itemType === "collab_agent_tool_call") &&
     typeof nextData.toolCallId !== "string"
   ) {
     nextData.toolCallId = event.itemId;
@@ -306,7 +307,45 @@ function sanitizeToolLifecycleData(
   if (itemType === "command_execution") {
     delete nextData.rawOutput;
   }
+  if (itemType === "collab_agent_tool_call") {
+    Object.assign(nextData, extractCollabAgentLifecycleData(data));
+  }
   return nextData;
+}
+
+function extractCollabAgentLifecycleData(data: Record<string, unknown>): Record<string, unknown> {
+  const item = asRecord(data.item) ?? data;
+  const result: Record<string, unknown> = {};
+  const tool = asTrimmedString(item.tool);
+  const senderThreadId = asTrimmedString(item.senderThreadId);
+  const receiverThreadIds = Array.isArray(item.receiverThreadIds)
+    ? item.receiverThreadIds.filter((value): value is string => typeof value === "string")
+    : undefined;
+  const status = asTrimmedString(item.status);
+  const model = asTrimmedString(item.model);
+  const reasoningEffort = asTrimmedString(item.reasoningEffort);
+  const prompt = asTrimmedString(item.prompt);
+  const agentsStates = asRecord(item.agentsStates);
+
+  if (tool) result.collabTool = tool;
+  if (senderThreadId) result.senderThreadId = senderThreadId;
+  if (receiverThreadIds && receiverThreadIds.length > 0)
+    result.receiverThreadIds = receiverThreadIds;
+  if (agentsStates) result.agentsStates = agentsStates;
+  if (status) result.status = status;
+  if (model) result.model = model;
+  if (reasoningEffort) result.reasoningEffort = reasoningEffort;
+  if (prompt) result.promptPreview = truncateDetail(prompt, 240);
+
+  for (const receiverThreadId of receiverThreadIds ?? []) {
+    const state = asRecord(agentsStates?.[receiverThreadId]);
+    const nickname = asTrimmedString(state?.agent_nickname ?? state?.agentNickname);
+    const role = asTrimmedString(state?.agent_role ?? state?.agentRole);
+    if (nickname && typeof result.agentNickname !== "string") result.agentNickname = nickname;
+    if (role && typeof result.agentRole !== "string") result.agentRole = role;
+  }
+
+  return result;
 }
 
 function normalizeProposedPlanMarkdown(planMarkdown: string | undefined): string | undefined {

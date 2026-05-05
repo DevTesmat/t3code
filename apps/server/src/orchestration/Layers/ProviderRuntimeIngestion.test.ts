@@ -839,6 +839,79 @@ describe("ProviderRuntimeIngestion", () => {
     expect(rawOutput?.content).toBe('import * as Effect from "effect/Effect"\n');
   });
 
+  it("preserves collab agent metadata on projected tool activities", async () => {
+    const harness = await createHarness();
+    const now = new Date().toISOString();
+
+    harness.emit({
+      type: "item.completed",
+      eventId: asEventId("evt-collab-agent-completed"),
+      provider: ProviderDriverKind.make("codex"),
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("turn-collab-agent"),
+      itemId: asItemId("collab-call-1"),
+      payload: {
+        itemType: "collab_agent_tool_call",
+        status: "completed",
+        title: "Subagent task",
+        data: {
+          item: {
+            id: "collab-call-1",
+            type: "collabAgentToolCall",
+            tool: "spawnAgent",
+            senderThreadId: "parent-codex-thread",
+            receiverThreadIds: ["child-codex-thread"],
+            status: "completed",
+            model: "gpt-5.5",
+            reasoningEffort: "high",
+            prompt: "Inspect the projection flow and report risks.",
+            agentsStates: {
+              "child-codex-thread": {
+                status: "running",
+                agent_nickname: "Explorer",
+                agent_role: "explorer",
+              },
+            },
+          },
+        },
+      },
+    });
+
+    const thread = await waitForThread(harness.engine, (entry) =>
+      entry.activities.some(
+        (activity: ProviderRuntimeTestActivity) => activity.id === "evt-collab-agent-completed",
+      ),
+    );
+    const activity = thread.activities.find(
+      (entry: ProviderRuntimeTestActivity) => entry.id === "evt-collab-agent-completed",
+    );
+    const payload = activity?.payload as Record<string, unknown> | undefined;
+    const data = payload?.data as Record<string, unknown> | undefined;
+
+    expect(activity?.kind).toBe("tool.completed");
+    expect(payload?.itemType).toBe("collab_agent_tool_call");
+    expect(data).toMatchObject({
+      toolCallId: "collab-call-1",
+      collabTool: "spawnAgent",
+      senderThreadId: "parent-codex-thread",
+      receiverThreadIds: ["child-codex-thread"],
+      status: "completed",
+      model: "gpt-5.5",
+      reasoningEffort: "high",
+      promptPreview: "Inspect the projection flow and report risks.",
+      agentNickname: "Explorer",
+      agentRole: "explorer",
+    });
+    expect(data?.agentsStates).toEqual({
+      "child-codex-thread": {
+        status: "running",
+        agent_nickname: "Explorer",
+        agent_role: "explorer",
+      },
+    });
+  });
+
   it("normalizes command execution activities to ran-command summaries", async () => {
     const harness = await createHarness();
     const now = new Date().toISOString();
