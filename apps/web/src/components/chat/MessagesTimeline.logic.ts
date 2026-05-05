@@ -133,6 +133,7 @@ export function deriveMessagesTimelineRows(input: {
   );
   const terminalAssistantMessageIds = deriveTerminalAssistantMessageIds(input.timelineEntries);
   const workGroupIdOccurrences = new Map<string, number>();
+  let pendingWorkEntries: Array<Extract<TimelineEntry, { kind: "work" }>> = [];
 
   for (let index = 0; index < input.timelineEntries.length; index += 1) {
     const timelineEntry = input.timelineEntries[index];
@@ -141,27 +142,12 @@ export function deriveMessagesTimelineRows(input: {
     }
 
     if (timelineEntry.kind === "work") {
-      const groupedEntries = [timelineEntry.entry];
-      const activityGroupKind = classifyWorkEntryActivityGroup(timelineEntry.entry);
-      let cursor = index + 1;
-      while (cursor < input.timelineEntries.length) {
-        const nextEntry = input.timelineEntries[cursor];
-        if (!nextEntry || nextEntry.kind !== "work") break;
-        if (classifyWorkEntryActivityGroup(nextEntry.entry) !== activityGroupKind) break;
-        groupedEntries.push(nextEntry.entry);
-        cursor += 1;
-      }
-      const baseRowId = stableWorkGroupRowId(groupedEntries, activityGroupKind);
-      nextRows.push({
-        kind: "work",
-        id: uniqueWorkGroupRowId(baseRowId, workGroupIdOccurrences),
-        createdAt: timelineEntry.createdAt,
-        groupedEntries,
-        activityGroupKind,
-      });
-      index = cursor - 1;
+      pendingWorkEntries.push(timelineEntry);
       continue;
     }
+
+    appendWorkTimelineRows(pendingWorkEntries, nextRows, workGroupIdOccurrences);
+    pendingWorkEntries = [];
 
     if (timelineEntry.kind === "proposed-plan") {
       nextRows.push({
@@ -197,6 +183,8 @@ export function deriveMessagesTimelineRows(input: {
     });
   }
 
+  appendWorkTimelineRows(pendingWorkEntries, nextRows, workGroupIdOccurrences);
+
   if (input.isWorking) {
     nextRows.push({
       kind: "working",
@@ -210,6 +198,61 @@ export function deriveMessagesTimelineRows(input: {
   }
 
   return nextRows;
+}
+
+function appendWorkTimelineRows(
+  timelineEntries: ReadonlyArray<Extract<TimelineEntry, { kind: "work" }>>,
+  nextRows: MessagesTimelineRow[],
+  workGroupIdOccurrences: Map<string, number>,
+) {
+  let explorationRow: Extract<MessagesTimelineRow, { kind: "work" }> | null = null;
+
+  for (let index = 0; index < timelineEntries.length; index += 1) {
+    const timelineEntry = timelineEntries[index];
+    if (!timelineEntry) {
+      continue;
+    }
+
+    const activityGroupKind = classifyWorkEntryActivityGroup(timelineEntry.entry);
+    if (activityGroupKind === "exploration") {
+      if (explorationRow) {
+        explorationRow.groupedEntries.push(timelineEntry.entry);
+        continue;
+      }
+
+      const groupedEntries = [timelineEntry.entry];
+      const baseRowId = stableWorkGroupRowId(groupedEntries, activityGroupKind);
+      explorationRow = {
+        kind: "work",
+        id: uniqueWorkGroupRowId(baseRowId, workGroupIdOccurrences),
+        createdAt: timelineEntry.createdAt,
+        groupedEntries,
+        activityGroupKind,
+      };
+      nextRows.push(explorationRow);
+      continue;
+    }
+
+    const groupedEntries = [timelineEntry.entry];
+    let cursor = index + 1;
+    while (cursor < timelineEntries.length) {
+      const nextEntry = timelineEntries[cursor];
+      if (!nextEntry) break;
+      const nextActivityGroupKind = classifyWorkEntryActivityGroup(nextEntry.entry);
+      if (nextActivityGroupKind !== activityGroupKind) break;
+      groupedEntries.push(nextEntry.entry);
+      cursor += 1;
+    }
+    const baseRowId = stableWorkGroupRowId(groupedEntries, activityGroupKind);
+    nextRows.push({
+      kind: "work",
+      id: uniqueWorkGroupRowId(baseRowId, workGroupIdOccurrences),
+      createdAt: timelineEntry.createdAt,
+      groupedEntries,
+      activityGroupKind,
+    });
+    index = cursor - 1;
+  }
 }
 
 function stableWorkEntryKey(entry: WorkLogEntry): string {

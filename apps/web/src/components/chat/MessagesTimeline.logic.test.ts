@@ -505,7 +505,7 @@ describe("deriveMessagesTimelineRows", () => {
     expect(new Set(workRowIds).size).toBe(workRowIds.length);
   });
 
-  it("groups adjacent exploration rows and starts a new group after other work", () => {
+  it("groups exploration rows within the same visible-message interval", () => {
     const rows = deriveMessagesTimelineRows({
       timelineEntries: [
         {
@@ -576,15 +576,132 @@ describe("deriveMessagesTimelineRows", () => {
       (row): row is Extract<(typeof rows)[number], { kind: "work" }> => row.kind === "work",
     );
 
-    expect(workRows.map((row) => row.activityGroupKind)).toEqual([
-      "exploration",
-      "other",
-      "exploration",
-    ]);
+    expect(workRows.map((row) => row.activityGroupKind)).toEqual(["exploration", "other"]);
     expect(workRows.map((row) => row.groupedEntries.map((entry) => entry.id))).toEqual([
-      ["work-rg", "work-sed"],
+      ["work-rg", "work-sed", "work-diff"],
       ["work-edit"],
-      ["work-diff"],
+    ]);
+  });
+
+  it("starts a new exploration group after visible assistant messages", () => {
+    const rows = deriveMessagesTimelineRows({
+      timelineEntries: [
+        {
+          id: "entry-rg",
+          kind: "work",
+          createdAt: "2026-01-01T00:00:00Z",
+          entry: {
+            id: "work-rg",
+            createdAt: "2026-01-01T00:00:00Z",
+            label: "Ran command",
+            tone: "tool",
+            itemType: "command_execution",
+            command: "rg query src",
+          },
+        },
+        {
+          id: "assistant-entry",
+          kind: "message",
+          createdAt: "2026-01-01T00:00:01Z",
+          message: {
+            id: "assistant-1" as never,
+            role: "assistant",
+            text: "I found the relevant files.",
+            turnId: "turn-1" as never,
+            createdAt: "2026-01-01T00:00:01Z",
+            streaming: false,
+          },
+        },
+        {
+          id: "entry-sed",
+          kind: "work",
+          createdAt: "2026-01-01T00:00:02Z",
+          entry: {
+            id: "work-sed",
+            createdAt: "2026-01-01T00:00:02Z",
+            label: "Ran command",
+            tone: "tool",
+            itemType: "command_execution",
+            command: "sed -n '1,80p' src/app.ts",
+          },
+        },
+      ],
+      completionDividerBeforeEntryId: null,
+      isWorking: false,
+      activeTurnStartedAt: null,
+      turnDiffSummaryByAssistantMessageId: new Map(),
+      revertTurnCountByUserMessageId: new Map(),
+    });
+
+    const workRows = rows.filter(
+      (row): row is Extract<(typeof rows)[number], { kind: "work" }> => row.kind === "work",
+    );
+
+    expect(workRows.map((row) => row.activityGroupKind)).toEqual(["exploration", "exploration"]);
+    expect(workRows.map((row) => row.groupedEntries.map((entry) => entry.id))).toEqual([
+      ["work-rg"],
+      ["work-sed"],
+    ]);
+  });
+
+  it("starts a new exploration group after proposed plans", () => {
+    const rows = deriveMessagesTimelineRows({
+      timelineEntries: [
+        {
+          id: "entry-rg",
+          kind: "work",
+          createdAt: "2026-01-01T00:00:00Z",
+          entry: {
+            id: "work-rg",
+            createdAt: "2026-01-01T00:00:00Z",
+            label: "Ran command",
+            tone: "tool",
+            itemType: "command_execution",
+            command: "rg query src",
+          },
+        },
+        {
+          id: "plan-entry",
+          kind: "proposed-plan",
+          createdAt: "2026-01-01T00:00:01Z",
+          proposedPlan: {
+            id: "plan-1" as never,
+            createdAt: "2026-01-01T00:00:01Z",
+            updatedAt: "2026-01-01T00:00:01Z",
+            turnId: "turn-1" as never,
+            planMarkdown: "Plan",
+            implementedAt: null,
+            implementationThreadId: null,
+          },
+        },
+        {
+          id: "entry-sed",
+          kind: "work",
+          createdAt: "2026-01-01T00:00:02Z",
+          entry: {
+            id: "work-sed",
+            createdAt: "2026-01-01T00:00:02Z",
+            label: "Ran command",
+            tone: "tool",
+            itemType: "command_execution",
+            command: "sed -n '1,80p' src/app.ts",
+          },
+        },
+      ],
+      completionDividerBeforeEntryId: null,
+      isWorking: false,
+      activeTurnStartedAt: null,
+      turnDiffSummaryByAssistantMessageId: new Map(),
+      revertTurnCountByUserMessageId: new Map(),
+    });
+
+    const workRows = rows.filter(
+      (row): row is Extract<(typeof rows)[number], { kind: "work" }> => row.kind === "work",
+    );
+
+    expect(workRows.map((row) => row.groupedEntries.map((entry) => entry.id))).toEqual([
+      ["work-rg"],
+      ["work-sed"],
     ]);
   });
 

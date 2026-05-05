@@ -339,6 +339,66 @@ describe("MessagesTimeline", () => {
     expect(markup).not.toContain("node -e");
   });
 
+  it("keeps non-adjacent exploration commands collapsed within a message interval", async () => {
+    const { MessagesTimeline } = await import("./MessagesTimeline");
+    const markup = renderToStaticMarkup(
+      <MessagesTimeline
+        {...buildProps()}
+        timelineEntries={[
+          {
+            id: "entry-rg",
+            kind: "work",
+            createdAt: "2026-03-17T19:12:28.000Z",
+            entry: {
+              id: "work-rg",
+              createdAt: "2026-03-17T19:12:28.000Z",
+              label: "Ran command",
+              tone: "tool",
+              itemType: "command_execution",
+              command: "rg query apps/web",
+              status: "completed",
+            },
+          },
+          {
+            id: "entry-test",
+            kind: "work",
+            createdAt: "2026-03-17T19:12:29.000Z",
+            entry: {
+              id: "work-test",
+              createdAt: "2026-03-17T19:12:29.000Z",
+              label: "Ran command",
+              tone: "tool",
+              itemType: "command_execution",
+              command: "bun run test",
+              status: "completed",
+            },
+          },
+          {
+            id: "entry-sed",
+            kind: "work",
+            createdAt: "2026-03-17T19:12:30.000Z",
+            entry: {
+              id: "work-sed",
+              createdAt: "2026-03-17T19:12:30.000Z",
+              label: "Ran command",
+              tone: "tool",
+              itemType: "command_execution",
+              command: "sed -n '1,80p' apps/web/src/session-logic.ts",
+              status: "completed",
+            },
+          },
+        ]}
+      />,
+    );
+
+    expect(markup).toContain("Exploring");
+    expect(markup.match(/Exploring/g)).toHaveLength(1);
+    expect(markup).toContain("Validation");
+    expect(markup).toContain("bun run test");
+    expect(markup).not.toContain("rg query apps/web");
+    expect(markup).not.toContain("sed -n");
+  });
+
   it("shows exploration dots only while a grouped tool call is running", async () => {
     const { MessagesTimeline } = await import("./MessagesTimeline");
     const markup = renderToStaticMarkup(
