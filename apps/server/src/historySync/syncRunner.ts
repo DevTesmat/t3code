@@ -17,6 +17,7 @@ import {
   filterAlreadyImportedRemoteDeltaEvents,
   filterPushableLocalEvents,
   isRemoteBehindLocal,
+  maxHistoryEventSequence,
   nextSyncedRemoteSequenceAfterPush,
   normalizeRemoteEventsForLocalImport,
   planLocalReplacementFromRemote,
@@ -238,6 +239,14 @@ export function createHistorySyncRunner(input: HistorySyncRunnerDependencies) {
       const hasCompletedInitialSync = state?.hasCompletedInitialSync === 1;
       const isInitialSync = options.mode === "initial";
       const isAutosave = options.mode === "autosave";
+      console.info("[history-sync] sync preflight", {
+        mode: options.mode,
+        enabled: settings.historySync.enabled,
+        configured: connectionString !== null,
+        hasCompletedInitialSync,
+        lastSyncedRemoteSequence: state?.lastSyncedRemoteSequence ?? null,
+        lastSuccessfulSyncAt: state?.lastSuccessfulSyncAt ?? null,
+      });
       if (
         connectionString === null ||
         (!settings.historySync.enabled && !(isInitialSync && !hasCompletedInitialSync))
@@ -267,10 +276,18 @@ export function createHistorySyncRunner(input: HistorySyncRunnerDependencies) {
         lastSyncedAt,
       });
 
+      console.info("[history-sync] reading local history", { mode: options.mode });
       const localEvents = yield* input.readLocalEvents();
       const localProjectionCounts = yield* input.readLocalProjectionCounts;
-      const localMaxSequence = Math.max(0, ...localEvents.map((event) => event.sequence));
+      const localMaxSequence = maxHistoryEventSequence(localEvents);
       const lastSyncedRemoteSequence = state?.lastSyncedRemoteSequence ?? 0;
+      console.info("[history-sync] local history loaded", {
+        mode: options.mode,
+        localEvents: localEvents.length,
+        localMaxSequence,
+        localProjectionCounts,
+        lastSyncedRemoteSequence,
+      });
       yield* input.seedPushedEventReceiptsForCompletedSync(localEvents, {
         hasCompletedInitialSync,
         lastSyncedRemoteSequence,
@@ -290,9 +307,17 @@ export function createHistorySyncRunner(input: HistorySyncRunnerDependencies) {
       }
 
       if (isAutosave) {
+        console.info("[history-sync] reading remote max sequence for autosave");
         const remoteMaxSequence = yield* input.readRemoteMaxSequence(connectionString);
+        console.info("[history-sync] remote max sequence loaded for autosave", {
+          remoteMaxSequence,
+          lastSyncedRemoteSequence,
+        });
         let autosaveLastSyncedAt = lastSyncedAt;
         if (remoteMaxSequence > lastSyncedRemoteSequence) {
+          console.info("[history-sync] reading remote delta for autosave", {
+            lastSyncedRemoteSequence,
+          });
           const remoteDeltaEvents = yield* input.readRemoteEvents(
             connectionString,
             lastSyncedRemoteSequence,
@@ -403,20 +428,43 @@ export function createHistorySyncRunner(input: HistorySyncRunnerDependencies) {
       }
 
       const remoteMaxSequenceForRepair = hasCompletedInitialSync
-        ? yield* input.readRemoteMaxSequence(connectionString)
+        ? yield* Effect.sync(() =>
+            console.info("[history-sync] reading remote max sequence", {
+              lastSyncedRemoteSequence,
+            }),
+          ).pipe(Effect.andThen(input.readRemoteMaxSequence(connectionString)))
         : 0;
+      if (hasCompletedInitialSync) {
+        console.info("[history-sync] remote max sequence loaded", {
+          remoteMaxSequence: remoteMaxSequenceForRepair,
+          lastSyncedRemoteSequence,
+        });
+      }
       const shouldUseFullRemoteForRecovery =
         hasCompletedInitialSync &&
         (localEvents.length === 0 ||
           localProjectionCounts.projectCount + localProjectionCounts.threadCount === 0);
+      console.info("[history-sync] reading remote history", {
+        mode: options.mode,
+        hasCompletedInitialSync,
+        shouldUseFullRemoteForRecovery,
+        sequenceExclusive:
+          !hasCompletedInitialSync || shouldUseFullRemoteForRecovery
+            ? null
+            : lastSyncedRemoteSequence,
+      });
       const remoteEvents =
         !hasCompletedInitialSync || shouldUseFullRemoteForRecovery
           ? yield* input.readRemoteEvents(connectionString)
           : yield* input.readRemoteEvents(connectionString, lastSyncedRemoteSequence);
-      const remoteMaxSequence = Math.max(
+      const remoteMaxSequence = maxHistoryEventSequence(
+        remoteEvents,
         hasCompletedInitialSync ? remoteMaxSequenceForRepair : 0,
-        ...remoteEvents.map((event) => event.sequence),
       );
+      console.info("[history-sync] remote history loaded", {
+        remoteEvents: remoteEvents.length,
+        remoteMaxSequence,
+      });
       const remoteEventsForMapping =
         hasCompletedInitialSync && remoteEvents.length > 0
           ? yield* input.readRemoteEvents(connectionString)
@@ -502,10 +550,7 @@ export function createHistorySyncRunner(input: HistorySyncRunnerDependencies) {
         );
         yield* recordInitialSyncPhase("import-remote", syncContext);
         yield* runImport(importedEvents, syncContext);
-        const nextRemoteSequence = Math.max(
-          remoteMaxSequence,
-          ...mergeEvents.map((event) => event.sequence),
-        );
+        const nextRemoteSequence = maxHistoryEventSequence(mergeEvents, remoteMaxSequence);
         const now = new Date().toISOString();
         yield* input.writePushedEventReceipts(importedEvents, now);
         yield* recordInitialSyncPhase("write-state", syncContext);
@@ -608,7 +653,7 @@ export function createHistorySyncRunner(input: HistorySyncRunnerDependencies) {
           console.info("[history-sync] pushing local pending history after remote import", {
             pendingEvents: pushableLocalEvents.length,
             deferredEvents: unpushedLocalEvents.length - pushableLocalEvents.length,
-            localMaxSequence: Math.max(0, ...refreshedLocalEvents.map((event) => event.sequence)),
+            localMaxSequence: maxHistoryEventSequence(refreshedLocalEvents),
             lastSyncedRemoteSequence: remoteMaxSequence,
           });
           yield* input.pushRemoteEventsBatched(

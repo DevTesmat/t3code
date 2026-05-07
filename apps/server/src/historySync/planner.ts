@@ -73,6 +73,19 @@ export interface HistorySyncProjectMappingRow {
   readonly updatedAt: string;
 }
 
+export function maxHistoryEventSequence(
+  events: readonly HistorySyncEventRow[],
+  initial = 0,
+): number {
+  let maxSequence = initial;
+  for (const event of events) {
+    if (event.sequence > maxSequence) {
+      maxSequence = event.sequence;
+    }
+  }
+  return maxSequence;
+}
+
 function normalizeUserText(text: string): string {
   return text.replace(/\r\n/g, "\n").replace(/\r/g, "\n").trim();
 }
@@ -504,7 +517,7 @@ export function nextSyncedRemoteSequenceAfterPush(
   previousRemoteSequence: number,
   pushedEvents: readonly HistorySyncEventRow[],
 ): number {
-  return Math.max(previousRemoteSequence, 0, ...pushedEvents.map((event) => event.sequence));
+  return maxHistoryEventSequence(pushedEvents, Math.max(previousRemoteSequence, 0));
 }
 
 function readPayloadThreadId(row: HistorySyncEventRow): string {
@@ -881,7 +894,7 @@ export function buildFirstSyncRescueEvents(
     );
   }
 
-  let nextSequence = Math.max(0, ...remoteEvents.map((event) => event.sequence));
+  let nextSequence = maxHistoryEventSequence(remoteEvents);
   return rescueRows
     .toSorted((left, right) => left.sequence - right.sequence)
     .map((event) => cloneEventWithSequence(event, ++nextSequence));
@@ -952,7 +965,7 @@ export function buildFirstSyncClientMergeEvents(
     );
   }
 
-  let nextSequence = Math.max(0, ...importedRemoteEvents.map((event) => event.sequence));
+  let nextSequence = maxHistoryEventSequence(importedRemoteEvents);
   return mergeRows
     .toSorted((left, right) => left.sequence - right.sequence)
     .map((event) => cloneEventWithSequence(event, ++nextSequence));

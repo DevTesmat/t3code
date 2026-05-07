@@ -97,6 +97,10 @@ export const HistorySyncServiceLive = Layer.effect(
       if (currentStatus.state !== "syncing" || currentStatus.startedAt !== activeStartedAt) {
         return;
       }
+      console.error("[history-sync] recovering stuck syncing status", {
+        startedAt: currentStatus.startedAt,
+        lastSyncedAt: currentStatus.lastSyncedAt,
+      });
       yield* publishStatus({
         state: "error",
         configured: true,

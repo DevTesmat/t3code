@@ -5,7 +5,7 @@ import {
   type OrchestrationEvent,
   type ServerSettingsError,
 } from "@t3tools/contracts";
-import { Duration, Effect, PubSub, Ref, Scope, Stream } from "effect";
+import { Duration, Effect, Exit, PubSub, Ref, Scope, Stream } from "effect";
 
 export type HistorySyncMode = "initial" | "full" | "autosave";
 
@@ -73,7 +73,7 @@ export const createHistorySyncLifecycleController = (input: {
           if (stopped) return;
         }
         yield* Ref.set(runningRef, true);
-        yield* input
+        const syncExit = yield* input
           .performSync({
             mode,
             markStopped,
@@ -81,20 +81,21 @@ export const createHistorySyncLifecycleController = (input: {
               ? { autosaveMaxSequence: options.autosaveMaxSequence }
               : {}),
           })
-          .pipe(
-            Effect.ensuring(
-              Effect.gen(function* () {
-                yield* input.recoverStuckSyncStatus;
-                yield* Ref.set(runningRef, false);
-                const shouldReschedule = yield* Ref.getAndSet(pendingAutosaveRef, false);
-                if (shouldReschedule) {
-                  yield* Effect.sleep(HISTORY_SYNC_AUTOSAVE_DEBOUNCE_MS).pipe(
-                    Effect.andThen(runSyncMode("autosave", { clearStopped: false })),
-                  );
-                }
-              }),
-            ),
+          .pipe(Effect.exit);
+        if (Exit.isFailure(syncExit)) {
+          console.error("[history-sync] sync fiber exited before publishing terminal status", {
+            mode,
+            cause: syncExit.cause.toString(),
+          });
+        }
+        yield* input.recoverStuckSyncStatus;
+        yield* Ref.set(runningRef, false);
+        const shouldReschedule = yield* Ref.getAndSet(pendingAutosaveRef, false);
+        if (shouldReschedule) {
+          yield* Effect.sleep(HISTORY_SYNC_AUTOSAVE_DEBOUNCE_MS).pipe(
+            Effect.andThen(runSyncMode("autosave", { clearStopped: false })),
           );
+        }
       });
 
     const syncNow = runSyncMode("full", { clearStopped: false });
@@ -106,17 +107,21 @@ export const createHistorySyncLifecycleController = (input: {
     const startInitialSync = Ref.get(runningRef).pipe(
       Effect.flatMap((running) => {
         if (running) return input.toConfig;
-        return Ref.set(stoppedRef, false).pipe(
-          Effect.andThen(Ref.set(runningRef, true)),
-          Effect.andThen(input.performSync({ mode: "initial", markStopped })),
-          Effect.ensuring(
-            Effect.gen(function* () {
-              yield* input.recoverStuckSyncStatus;
-              yield* Ref.set(runningRef, false);
-            }),
-          ),
-          Effect.andThen(input.toConfig),
-        );
+        return Effect.gen(function* () {
+          yield* Ref.set(stoppedRef, false);
+          yield* Ref.set(runningRef, true);
+          const syncExit = yield* input
+            .performSync({ mode: "initial", markStopped })
+            .pipe(Effect.exit);
+          if (Exit.isFailure(syncExit)) {
+            console.error("[history-sync] initial sync fiber exited before terminal status", {
+              cause: syncExit.cause.toString(),
+            });
+          }
+          yield* input.recoverStuckSyncStatus;
+          yield* Ref.set(runningRef, false);
+          return yield* input.toConfig;
+        });
       }),
     );
 

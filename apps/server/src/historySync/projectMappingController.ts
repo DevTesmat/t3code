@@ -7,7 +7,7 @@ import { Effect } from "effect";
 
 import { describeSyncFailure } from "./config.ts";
 import type { HistorySyncStateRow } from "./localRepository.ts";
-import type { HistorySyncEventRow } from "./planner.ts";
+import { maxHistoryEventSequence, type HistorySyncEventRow } from "./planner.ts";
 
 export interface HistorySyncProjectMappingControllerDependencies {
   readonly getConnectionString: Effect.Effect<string | null, object>;
@@ -45,7 +45,7 @@ function requireConnectionString(
 }
 
 function remoteMaxSequence(events: readonly HistorySyncEventRow[]): number {
-  return Math.max(0, ...events.map((event) => event.sequence));
+  return maxHistoryEventSequence(events);
 }
 
 export function createHistorySyncProjectMappingController(

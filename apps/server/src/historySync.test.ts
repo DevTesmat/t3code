@@ -16,6 +16,7 @@ import {
   filterUnpushedLocalEvents,
   isAutosyncEligibleThread,
   isRemoteBehindLocal,
+  maxHistoryEventSequence,
   nextSyncedRemoteSequenceAfterPush,
   normalizeRemoteEventForLocalImport,
   rewriteRemoteEventsForLocalMappings,
@@ -172,6 +173,17 @@ function projectionThreadRow(
 }
 
 describe("history sync first-sync rescue", () => {
+  test("computes max event sequence without spreading large arrays", () => {
+    const events = Array.from({ length: 150_000 }, (_, index) =>
+      event(index + 1, "thread-large", "thread.message-sent", {
+        threadId: "thread-large",
+      }),
+    );
+
+    expect(maxHistoryEventSequence(events)).toBe(150_000);
+    expect(nextSyncedRemoteSequenceAfterPush(200_000, events)).toBe(200_000);
+  });
+
   test("remote delta selection uses the last synced remote sequence", () => {
     const remote = [
       projectCreated(1, "project-a"),

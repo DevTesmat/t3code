@@ -132,12 +132,16 @@ export const ensureRemoteSchema = (pool: Pool) => pool.query(MYSQL_SCHEMA);
 
 export const testConnectionString = (connectionString: string) =>
   withHistorySyncMysqlPool(connectionString, async (pool) => {
+    console.info("[history-sync:mysql] ensuring remote schema for connection test");
     await ensureRemoteSchema(pool);
     await pool.query("SELECT 1");
   });
 
 export const readRemoteEvents = (connectionString: string, sequenceExclusive = 0) =>
   withHistorySyncMysqlPool(connectionString, async (pool) => {
+    console.info("[history-sync:mysql] ensuring remote schema before reading events", {
+      sequenceExclusive,
+    });
     await ensureRemoteSchema(pool);
     const [rows] = await pool.query<RowDataPacket[]>(
       `SELECT sequence, event_id, aggregate_kind, stream_id, stream_version, event_type,
@@ -149,6 +153,10 @@ export const readRemoteEvents = (connectionString: string, sequenceExclusive = 0
            ORDER BY sequence ASC`,
       [sequenceExclusive],
     );
+    console.info("[history-sync:mysql] remote events read", {
+      sequenceExclusive,
+      rows: rows.length,
+    });
     return rows.map((row) => ({
       sequence: Number(row.sequence),
       eventId: String(row.event_id),
@@ -172,11 +180,14 @@ export const readRemoteEvents = (connectionString: string, sequenceExclusive = 0
 
 export const readRemoteMaxSequence = (connectionString: string) =>
   withHistorySyncMysqlPool(connectionString, async (pool) => {
+    console.info("[history-sync:mysql] ensuring remote schema before reading max sequence");
     await ensureRemoteSchema(pool);
     const [rows] = await pool.query<RowDataPacket[]>(
       `SELECT COALESCE(MAX(sequence), 0) AS max_sequence FROM orchestration_events`,
     );
-    return Number(rows[0]?.max_sequence ?? 0);
+    const maxSequence = Number(rows[0]?.max_sequence ?? 0);
+    console.info("[history-sync:mysql] remote max sequence read", { maxSequence });
+    return maxSequence;
   });
 
 function insertRemoteEventBatch(
@@ -225,6 +236,9 @@ export const pushRemoteEventsBatched = (
   events: readonly HistorySyncEventRow[],
 ) =>
   withHistorySyncMysqlPool(connectionString, async (pool) => {
+    console.info("[history-sync:mysql] ensuring remote schema before pushing events", {
+      events: events.length,
+    });
     await ensureRemoteSchema(pool);
     if (events.length === 0) return;
     const batches = chunkHistorySyncEvents(events, HISTORY_SYNC_MYSQL_BATCH_SIZE);
