@@ -1,15 +1,20 @@
 import { Effect, Queue, Stream } from "effect";
 import type { OrchestrationCommandOutputDelta } from "@t3tools/contracts";
+import { appendCommandOutputBufferDelta } from "./CommandOutputBuffer.ts";
 
 type Subscriber = (delta: OrchestrationCommandOutputDelta) => Effect.Effect<void>;
 
 const subscribers = new Set<Subscriber>();
 
 export const publishCommandOutputDelta = (delta: OrchestrationCommandOutputDelta) =>
-  Effect.forEach(subscribers, (subscriber) => subscriber(delta), {
-    concurrency: "unbounded",
-    discard: true,
-  });
+  appendCommandOutputBufferDelta(delta).pipe(
+    Effect.andThen(
+      Effect.forEach(subscribers, (subscriber) => subscriber(delta), {
+        concurrency: "unbounded",
+        discard: true,
+      }),
+    ),
+  );
 
 export const commandOutputDeltaStream: Stream.Stream<OrchestrationCommandOutputDelta> =
   Stream.callback((queue) =>

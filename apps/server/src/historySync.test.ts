@@ -800,7 +800,7 @@ describe("history sync remote repair", () => {
     ).toBe(true);
   });
 
-  test("autosave scheduler ignores ready session updates without a completed turn boundary", () => {
+  test("autosave scheduler accepts ready session updates after active turn clears", () => {
     expect(
       shouldScheduleAutosaveForDomainEvent(
         domainEvent(1, "thread-ready", "thread.session-set", {
@@ -811,6 +811,25 @@ describe("history sync remote repair", () => {
             providerName: "codex",
             runtimeMode: "full-access",
             activeTurnId: null,
+            lastError: null,
+            updatedAt: baseEvent.occurredAt,
+          },
+        }),
+      ),
+    ).toBe(true);
+  });
+
+  test("autosave scheduler ignores ready session updates while a turn is still active", () => {
+    expect(
+      shouldScheduleAutosaveForDomainEvent(
+        domainEvent(1, "thread-running", "thread.session-set", {
+          threadId: "thread-running",
+          session: {
+            threadId: "thread-running",
+            status: "ready",
+            providerName: "codex",
+            runtimeMode: "full-access",
+            activeTurnId: "turn-1",
             lastError: null,
             updatedAt: baseEvent.occurredAt,
           },
@@ -836,6 +855,74 @@ describe("history sync remote repair", () => {
     expect(state).toBeDefined();
     if (!state) throw new Error("expected thread state");
     expect(isAutosyncEligibleThread(state)).toBe(true);
+  });
+
+  test("autosave waits for ready session to clear the completed active turn", () => {
+    const local = [
+      threadCreated(1, "thread-active"),
+      turnStartRequested(2, "thread-active", "turn-1"),
+      turnDiffCompleted(3, "thread-active", "turn-1"),
+      event(4, "thread-active", "thread.session-set", {
+        threadId: "thread-active",
+        session: {
+          threadId: "thread-active",
+          status: "ready",
+          providerName: "codex",
+          runtimeMode: "full-access",
+          activeTurnId: null,
+          lastError: null,
+          updatedAt: baseEvent.occurredAt,
+        },
+      }),
+    ];
+    const activeProjection = [
+      {
+        ...projectionThreadRow("thread-active", { latestTurnId: "turn-1" }),
+        sessionStatus: "ready",
+        sessionActiveTurnId: "turn-1",
+      },
+    ];
+    const readyProjection = [
+      {
+        ...projectionThreadRow("thread-active", { latestTurnId: "turn-1" }),
+        sessionStatus: "ready",
+        sessionActiveTurnId: null,
+      },
+    ];
+
+    expect(
+      selectAutosaveContiguousPushableEvents({
+        candidateEvents: local,
+        threadStates: classifyAutosyncThreadStates(local, activeProjection),
+      }).map((historyEvent) => historyEvent.sequence),
+    ).toEqual([]);
+    expect(
+      selectAutosaveContiguousPushableEvents({
+        candidateEvents: local,
+        threadStates: classifyAutosyncThreadStates(local, readyProjection),
+      }).map((historyEvent) => historyEvent.sequence),
+    ).toEqual([1, 2, 3, 4]);
+  });
+
+  test("autosave does not push completed events while projection session is running", () => {
+    const local = [
+      threadCreated(1, "thread-running"),
+      turnStartRequested(2, "thread-running", "turn-1"),
+      turnDiffCompleted(3, "thread-running", "turn-1"),
+    ];
+
+    expect(
+      selectAutosaveContiguousPushableEvents({
+        candidateEvents: local,
+        threadStates: classifyAutosyncThreadStates(local, [
+          {
+            ...projectionThreadRow("thread-running", { latestTurnId: "turn-1" }),
+            sessionStatus: "running",
+            sessionActiveTurnId: null,
+          },
+        ]),
+      }),
+    ).toEqual([]);
   });
 
   test("autosave marks terminal stopped threads as done", () => {

@@ -833,7 +833,99 @@ describe("resolveProjectStatusIndicator", () => {
 });
 
 describe("getVisibleThreadsForProject", () => {
-  it("includes the active thread even when it falls below the folded preview", () => {
+  it("returns the initial preview page", () => {
+    const threads = Array.from({ length: 20 }, (_, index) =>
+      makeThread({
+        id: ThreadId.make(`thread-${index + 1}`),
+        title: `Thread ${index + 1}`,
+      }),
+    );
+
+    const result = getVisibleThreadsForProject({
+      threads,
+      activeThreadId: undefined,
+      visibleUnpinnedLimit: 6,
+    });
+
+    expect(result.hasHiddenThreads).toBe(true);
+    expect(result.visibleThreads.map((thread) => thread.id)).toEqual([
+      ThreadId.make("thread-1"),
+      ThreadId.make("thread-2"),
+      ThreadId.make("thread-3"),
+      ThreadId.make("thread-4"),
+      ThreadId.make("thread-5"),
+      ThreadId.make("thread-6"),
+    ]);
+  });
+
+  it("reveals only the next page when more threads are shown", () => {
+    const threads = Array.from({ length: 25 }, (_, index) =>
+      makeThread({
+        id: ThreadId.make(`thread-${index + 1}`),
+      }),
+    );
+
+    const result = getVisibleThreadsForProject({
+      threads,
+      activeThreadId: undefined,
+      visibleUnpinnedLimit: 16,
+    });
+
+    expect(result.hasHiddenThreads).toBe(true);
+    expect(result.visibleThreads.map((thread) => thread.id)).toEqual(
+      threads.slice(0, 16).map((thread) => thread.id),
+    );
+    expect(result.hiddenThreads.map((thread) => thread.id)).toEqual(
+      threads.slice(16).map((thread) => thread.id),
+    );
+  });
+
+  it("caps the final page at the remaining threads", () => {
+    const threads = Array.from({ length: 12 }, (_, index) =>
+      makeThread({
+        id: ThreadId.make(`thread-${index + 1}`),
+      }),
+    );
+
+    const result = getVisibleThreadsForProject({
+      threads,
+      activeThreadId: undefined,
+      visibleUnpinnedLimit: 16,
+    });
+
+    expect(result.hasHiddenThreads).toBe(false);
+    expect(result.visibleThreads.map((thread) => thread.id)).toEqual(
+      threads.map((thread) => thread.id),
+    );
+    expect(result.hiddenThreads).toEqual([]);
+  });
+
+  it("includes pinned threads outside the unpinned preview", () => {
+    const threads = Array.from({ length: 8 }, (_, index) =>
+      makeThread({
+        id: ThreadId.make(`thread-${index + 1}`),
+        pinnedAt: index === 7 ? "2026-03-09T10:00:00.000Z" : null,
+      }),
+    );
+
+    const result = getVisibleThreadsForProject({
+      threads,
+      activeThreadId: undefined,
+      visibleUnpinnedLimit: 6,
+    });
+
+    expect(result.visibleThreads.map((thread) => thread.id)).toEqual([
+      ThreadId.make("thread-1"),
+      ThreadId.make("thread-2"),
+      ThreadId.make("thread-3"),
+      ThreadId.make("thread-4"),
+      ThreadId.make("thread-5"),
+      ThreadId.make("thread-6"),
+      ThreadId.make("thread-8"),
+    ]);
+  });
+
+  it("includes the active thread even when it falls below the visible page", () => {
     const threads = Array.from({ length: 8 }, (_, index) =>
       makeThread({
         id: ThreadId.make(`thread-${index + 1}`),
@@ -844,8 +936,7 @@ describe("getVisibleThreadsForProject", () => {
     const result = getVisibleThreadsForProject({
       threads,
       activeThreadId: ThreadId.make("thread-8"),
-      isThreadListExpanded: false,
-      previewLimit: 6,
+      visibleUnpinnedLimit: 6,
     });
 
     expect(result.hasHiddenThreads).toBe(true);
@@ -859,27 +950,6 @@ describe("getVisibleThreadsForProject", () => {
       ThreadId.make("thread-8"),
     ]);
     expect(result.hiddenThreads.map((thread) => thread.id)).toEqual([ThreadId.make("thread-7")]);
-  });
-
-  it("returns all threads when the list is expanded", () => {
-    const threads = Array.from({ length: 8 }, (_, index) =>
-      makeThread({
-        id: ThreadId.make(`thread-${index + 1}`),
-      }),
-    );
-
-    const result = getVisibleThreadsForProject({
-      threads,
-      activeThreadId: ThreadId.make("thread-8"),
-      isThreadListExpanded: true,
-      previewLimit: 6,
-    });
-
-    expect(result.hasHiddenThreads).toBe(true);
-    expect(result.visibleThreads.map((thread) => thread.id)).toEqual(
-      threads.map((thread) => thread.id),
-    );
-    expect(result.hiddenThreads).toEqual([]);
   });
 });
 

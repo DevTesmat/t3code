@@ -7,6 +7,7 @@ import {
   ProviderItemId,
   type OrchestrationEvent,
   type OrchestrationProposedPlanId,
+  type OrchestrationReadModel,
   CheckpointRef,
   isToolLifecycleItemType,
   ThreadId,
@@ -1499,17 +1500,40 @@ const make = Effect.gen(function* () {
 
   const getSourceProposedPlanReferenceForAcceptedTurnStart = Effect.fn(
     "getSourceProposedPlanReferenceForAcceptedTurnStart",
-  )(function* (threadId: ThreadId, eventTurnId: TurnId | undefined) {
+  )(function* (
+    thread: OrchestrationReadModel["threads"][number],
+    eventTurnId: TurnId | undefined,
+    allowRecoveryFallback: boolean,
+  ) {
     if (eventTurnId === undefined) {
       return null;
     }
 
-    const expectedTurnId = yield* getExpectedProviderTurnIdForThread(threadId);
-    if (!sameId(expectedTurnId, eventTurnId)) {
+    const expectedTurnId = yield* getExpectedProviderTurnIdForThread(thread.id);
+    if (expectedTurnId !== undefined && !sameId(expectedTurnId, eventTurnId)) {
       return null;
     }
 
-    return yield* getSourceProposedPlanReferenceForPendingTurnStart(threadId);
+    if (expectedTurnId === undefined && !allowRecoveryFallback) {
+      return null;
+    }
+
+    const pendingSourcePlan = yield* getSourceProposedPlanReferenceForPendingTurnStart(thread.id);
+    if (pendingSourcePlan === null) {
+      return null;
+    }
+
+    if (expectedTurnId === undefined) {
+      const readModel = yield* orchestrationEngine.getReadModel();
+      const sourceThread = readModel.threads.find(
+        (entry) => entry.id === pendingSourcePlan.sourceThreadId,
+      );
+      if (!sourceThread || sourceThread.projectId !== thread.projectId) {
+        return null;
+      }
+    }
+
+    return pendingSourcePlan;
   });
 
   const markSourceProposedPlanImplemented = Effect.fn("markSourceProposedPlanImplemented")(
@@ -1585,6 +1609,15 @@ const make = Effect.gen(function* () {
         }
         childProviderThreadIdsByThreadId.set(thread.id, childProviderThreadIds);
       }
+      const eventProviderThreadId = providerThreadIdFromRuntimeEvent(event);
+      const currentParentProviderThreadId = parentProviderThreadIdByThreadId.get(thread.id);
+      if (
+        currentParentProviderThreadId === undefined &&
+        eventProviderThreadId !== undefined &&
+        !childProviderThreadIds.has(eventProviderThreadId)
+      ) {
+        parentProviderThreadIdByThreadId.set(thread.id, eventProviderThreadId);
+      }
       const providerThreadScope = providerThreadScopeFromRuntimeEvent(event, {
         parentProviderThreadId: parentProviderThreadIdByThreadId.get(thread.id),
         childProviderThreadIds,
@@ -1630,7 +1663,11 @@ const make = Effect.gen(function* () {
       })();
       const acceptedTurnStartedSourcePlan =
         event.type === "turn.started" && shouldApplyThreadLifecycle
-          ? yield* getSourceProposedPlanReferenceForAcceptedTurnStart(thread.id, eventTurnId)
+          ? yield* getSourceProposedPlanReferenceForAcceptedTurnStart(
+              thread,
+              eventTurnId,
+              shouldProjectToParentThread && activeTurnId === null,
+            )
           : null;
 
       if (

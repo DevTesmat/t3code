@@ -256,8 +256,20 @@ function itemTitle(itemType: CanonicalItemType): string | undefined {
 }
 
 function itemDetail(item: CodexLifecycleItem): string | undefined {
+  const itemRecord = item && typeof item === "object" ? (item as Record<string, unknown>) : {};
+  const input =
+    itemRecord.input && typeof itemRecord.input === "object"
+      ? (itemRecord.input as Record<string, unknown>)
+      : undefined;
+  const result =
+    itemRecord.result && typeof itemRecord.result === "object"
+      ? (itemRecord.result as Record<string, unknown>)
+      : undefined;
+  const command = formatLifecycleCommand(itemRecord.command ?? input?.command ?? result?.command);
+  if (command) {
+    return command;
+  }
   const candidates = [
-    "command" in item ? item.command : undefined,
     "title" in item ? item.title : undefined,
     "summary" in item ? item.summary : undefined,
     "text" in item ? item.text : undefined,
@@ -270,6 +282,19 @@ function itemDetail(item: CodexLifecycleItem): string | undefined {
     return trimmed;
   }
   return undefined;
+}
+
+function formatLifecycleCommand(value: unknown): string | undefined {
+  if (typeof value === "string") {
+    return trimText(value);
+  }
+  if (!Array.isArray(value)) {
+    return undefined;
+  }
+  const parts = value
+    .map((entry) => (typeof entry === "string" ? trimText(entry) : undefined))
+    .filter((entry): entry is string => entry !== undefined);
+  return parts.length > 0 ? parts.join(" ") : undefined;
 }
 
 function toRequestTypeFromMethod(method: string): CanonicalRequestType {

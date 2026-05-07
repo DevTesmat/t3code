@@ -39,6 +39,7 @@ import { Open, resolveAvailableEditors } from "./open.ts";
 import { normalizeDispatchCommand } from "./orchestration/Normalizer.ts";
 import { OrchestrationEngineService } from "./orchestration/Services/OrchestrationEngine.ts";
 import { commandOutputDeltaStream as globalCommandOutputDeltaStream } from "./orchestration/Services/CommandOutputDeltaBus.ts";
+import { readCommandOutputSnapshotsForThread } from "./orchestration/Services/CommandOutputBuffer.ts";
 import { ProjectionSnapshotQuery } from "./orchestration/Services/ProjectionSnapshotQuery.ts";
 import {
   observeRpcEffect,
@@ -781,6 +782,19 @@ const makeWsRpcLayer = (currentSessionId: AuthSessionId) =>
                   delta,
                 })),
               );
+              const commandOutputSnapshotStream = readCommandOutputSnapshotsForThread(
+                input.threadId,
+              ).pipe(
+                Effect.map((snapshots) =>
+                  Stream.fromIterable(
+                    snapshots.map((snapshot) => ({
+                      kind: "command-output-snapshot" as const,
+                      snapshot,
+                    })),
+                  ),
+                ),
+                Stream.unwrap,
+              );
               const historySyncSnapshotStream = Stream.callback<{
                 readonly kind: "snapshot";
                 readonly snapshot: {
@@ -823,13 +837,16 @@ const makeWsRpcLayer = (currentSessionId: AuthSessionId) =>
               );
 
               return Stream.concat(
-                Stream.make({
-                  kind: "snapshot" as const,
-                  snapshot: {
-                    snapshotSequence,
-                    thread: threadDetail.value,
-                  },
-                }),
+                Stream.concat(
+                  Stream.make({
+                    kind: "snapshot" as const,
+                    snapshot: {
+                      snapshotSequence,
+                      thread: threadDetail.value,
+                    },
+                  }),
+                  commandOutputSnapshotStream,
+                ),
                 Stream.merge(
                   Stream.merge(liveStream, commandOutputDeltaStream),
                   historySyncSnapshotStream,

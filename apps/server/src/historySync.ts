@@ -1055,7 +1055,8 @@ export function shouldScheduleAutosaveForDomainEvent(event: OrchestrationEvent):
   if (event.type === "thread.session-set") {
     return (
       event.payload.session.activeTurnId === null &&
-      (event.payload.session.status === "stopped" ||
+      (event.payload.session.status === "ready" ||
+        event.payload.session.status === "stopped" ||
         event.payload.session.status === "interrupted" ||
         event.payload.session.status === "error")
     );

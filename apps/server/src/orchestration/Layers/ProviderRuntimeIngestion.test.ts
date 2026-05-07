@@ -706,6 +706,60 @@ describe("ProviderRuntimeIngestion", () => {
     expect(message?.streaming).toBe(false);
   });
 
+  it("projects resumed parent thread output when no provider thread mapping has been seen", async () => {
+    const harness = await createHarness();
+    const now = new Date().toISOString();
+
+    harness.emit({
+      type: "content.delta",
+      eventId: asEventId("evt-resumed-parent-delta"),
+      provider: ProviderDriverKind.make("codex"),
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("turn-resumed-parent"),
+      itemId: asItemId("item-resumed-parent"),
+      providerRefs: {
+        providerThreadId: "provider-thread-resumed-parent",
+        providerTurnId: "turn-resumed-parent",
+        providerItemId: "item-resumed-parent",
+      },
+      payload: {
+        streamKind: "assistant_text",
+        delta: "resumed output",
+      },
+    });
+    harness.emit({
+      type: "item.completed",
+      eventId: asEventId("evt-resumed-parent-completed"),
+      provider: ProviderDriverKind.make("codex"),
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("turn-resumed-parent"),
+      itemId: asItemId("item-resumed-parent"),
+      providerRefs: {
+        providerThreadId: "provider-thread-resumed-parent",
+        providerTurnId: "turn-resumed-parent",
+        providerItemId: "item-resumed-parent",
+      },
+      payload: {
+        itemType: "assistant_message",
+        status: "completed",
+      },
+    });
+
+    const thread = await waitForThread(harness.engine, (entry) =>
+      entry.messages.some(
+        (message: ProviderRuntimeTestMessage) =>
+          message.id === "assistant:item-resumed-parent" && !message.streaming,
+      ),
+    );
+    const message = thread.messages.find(
+      (entry: ProviderRuntimeTestMessage) => entry.id === "assistant:item-resumed-parent",
+    );
+    expect(message?.text).toBe("resumed output");
+    expect(message?.streaming).toBe(false);
+  });
+
   it("deduplicates replayed provider events before buffered state can duplicate output", async () => {
     const harness = await createHarness({ serverSettings: { enableAssistantStreaming: false } });
     const now = new Date().toISOString();
@@ -1759,6 +1813,109 @@ describe("ProviderRuntimeIngestion", () => {
       sourceThreadAfterStart.proposedPlans.find((entry) => entry.id === sourcePlan.id),
     ).toMatchObject({
       implementationThreadId: "thread-implement",
+    });
+  });
+
+  it("marks a same-thread source proposed plan implemented when provider turn state is recovered", async () => {
+    const harness = await createHarness();
+    const threadId = asThreadId("thread-1");
+    const sourceTurnId = asTurnId("turn-plan-source-recovered");
+    const implementationTurnId = asTurnId("turn-plan-implementation-recovered");
+    const createdAt = new Date().toISOString();
+
+    harness.setProviderSession({
+      provider: ProviderDriverKind.make("codex"),
+      status: "ready",
+      runtimeMode: "approval-required",
+      threadId,
+      createdAt,
+      updatedAt: createdAt,
+    });
+
+    harness.emit({
+      type: "turn.proposed.completed",
+      eventId: asEventId("evt-same-thread-plan-completed-recovered"),
+      provider: ProviderDriverKind.make("codex"),
+      createdAt,
+      threadId,
+      turnId: sourceTurnId,
+      payload: {
+        planMarkdown: "# Same-thread source plan",
+      },
+    });
+
+    const threadWithPlan = await waitForThread(
+      harness.engine,
+      (thread) =>
+        thread.proposedPlans.some(
+          (proposedPlan: ProviderRuntimeTestProposedPlan) =>
+            proposedPlan.id === "plan:thread-1:turn:turn-plan-source-recovered" &&
+            proposedPlan.implementedAt === null,
+        ),
+      2_000,
+      threadId,
+    );
+    const sourcePlan = threadWithPlan.proposedPlans.find(
+      (entry: ProviderRuntimeTestProposedPlan) =>
+        entry.id === "plan:thread-1:turn:turn-plan-source-recovered",
+    );
+    expect(sourcePlan).toBeDefined();
+    if (!sourcePlan) {
+      throw new Error("Expected source plan to exist.");
+    }
+
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.turn.start",
+        commandId: CommandId.make("cmd-same-thread-plan-start-recovered"),
+        threadId,
+        message: {
+          messageId: asMessageId("msg-same-thread-plan-start-recovered"),
+          role: "user",
+          text: "PLEASE IMPLEMENT THIS PLAN:\n# Same-thread source plan",
+          attachments: [],
+        },
+        sourceProposedPlan: {
+          threadId,
+          planId: sourcePlan.id,
+        },
+        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+        runtimeMode: "approval-required",
+        createdAt: new Date().toISOString(),
+      }),
+    );
+
+    harness.emit({
+      type: "turn.started",
+      eventId: asEventId("evt-same-thread-implementation-started-recovered"),
+      provider: ProviderDriverKind.make("codex"),
+      createdAt: new Date().toISOString(),
+      threadId,
+      turnId: implementationTurnId,
+      providerRefs: {
+        providerThreadId: "provider-thread-recovered",
+        providerTurnId: implementationTurnId,
+      },
+    });
+
+    await harness.drain();
+
+    const threadAfterRecoveredStart = await waitForThread(
+      harness.engine,
+      (thread) =>
+        thread.proposedPlans.some(
+          (proposedPlan: ProviderRuntimeTestProposedPlan) =>
+            proposedPlan.id === sourcePlan.id &&
+            proposedPlan.implementedAt !== null &&
+            proposedPlan.implementationThreadId === threadId,
+        ) && thread.latestTurn?.turnId === implementationTurnId,
+      2_000,
+      threadId,
+    );
+    expect(
+      threadAfterRecoveredStart.proposedPlans.find((entry) => entry.id === sourcePlan.id),
+    ).toMatchObject({
+      implementationThreadId: "thread-1",
     });
   });
 

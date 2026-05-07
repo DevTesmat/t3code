@@ -438,51 +438,40 @@ export function resolveProjectStatusIndicator(
   return highestPriorityStatus;
 }
 
-export function getVisibleThreadsForProject<T extends Pick<Thread, "id">>(input: {
+export function getVisibleThreadsForProject<T extends Pick<Thread, "id" | "pinnedAt">>(input: {
   threads: readonly T[];
   activeThreadId: T["id"] | undefined;
-  isThreadListExpanded: boolean;
-  previewLimit: number;
+  visibleUnpinnedLimit: number;
 }): {
   hasHiddenThreads: boolean;
   visibleThreads: T[];
   hiddenThreads: T[];
 } {
-  const { activeThreadId, isThreadListExpanded, previewLimit, threads } = input;
-  const hasHiddenThreads = threads.length > previewLimit;
-
-  if (!hasHiddenThreads || isThreadListExpanded) {
-    return {
-      hasHiddenThreads,
-      hiddenThreads: [],
-      visibleThreads: [...threads],
-    };
+  const { activeThreadId, visibleUnpinnedLimit, threads } = input;
+  const unpinnedThreadIds = new Set(
+    threads
+      .filter((thread) => thread.pinnedAt == null)
+      .slice(0, Math.max(0, visibleUnpinnedLimit))
+      .map((thread) => thread.id),
+  );
+  const pinnedThreadIds = new Set(
+    threads.filter((thread) => thread.pinnedAt != null).map((thread) => thread.id),
+  );
+  const activeThread = activeThreadId
+    ? threads.find((thread) => thread.id === activeThreadId)
+    : undefined;
+  const visibleThreadIds = new Set([...pinnedThreadIds, ...unpinnedThreadIds]);
+  if (activeThread) {
+    visibleThreadIds.add(activeThread.id);
   }
 
-  const previewThreads = threads.slice(0, previewLimit);
-  if (!activeThreadId || previewThreads.some((thread) => thread.id === activeThreadId)) {
-    return {
-      hasHiddenThreads: true,
-      hiddenThreads: threads.slice(previewLimit),
-      visibleThreads: previewThreads,
-    };
-  }
-
-  const activeThread = threads.find((thread) => thread.id === activeThreadId);
-  if (!activeThread) {
-    return {
-      hasHiddenThreads: true,
-      hiddenThreads: threads.slice(previewLimit),
-      visibleThreads: previewThreads,
-    };
-  }
-
-  const visibleThreadIds = new Set([...previewThreads, activeThread].map((thread) => thread.id));
+  const visibleThreads = threads.filter((thread) => visibleThreadIds.has(thread.id));
+  const hiddenThreads = threads.filter((thread) => !visibleThreadIds.has(thread.id));
 
   return {
-    hasHiddenThreads: true,
-    hiddenThreads: threads.filter((thread) => !visibleThreadIds.has(thread.id)),
-    visibleThreads: threads.filter((thread) => visibleThreadIds.has(thread.id)),
+    hasHiddenThreads: hiddenThreads.length > 0,
+    hiddenThreads,
+    visibleThreads,
   };
 }
 

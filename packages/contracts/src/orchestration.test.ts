@@ -16,6 +16,7 @@ import {
   OrchestrationProposedPlan,
   OrchestrationSession,
   OrchestrationThread,
+  OrchestrationThreadStreamItem,
   OrchestrationThreadShell,
   ProjectCreateCommand,
   ThreadMetaUpdatedPayload,
@@ -43,6 +44,9 @@ const decodeOrchestrationProposedPlan = Schema.decodeUnknownEffect(Orchestration
 const decodeOrchestrationSession = Schema.decodeUnknownEffect(OrchestrationSession);
 const decodeOrchestrationThread = Schema.decodeUnknownEffect(OrchestrationThread);
 const decodeOrchestrationThreadShell = Schema.decodeUnknownEffect(OrchestrationThreadShell);
+const decodeOrchestrationThreadStreamItem = Schema.decodeUnknownEffect(
+  OrchestrationThreadStreamItem,
+);
 
 function getOptionValue(
   options: ReadonlyArray<{ id: string; value: unknown }> | undefined,
@@ -91,6 +95,24 @@ it.effect("rejects thread turn diff when fromTurnCount > toTurnCount", () =>
       }),
     );
     assert.strictEqual(result._tag, "Failure");
+  }),
+);
+
+it.effect("decodes command output snapshot thread stream items", () =>
+  Effect.gen(function* () {
+    const parsed = yield* decodeOrchestrationThreadStreamItem({
+      kind: "command-output-snapshot",
+      snapshot: {
+        threadId: "thread-1",
+        turnId: "turn-1",
+        toolCallId: "tool-1",
+        updatedAt: "2026-01-01T00:00:00.000Z",
+        text: "full output",
+        truncated: false,
+      },
+    });
+
+    assert.strictEqual(parsed.kind, "command-output-snapshot");
   }),
 );
 

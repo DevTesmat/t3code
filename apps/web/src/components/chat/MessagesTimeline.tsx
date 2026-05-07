@@ -1087,14 +1087,13 @@ const ToolOutputPreview = memo(function ToolOutputPreview(props: { workEntry: Ti
   const outputIsError = outputPreview?.stream === "stderr";
   const scrollerRef = useRef<HTMLDivElement | null>(null);
   const stickToBottomRef = useRef(true);
-  const liveKey =
-    workEntry.toolCallId && workEntry.status === "running"
-      ? {
-          environmentId: ctx.activeThreadEnvironmentId,
-          threadId: ctx.activeThreadId,
-          toolCallId: workEntry.toolCallId,
-        }
-      : null;
+  const liveKey = workEntry.toolCallId
+    ? {
+        environmentId: ctx.activeThreadEnvironmentId,
+        threadId: ctx.activeThreadId,
+        toolCallId: workEntry.toolCallId,
+      }
+    : null;
   const liveOutput = useLiveCommandOutput(liveKey);
   const outputText =
     liveOutput.text.length > 0 ? liveOutput.text : (outputPreview?.lines.join("\n") ?? "");
@@ -1380,8 +1379,7 @@ const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
     (workEntry.outputPreview?.lines.length ?? 0) > 0
       ? workEntry.outputPreview
       : null;
-  const hasLiveOutput =
-    isTerminal && workEntry.status === "running" && Boolean(workEntry.toolCallId);
+  const hasLiveOutput = isTerminal && Boolean(workEntry.toolCallId);
   const isExpandable = outputPreview !== null || hasLiveOutput;
   const toolKey = workEntryToolKey(workEntry);
   const defaultOutputExpanded = isTerminal && shouldAutoShowTerminalOutput(workEntry);

@@ -3,6 +3,7 @@ import { EnvironmentId, EventId, ProviderItemId, ThreadId, TurnId } from "@t3too
 
 import {
   appendLiveCommandOutputDelta,
+  hydrateLiveCommandOutputSnapshot,
   readLiveCommandOutputSnapshot,
   resetLiveCommandOutputForTests,
 } from "./liveCommandOutput";
@@ -68,5 +69,29 @@ describe("liveCommandOutput", () => {
         toolCallId,
       }).text,
     ).toBe("same\n");
+  });
+
+  it("hydrates command output snapshots after a refresh", () => {
+    hydrateLiveCommandOutputSnapshot(environmentId, {
+      threadId,
+      turnId: TurnId.make("turn-1"),
+      toolCallId,
+      updatedAt: "2026-01-01T00:00:02.000Z",
+      text: "full\ncompleted\noutput",
+      truncated: false,
+    });
+
+    expect(
+      readLiveCommandOutputSnapshot({
+        environmentId,
+        threadId,
+        toolCallId,
+      }),
+    ).toMatchObject({
+      text: "full\ncompleted\noutput",
+      version: 1,
+      truncated: false,
+      updatedAt: "2026-01-01T00:00:02.000Z",
+    });
   });
 });

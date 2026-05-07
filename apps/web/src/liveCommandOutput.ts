@@ -1,5 +1,10 @@
 import { useSyncExternalStore } from "react";
-import type { EnvironmentId, OrchestrationCommandOutputDelta, ThreadId } from "@t3tools/contracts";
+import type {
+  EnvironmentId,
+  OrchestrationCommandOutputDelta,
+  OrchestrationCommandOutputSnapshot,
+  ThreadId,
+} from "@t3tools/contracts";
 
 const MAX_BUFFER_CHARS = 96_000;
 const MAX_BUFFER_LINES = 2_000;
@@ -114,6 +119,29 @@ export function appendLiveCommandOutputDelta(
   entry.text = trimmed.text;
   entry.truncated = entry.truncated || trimmed.truncated;
   entry.updatedAt = delta.createdAt;
+  entry.version += 1;
+  queueNotify(entry);
+}
+
+export function hydrateLiveCommandOutputSnapshot(
+  environmentId: EnvironmentId,
+  snapshot: OrchestrationCommandOutputSnapshot,
+): void {
+  const key = liveCommandOutputKey({
+    environmentId,
+    threadId: snapshot.threadId,
+    toolCallId: snapshot.toolCallId,
+  });
+  const entry = getOrCreateEntry(key);
+  if (snapshot.text.length === 0 && entry.text.length > 0) {
+    return;
+  }
+  if (entry.updatedAt && snapshot.updatedAt && entry.updatedAt > snapshot.updatedAt) {
+    return;
+  }
+  entry.text = snapshot.text;
+  entry.truncated = snapshot.truncated;
+  entry.updatedAt = snapshot.updatedAt;
   entry.version += 1;
   queueNotify(entry);
 }
