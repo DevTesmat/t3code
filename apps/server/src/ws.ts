@@ -54,14 +54,13 @@ import {
   applyHistorySyncProjectMappings,
   getHistorySyncConfig,
   getHistorySyncProjectMappings,
-  readHistorySyncStatus,
   restoreHistorySyncBackup,
   runHistorySync,
   startHistorySyncInitialImport,
-  subscribeHistorySyncStatus,
   testHistorySyncConnection,
   updateHistorySyncConfig,
-} from "./historySync.ts";
+} from "./historySync/facade.ts";
+import { readHistorySyncStatus, subscribeHistorySyncStatus } from "./historySync/statusBus.ts";
 import { TerminalManager } from "./terminal/Services/Manager.ts";
 import { WorkspaceEntries } from "./workspace/Services/WorkspaceEntries.ts";
 import { WorkspaceFileSystem } from "./workspace/Services/WorkspaceFileSystem.ts";

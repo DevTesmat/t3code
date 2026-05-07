@@ -65,7 +65,7 @@ import {
 } from "./auth/http.ts";
 import { ServerSecretStoreLive } from "./auth/Layers/ServerSecretStore.ts";
 import { ServerAuthLive } from "./auth/Layers/ServerAuth.ts";
-import { HistorySyncService, HistorySyncServiceLive } from "./historySync.ts";
+import { HistorySyncService, HistorySyncServiceLive } from "./historySync/service.ts";
 import { OrchestrationLayerLive } from "./orchestration/runtimeLayer.ts";
 import {
   clearPersistedServerRuntimeState,

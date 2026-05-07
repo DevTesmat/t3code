@@ -324,6 +324,19 @@ export const HistorySyncBackupSummary = Schema.Struct({
 });
 export type HistorySyncBackupSummary = typeof HistorySyncBackupSummary.Type;
 
+export const HistorySyncInitialSyncRecovery = Schema.Struct({
+  phase: Schema.Union([
+    Schema.Literal("backup"),
+    Schema.Literal("push-local"),
+    Schema.Literal("push-merge"),
+    Schema.Literal("import-remote"),
+    Schema.Literal("write-state"),
+  ]),
+  startedAt: IsoDateTime,
+  error: Schema.optionalKey(Schema.String),
+});
+export type HistorySyncInitialSyncRecovery = typeof HistorySyncInitialSyncRecovery.Type;
+
 export const HistorySyncMysqlFields = Schema.Struct({
   host: TrimmedNonEmptyString,
   port: Schema.Number,
@@ -343,6 +356,7 @@ export const HistorySyncConfig = Schema.Struct({
   statusIndicatorEnabled: Schema.Boolean,
   connectionSummary: Schema.optionalKey(HistorySyncConnectionSummary),
   backup: Schema.optionalKey(HistorySyncBackupSummary),
+  initialSyncRecovery: Schema.optionalKey(HistorySyncInitialSyncRecovery),
 });
 export type HistorySyncConfig = typeof HistorySyncConfig.Type;
 

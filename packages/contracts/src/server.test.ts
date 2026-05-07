@@ -4,6 +4,7 @@ import { describe, expect, it } from "vitest";
 import {
   HistorySyncProjectMappingAction,
   HistorySyncProjectMappingPlan,
+  HistorySyncConfig,
   HistorySyncStatus,
   ServerProvider,
 } from "./server.ts";
@@ -147,6 +148,31 @@ describe("HistorySyncStatus", () => {
       throw new Error("Expected error status.");
     }
     expect(parsed.retry?.maxAttempts).toBe(5);
+  });
+});
+
+describe("HistorySyncConfig", () => {
+  it("decodes initial sync recovery metadata", () => {
+    const parsed = Schema.decodeUnknownSync(HistorySyncConfig)({
+      enabled: true,
+      configured: true,
+      status: {
+        state: "error",
+        configured: true,
+        message: "History sync failed.",
+        lastSyncedAt: null,
+      },
+      intervalMs: 120_000,
+      shutdownFlushTimeoutMs: 5_000,
+      statusIndicatorEnabled: true,
+      initialSyncRecovery: {
+        phase: "import-remote",
+        startedAt: "2026-05-01T00:00:00.000Z",
+        error: "2026-05-01T00:01:00.000Z: import failed",
+      },
+    });
+
+    expect(parsed.initialSyncRecovery?.phase).toBe("import-remote");
   });
 });
 

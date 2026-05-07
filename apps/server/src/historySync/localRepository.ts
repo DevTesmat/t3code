@@ -28,11 +28,21 @@ export const CLEAR_LOCAL_HISTORY_TABLES = [
   "orchestration_events",
 ] as const;
 
+export type HistorySyncInitialSyncPhase =
+  | "backup"
+  | "push-local"
+  | "push-merge"
+  | "import-remote"
+  | "write-state";
+
 export interface HistorySyncStateRow {
   readonly hasCompletedInitialSync: number;
   readonly lastSyncedRemoteSequence: number;
   readonly lastSuccessfulSyncAt: string | null;
   readonly clientId?: string | null;
+  readonly initialSyncPhase?: HistorySyncInitialSyncPhase | null;
+  readonly initialSyncStartedAt?: string | null;
+  readonly initialSyncError?: string | null;
 }
 
 export interface HistorySyncLocalProjectionCounts {
@@ -195,7 +205,10 @@ export function readState(sql: SqlClient.SqlClient) {
         has_completed_initial_sync AS "hasCompletedInitialSync",
         last_synced_remote_sequence AS "lastSyncedRemoteSequence",
         last_successful_sync_at AS "lastSuccessfulSyncAt",
-        client_id AS "clientId"
+        client_id AS "clientId",
+        initial_sync_phase AS "initialSyncPhase",
+        initial_sync_started_at AS "initialSyncStartedAt",
+        initial_sync_error AS "initialSyncError"
       FROM history_sync_state
       WHERE id = 1
       LIMIT 1
@@ -217,14 +230,20 @@ export function ensureClientId(sql: SqlClient.SqlClient) {
         client_id,
         has_completed_initial_sync,
         last_synced_remote_sequence,
-        last_successful_sync_at
+        last_successful_sync_at,
+        initial_sync_phase,
+        initial_sync_started_at,
+        initial_sync_error
       )
       VALUES (
         1,
         ${clientId},
         ${state?.hasCompletedInitialSync ?? 0},
         ${state?.lastSyncedRemoteSequence ?? 0},
-        ${state?.lastSuccessfulSyncAt ?? null}
+        ${state?.lastSuccessfulSyncAt ?? null},
+        ${state?.initialSyncPhase ?? null},
+        ${state?.initialSyncStartedAt ?? null},
+        ${state?.initialSyncError ?? null}
       )
       ON CONFLICT (id) DO UPDATE SET
         client_id = excluded.client_id
@@ -249,20 +268,97 @@ export function writeState(
         client_id,
         has_completed_initial_sync,
         last_synced_remote_sequence,
-        last_successful_sync_at
+        last_successful_sync_at,
+        initial_sync_phase,
+        initial_sync_started_at,
+        initial_sync_error
       )
       VALUES (
         1,
         ${clientId},
         ${input.hasCompletedInitialSync ? 1 : 0},
         ${input.lastSyncedRemoteSequence},
-        ${input.lastSuccessfulSyncAt}
+        ${input.lastSuccessfulSyncAt},
+        NULL,
+        NULL,
+        NULL
       )
       ON CONFLICT (id) DO UPDATE SET
         client_id = history_sync_state.client_id,
         has_completed_initial_sync = excluded.has_completed_initial_sync,
         last_synced_remote_sequence = excluded.last_synced_remote_sequence,
         last_successful_sync_at = excluded.last_successful_sync_at
+    `;
+  });
+}
+
+export function setInitialSyncPhase(
+  sql: SqlClient.SqlClient,
+  input: {
+    readonly phase: HistorySyncInitialSyncPhase;
+    readonly startedAt: string;
+  },
+) {
+  return Effect.gen(function* () {
+    const clientId = yield* ensureClientId(sql);
+    yield* sql`
+      INSERT INTO history_sync_state (
+        id,
+        client_id,
+        has_completed_initial_sync,
+        last_synced_remote_sequence,
+        last_successful_sync_at,
+        initial_sync_phase,
+        initial_sync_started_at,
+        initial_sync_error
+      )
+      VALUES (
+        1,
+        ${clientId},
+        0,
+        0,
+        NULL,
+        ${input.phase},
+        ${input.startedAt},
+        NULL
+      )
+      ON CONFLICT (id) DO UPDATE SET
+        client_id = history_sync_state.client_id,
+        initial_sync_phase = excluded.initial_sync_phase,
+        initial_sync_started_at = COALESCE(history_sync_state.initial_sync_started_at, excluded.initial_sync_started_at),
+        initial_sync_error = NULL
+    `;
+  });
+}
+
+export function clearInitialSyncPhase(sql: SqlClient.SqlClient) {
+  return sql`
+    UPDATE history_sync_state
+    SET
+      initial_sync_phase = NULL,
+      initial_sync_started_at = NULL,
+      initial_sync_error = NULL
+    WHERE id = 1
+  `;
+}
+
+export function failInitialSyncPhase(
+  sql: SqlClient.SqlClient,
+  input: {
+    readonly error: string;
+    readonly failedAt: string;
+  },
+) {
+  return Effect.gen(function* () {
+    const state = yield* readState(sql);
+    if (state?.initialSyncPhase === null || state?.initialSyncPhase === undefined) {
+      return;
+    }
+    yield* sql`
+      UPDATE history_sync_state
+      SET
+        initial_sync_error = ${`${input.failedAt}: ${input.error}`}
+      WHERE id = 1
     `;
   });
 }

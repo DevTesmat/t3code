@@ -16,9 +16,7 @@ import {
   filterUnpushedLocalEvents,
   isAutosyncEligibleThread,
   isRemoteBehindLocal,
-  isRetryableHistorySyncConnectionFailure,
   nextSyncedRemoteSequenceAfterPush,
-  nextHistorySyncRetryDelayMs,
   normalizeRemoteEventForLocalImport,
   rewriteRemoteEventsForLocalMappings,
   selectAutosaveCandidateLocalEvents,
@@ -34,7 +32,9 @@ import {
   shouldImportRemoteIntoEmptyLocal,
   shouldPushLocalHistoryOnFirstSync,
   type HistorySyncEventRow,
-} from "./historySync.ts";
+} from "./historySync/planner.ts";
+import { isRetryableHistorySyncConnectionFailure } from "./historySync/remoteStore.ts";
+import { nextHistorySyncRetryDelayMs } from "./historySync/syncRunner.ts";
 
 const baseEvent = {
   occurredAt: "2026-01-01T00:00:00.000Z",

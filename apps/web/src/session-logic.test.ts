@@ -663,6 +663,7 @@ describe("findLatestProposedPlan", () => {
       planMarkdown: "# Latest",
       implementedAt: null,
       implementationThreadId: null,
+      streaming: false,
       createdAt: "2026-02-23T00:00:01.000Z",
       updatedAt: "2026-02-23T00:00:02.000Z",
     });
@@ -842,6 +843,7 @@ describe("findSidebarProposedPlan", () => {
       planMarkdown: "# Source plan",
       implementedAt: "2026-02-23T00:00:03.000Z",
       implementationThreadId: "thread-2",
+      streaming: false,
       createdAt: "2026-02-23T00:00:01.000Z",
       updatedAt: "2026-02-23T00:00:02.000Z",
     });

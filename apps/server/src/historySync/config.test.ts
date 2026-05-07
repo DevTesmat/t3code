@@ -122,6 +122,31 @@ describe("history sync config controller", () => {
     });
   });
 
+  test("config snapshot includes durable initial sync recovery metadata", async () => {
+    const { controller } = await Effect.runPromise(
+      makeController({
+        secretValue: "mysql://user:pass@localhost/db",
+        status: { state: "error", configured: true, message: "failed", lastSyncedAt: null },
+        state: {
+          hasCompletedInitialSync: 0,
+          lastSyncedRemoteSequence: 0,
+          lastSuccessfulSyncAt: null,
+          initialSyncPhase: "import-remote",
+          initialSyncStartedAt: "2026-05-01T00:00:00.000Z",
+          initialSyncError: "2026-05-01T00:01:00.000Z: import failed",
+        },
+      }),
+    );
+
+    await expect(Effect.runPromise(controller.toConfig)).resolves.toMatchObject({
+      initialSyncRecovery: {
+        phase: "import-remote",
+        startedAt: "2026-05-01T00:00:00.000Z",
+        error: "2026-05-01T00:01:00.000Z: import failed",
+      },
+    });
+  });
+
   test("rejects clear and mysql update in the same request", async () => {
     const { controller } = await Effect.runPromise(makeController({}));
     const exit = await Effect.runPromiseExit(

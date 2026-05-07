@@ -48,6 +48,7 @@ import Migration0032 from "./Migrations/032_HistorySyncState.ts";
 import Migration0033 from "./Migrations/033_HistorySyncProjectMappings.ts";
 import Migration0034 from "./Migrations/034_HistorySyncPushedEvents.ts";
 import Migration0035 from "./Migrations/035_ProjectionTurnWorkDuration.ts";
+import Migration0036 from "./Migrations/036_HistorySyncInitialPhase.ts";
 
 /**
  * Migration loader with all migrations defined inline.
@@ -95,6 +96,7 @@ export const migrationEntries = [
   [33, "HistorySyncProjectMappings", Migration0033],
   [34, "HistorySyncPushedEvents", Migration0034],
   [35, "ProjectionTurnWorkDuration", Migration0035],
+  [36, "HistorySyncInitialPhase", Migration0036],
 ] as const;
 
 export const makeMigrationLoader = (throughId?: number) =>

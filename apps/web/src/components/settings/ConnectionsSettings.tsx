@@ -6,6 +6,7 @@ import {
   type DesktopServerExposureState,
   type EnvironmentId,
   type HistorySyncConfig,
+  type HistorySyncInitialSyncRecovery,
   type HistorySyncProjectMappingPlan,
 } from "@t3tools/contracts";
 import { DateTime } from "effect";
@@ -89,6 +90,35 @@ function formatAccessTimestamp(value: string): string {
     return value;
   }
   return accessTimestampFormatter.format(parsed);
+}
+
+export function getHistorySyncInitialRecoveryPhaseLabel(
+  phase: HistorySyncInitialSyncRecovery["phase"],
+): string {
+  switch (phase) {
+    case "backup":
+      return "Creating backup";
+    case "push-local":
+      return "Pushing local history";
+    case "push-merge":
+      return "Pushing merged local history";
+    case "import-remote":
+      return "Importing remote history";
+    case "write-state":
+      return "Saving sync state";
+  }
+}
+
+export function formatHistorySyncInitialRecoveryStartedAt(value: string): string {
+  return formatAccessTimestamp(value);
+}
+
+export function getHistorySyncInitialRecoveryActionCopy(
+  recovery: HistorySyncInitialSyncRecovery,
+): string {
+  return recovery.error
+    ? "Review the error, then start history sync again when ready."
+    : "Start history sync again to continue from the current safe recovery point.";
 }
 
 type ConnectionStatusDotProps = {
@@ -1054,6 +1084,7 @@ function HistorySyncSettingsSection() {
     config?.configured === true && effectiveHistorySyncStatus?.state === "needs-initial-sync";
   const showSyncAction = config?.configured === true;
   const showBackupRestoreAction = Boolean(config?.backup) && !isHistorySyncing;
+  const initialSyncRecovery = config?.initialSyncRecovery ?? null;
 
   return (
     <SettingsSection title="History Sync">
@@ -1084,72 +1115,91 @@ function HistorySyncSettingsSection() {
       />
       {showSyncAction || showBackupRestoreAction ? (
         <div className={ITEM_ROW_CLASSNAME}>
-          <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-            {showInitialSyncAction ? (
-              <div className="min-w-0">
-                <h3 className="text-sm font-medium text-foreground">Initial history sync</h3>
-                <p className="mt-1 text-xs text-muted-foreground">
-                  Back up local threads, import the MySQL history, then merge the local threads
-                  back.
-                </p>
-              </div>
-            ) : (
-              <div className="min-w-0">
-                <h3 className="text-sm font-medium text-foreground">History sync</h3>
-                <p className="mt-1 text-xs text-muted-foreground">
-                  Fast-forward from MySQL, then persist safe local thread updates.
-                </p>
-              </div>
-            )}
-            <div className="flex shrink-0 flex-wrap justify-end gap-2">
-              {showBackupRestoreAction ? (
-                <Button
-                  size="xs"
-                  variant="outline"
-                  disabled={
-                    isRestoringBackup ||
-                    isStartingInitialSync ||
-                    isRunningSync ||
-                    isSaving ||
-                    isTesting
-                  }
-                  onClick={() => void handleRestoreBackup()}
-                >
-                  {isRestoringBackup ? "Restoring..." : "Restore backup"}
-                </Button>
-              ) : null}
+          <div className="space-y-3">
+            <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
               {showInitialSyncAction ? (
-                <Button
-                  size="xs"
-                  disabled={
-                    isStartingInitialSync ||
-                    isRestoringBackup ||
-                    isRunningSync ||
-                    isSaving ||
-                    isTesting ||
-                    !config.configured
-                  }
-                  onClick={() => void handleStartInitialSync()}
-                >
-                  {isStartingInitialSync ? "Starting..." : "Start history sync"}
-                </Button>
-              ) : showSyncAction ? (
-                <Button
-                  size="xs"
-                  disabled={
-                    isRunningSync ||
-                    isHistorySyncing ||
-                    isStartingInitialSync ||
-                    isRestoringBackup ||
-                    isSaving ||
-                    isTesting
-                  }
-                  onClick={() => void handleRunSync()}
-                >
-                  {isRunningSync || isHistorySyncing ? "Syncing..." : "Sync now"}
-                </Button>
-              ) : null}
+                <div className="min-w-0">
+                  <h3 className="text-sm font-medium text-foreground">Initial history sync</h3>
+                  <p className="mt-1 text-xs text-muted-foreground">
+                    Back up local threads, import the MySQL history, then merge the local threads
+                    back.
+                  </p>
+                </div>
+              ) : (
+                <div className="min-w-0">
+                  <h3 className="text-sm font-medium text-foreground">History sync</h3>
+                  <p className="mt-1 text-xs text-muted-foreground">
+                    Fast-forward from MySQL, then persist safe local thread updates.
+                  </p>
+                </div>
+              )}
+              <div className="flex shrink-0 flex-wrap justify-end gap-2">
+                {showBackupRestoreAction ? (
+                  <Button
+                    size="xs"
+                    variant="outline"
+                    disabled={
+                      isRestoringBackup ||
+                      isStartingInitialSync ||
+                      isRunningSync ||
+                      isSaving ||
+                      isTesting
+                    }
+                    onClick={() => void handleRestoreBackup()}
+                  >
+                    {isRestoringBackup ? "Restoring..." : "Restore backup"}
+                  </Button>
+                ) : null}
+                {showInitialSyncAction ? (
+                  <Button
+                    size="xs"
+                    disabled={
+                      isStartingInitialSync ||
+                      isRestoringBackup ||
+                      isRunningSync ||
+                      isSaving ||
+                      isTesting ||
+                      !config.configured
+                    }
+                    onClick={() => void handleStartInitialSync()}
+                  >
+                    {isStartingInitialSync ? "Starting..." : "Start history sync"}
+                  </Button>
+                ) : showSyncAction ? (
+                  <Button
+                    size="xs"
+                    disabled={
+                      isRunningSync ||
+                      isHistorySyncing ||
+                      isStartingInitialSync ||
+                      isRestoringBackup ||
+                      isSaving ||
+                      isTesting
+                    }
+                    onClick={() => void handleRunSync()}
+                  >
+                    {isRunningSync || isHistorySyncing ? "Syncing..." : "Sync now"}
+                  </Button>
+                ) : null}
+              </div>
             </div>
+            {initialSyncRecovery ? (
+              <div className="rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-foreground">
+                <div className="font-medium">Initial sync recovery point</div>
+                <div className="mt-1 text-muted-foreground">
+                  {getHistorySyncInitialRecoveryPhaseLabel(initialSyncRecovery.phase)} started{" "}
+                  {formatHistorySyncInitialRecoveryStartedAt(initialSyncRecovery.startedAt)}.
+                </div>
+                {initialSyncRecovery.error ? (
+                  <div className="mt-1 break-words text-destructive">
+                    {initialSyncRecovery.error}
+                  </div>
+                ) : null}
+                <div className="mt-1 text-muted-foreground">
+                  {getHistorySyncInitialRecoveryActionCopy(initialSyncRecovery)}
+                </div>
+              </div>
+            ) : null}
           </div>
         </div>
       ) : null}

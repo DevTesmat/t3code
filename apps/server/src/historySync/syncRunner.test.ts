@@ -53,6 +53,11 @@ function makeRunner(overrides: Partial<HistorySyncRunnerDependencies> = {}, call
       readLocalProjectionCounts: Effect.succeed({ projectCount: 0, threadCount: 0 }),
       readState: Effect.succeed(null),
       writeState: () => Effect.sync(() => calls.push("writeState")).pipe(Effect.asVoid),
+      setInitialSyncPhase: (input) =>
+        Effect.sync(() => calls.push(`phase:${input.phase}`)).pipe(Effect.asVoid),
+      clearInitialSyncPhase: Effect.sync(() => calls.push("clearPhase")).pipe(Effect.asVoid),
+      failInitialSyncPhase: (input) =>
+        Effect.sync(() => calls.push(`failPhase:${input.error}`)).pipe(Effect.asVoid),
       importRemoteEvents: () => Effect.sync(() => calls.push("import")).pipe(Effect.asVoid),
       importRemoteDeltaEvents: () =>
         Effect.sync(() => calls.push("importDelta")).pipe(Effect.asVoid),
@@ -130,8 +135,104 @@ describe("history sync runner", () => {
 
     await Effect.runPromise(runner.performSync({ mode: "initial", markStopped: Effect.void }));
 
+    expect(calls.indexOf("phase:backup")).toBeLessThan(calls.indexOf("backup"));
     expect(calls.indexOf("backup")).toBeLessThan(calls.indexOf("import"));
     expect(calls).toContain("reload");
     expect(calls).toContain("writeState");
+    expect(calls.indexOf("writeState")).toBeLessThan(calls.indexOf("clearPhase"));
+  });
+
+  test("initial sync records empty-remote local push phases in order", async () => {
+    const calls: string[] = [];
+    const { runner } = await Effect.runPromise(
+      makeRunner(
+        {
+          readLocalEvents: () => Effect.succeed([remoteEvent]),
+        },
+        calls,
+      ),
+    );
+
+    await Effect.runPromise(runner.performSync({ mode: "initial", markStopped: Effect.void }));
+
+    expect(calls).toEqual(
+      expect.arrayContaining([
+        "phase:backup",
+        "backup",
+        "seedReceipts",
+        "autoMap",
+        "phase:push-local",
+        "push",
+        "writeReceipts",
+        "phase:write-state",
+        "writeState",
+        "clearPhase",
+      ]),
+    );
+    expect(calls.indexOf("phase:backup")).toBeLessThan(calls.indexOf("backup"));
+    expect(calls.indexOf("phase:push-local")).toBeLessThan(calls.indexOf("push"));
+    expect(calls.indexOf("phase:write-state")).toBeLessThan(calls.indexOf("writeState"));
+    expect(calls.indexOf("writeState")).toBeLessThan(calls.indexOf("clearPhase"));
+  });
+
+  test("initial sync records remote-import phases in order", async () => {
+    const calls: string[] = [];
+    const { runner } = await Effect.runPromise(
+      makeRunner(
+        {
+          readRemoteEvents: () => Effect.succeed([remoteEvent]),
+          buildProjectMappingPlanFromEvents: () =>
+            Effect.succeed({
+              syncId: "client:1",
+              remoteMaxSequence: 1,
+              candidates: [],
+              localProjects: [],
+            }),
+        },
+        calls,
+      ),
+    );
+
+    await Effect.runPromise(runner.performSync({ mode: "initial", markStopped: Effect.void }));
+
+    expect(calls.indexOf("phase:backup")).toBeLessThan(calls.indexOf("backup"));
+    expect(calls.indexOf("phase:push-merge")).toBeLessThan(calls.indexOf("push"));
+    expect(calls.indexOf("phase:import-remote")).toBeLessThan(calls.indexOf("import"));
+    expect(calls.indexOf("phase:write-state")).toBeLessThan(calls.indexOf("writeState"));
+    expect(calls.indexOf("writeState")).toBeLessThan(calls.indexOf("clearPhase"));
+  });
+
+  test("initial sync failure records failed phase without completing state", async () => {
+    const calls: string[] = [];
+    const { runner, statuses } = await Effect.runPromise(
+      makeRunner(
+        {
+          readRemoteEvents: () => Effect.succeed([remoteEvent]),
+          buildProjectMappingPlanFromEvents: () =>
+            Effect.succeed({
+              syncId: "client:1",
+              remoteMaxSequence: 1,
+              candidates: [],
+              localProjects: [],
+            }),
+          importRemoteEvents: () =>
+            Effect.sync(() => calls.push("import")).pipe(
+              Effect.andThen(Effect.fail(new Error("projection import failed"))),
+            ),
+        },
+        calls,
+      ),
+    );
+
+    await Effect.runPromise(runner.performSync({ mode: "initial", markStopped: Effect.void }));
+
+    expect(calls).toContain("phase:import-remote");
+    expect(calls.some((call) => call.startsWith("failPhase:"))).toBe(true);
+    expect(calls).not.toContain("writeState");
+    expect(calls).not.toContain("clearPhase");
+    expect(statuses.at(-1)).toMatchObject({
+      state: "error",
+      configured: true,
+    });
   });
 });

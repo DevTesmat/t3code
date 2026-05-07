@@ -3,6 +3,7 @@ import { Effect, Ref } from "effect";
 
 import { describeSyncFailure } from "./config.ts";
 import type { HistorySyncMode } from "./lifecycle.ts";
+import type { HistorySyncInitialSyncPhase } from "./localRepository.ts";
 import type {
   HistorySyncAutosyncProjectionThreadRow,
   HistorySyncEventRow,
@@ -94,6 +95,15 @@ export interface HistorySyncRunnerDependencies {
     readonly hasCompletedInitialSync: boolean;
     readonly lastSyncedRemoteSequence: number;
     readonly lastSuccessfulSyncAt: string;
+  }) => Effect.Effect<void, object>;
+  readonly setInitialSyncPhase: (input: {
+    readonly phase: HistorySyncInitialSyncPhase;
+    readonly startedAt: string;
+  }) => Effect.Effect<void, object>;
+  readonly clearInitialSyncPhase: Effect.Effect<void, object>;
+  readonly failInitialSyncPhase: (input: {
+    readonly error: string;
+    readonly failedAt: string;
   }) => Effect.Effect<void, object>;
   readonly importRemoteEvents: (
     events: readonly HistorySyncEventRow[],
@@ -211,6 +221,15 @@ export function createHistorySyncRunner(input: HistorySyncRunnerDependencies) {
       });
     });
 
+  const recordInitialSyncPhase = (
+    phase: HistorySyncInitialSyncPhase,
+    inputContext: { readonly startedAt: string },
+  ) =>
+    input.setInitialSyncPhase({
+      phase,
+      startedAt: inputContext.startedAt,
+    });
+
   const performSync = (options: HistorySyncRunnerOptions): Effect.Effect<void> =>
     Effect.gen(function* () {
       const settings = yield* input.getSettings;
@@ -266,6 +285,7 @@ export function createHistorySyncRunner(input: HistorySyncRunnerDependencies) {
         return;
       }
       if (!hasCompletedInitialSync && isInitialSync) {
+        yield* recordInitialSyncPhase("backup", syncContext);
         yield* input.createBackup;
       }
 
@@ -452,14 +472,17 @@ export function createHistorySyncRunner(input: HistorySyncRunnerDependencies) {
             localEvents: localEvents.length,
             localMaxSequence,
           });
+          yield* recordInitialSyncPhase("push-local", syncContext);
           yield* input.pushRemoteEventsBatched(connectionString, localEventsForRemote);
           const now = new Date().toISOString();
           yield* input.writePushedEventReceipts(localEvents, now);
+          yield* recordInitialSyncPhase("write-state", syncContext);
           yield* input.writeState({
             hasCompletedInitialSync: true,
             lastSyncedRemoteSequence: localMaxSequence,
             lastSuccessfulSyncAt: now,
           });
+          yield* input.clearInitialSyncPhase;
           yield* input.publishStatus({ state: "idle", configured: true, lastSyncedAt: now });
           return;
         }
@@ -472,10 +495,12 @@ export function createHistorySyncRunner(input: HistorySyncRunnerDependencies) {
           mergedEvents: mergeEvents.length,
         });
         const importedEvents = [...remoteEventsForLocal, ...mergeEvents];
+        yield* recordInitialSyncPhase("push-merge", syncContext);
         yield* input.pushRemoteEventsBatched(
           connectionString,
           rewriteLocalEventsForRemoteMappings(mergeEvents, projectMappings),
         );
+        yield* recordInitialSyncPhase("import-remote", syncContext);
         yield* runImport(importedEvents, syncContext);
         const nextRemoteSequence = Math.max(
           remoteMaxSequence,
@@ -483,11 +508,13 @@ export function createHistorySyncRunner(input: HistorySyncRunnerDependencies) {
         );
         const now = new Date().toISOString();
         yield* input.writePushedEventReceipts(importedEvents, now);
+        yield* recordInitialSyncPhase("write-state", syncContext);
         yield* input.writeState({
           hasCompletedInitialSync: true,
           lastSyncedRemoteSequence: nextRemoteSequence,
           lastSuccessfulSyncAt: now,
         });
+        yield* input.clearInitialSyncPhase;
         yield* input.publishStatus({ state: "idle", configured: true, lastSyncedAt: now });
         return;
       }
@@ -663,6 +690,14 @@ export function createHistorySyncRunner(input: HistorySyncRunnerDependencies) {
             cause,
           });
           yield* Effect.logWarning("history sync failed", { cause });
+          if (options.mode === "initial") {
+            yield* input
+              .failInitialSyncPhase({
+                error: message || "History sync failed.",
+                failedAt: new Date().toISOString(),
+              })
+              .pipe(Effect.ignoreCause({ log: true }));
+          }
           const retryAttempt = options.retryAttempt ?? 1;
           const retryDelayMs =
             options.mode === "autosave" && input.isRetryableConnectionFailure(cause)

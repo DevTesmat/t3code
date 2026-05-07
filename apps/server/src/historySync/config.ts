@@ -124,6 +124,15 @@ export function createHistorySyncConfigController(input: {
         ? { connectionSummary: settings.historySync.connectionSummary }
         : {}),
       ...(backup ? { backup } : {}),
+      ...(state?.initialSyncPhase && state.initialSyncStartedAt
+        ? {
+            initialSyncRecovery: {
+              phase: state.initialSyncPhase,
+              startedAt: state.initialSyncStartedAt,
+              ...(state.initialSyncError ? { error: state.initialSyncError } : {}),
+            },
+          }
+        : {}),
     } satisfies HistorySyncConfig;
   });
 

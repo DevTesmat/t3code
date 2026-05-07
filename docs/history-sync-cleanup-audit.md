@@ -1,11 +1,13 @@
 # History Sync Cleanup Audit
 
-History sync is currently implemented as one large service in
-`apps/server/src/historySync.ts`. It owns settings/config, global RPC facades,
-status streaming, MySQL access, SQLite import/export, merge planning, autosave
-gating, project mapping, backup restore, and projection reload. This audit is a
-non-mutating cleanup plan: preserve behavior first, extract testable boundaries,
-then harden the risky paths.
+History sync used to be implemented as one large service in
+`apps/server/src/historySync.ts`. The cleanup has split behavior into dedicated
+modules for planning, remote/local persistence, mappings, backup/restore,
+status, lifecycle, configuration, sync execution, and service composition.
+`historySync.ts` remains as a small compatibility facade for transitional
+imports, while server internals import from the modules that own behavior. This
+audit preserves the cleanup state for future slices: preserve behavior first,
+extract testable boundaries, then harden risky paths.
 
 ## Lifecycle Map
 
@@ -102,27 +104,33 @@ then harden the risky paths.
 
 ## Future Boundaries
 
-- `historySync/service.ts`: Effect service lifecycle, startup delay, shutdown
-  finalizer, run lock, stopped flag, autosave scheduling.
+- `historySync/service.ts`: Effect service definition and dependency
+  composition.
 - `historySync/statusBus.ts`: status state, PubSub, global bridge for existing
   RPC/config streams.
 - `historySync/remoteStore.ts`: MySQL schema, connection validation, reads,
   max sequence, batched writes.
 - `historySync/localRepository.ts`: SQLite reads/writes for events, receipts,
-  mappings, sync state, projection counts, import transactions.
+  sync state, projection counts, import transactions.
 - `historySync/planner.ts`: pure functions for first-sync merge, delta
   selection, autosave eligibility, receipt seeding, mapping suggestions, and
   remote repair decisions.
 - `historySync/backup.ts`: backup creation, backup summary, restore table copy,
   compatibility validation.
-- `historySync/projectMappings.ts`: mapping plan/apply orchestration around the
-  pure planner and local repository.
+- `historySync/projectMappings.ts`: mapping persistence, sync IDs, suggestions,
+  plan construction, exact-path auto-persist, and action application.
 - `historySync/config.ts`: settings, secret-backed MySQL connection
   configuration, config snapshots, connection testing, and configured startup
   status decisions.
+- `historySync/syncRunner.ts`: first/full/autosave sync algorithm execution,
+  import coordination, and autosave retry handling.
+- `historySync/projectMappingController.ts`: mapping RPC orchestration and sync
+  continuation decisions.
+- `historySync/restoreController.ts`: backup restore RPC orchestration and
+  post-restore status publication.
 
-Keep `apps/server/src/historySync.ts` initially as the compatibility facade so
-RPC imports and tests can move gradually.
+Keep `apps/server/src/historySync.ts` as a compatibility facade for transitional
+imports. New server-internal code should import from the direct owner modules.
 
 ## Cleanup Progress
 
@@ -168,10 +176,22 @@ RPC imports and tests can move gradually.
   algorithm execution, import coordination, and autosave retry handling.
 - Completed: `historySync/projectMappingController.ts` now owns mapping RPC
   orchestration and sync continuation decisions.
-- Active slice: `historySync/restoreController.ts` is moving backup restore RPC
-  orchestration and post-restore status publication out of `historySync.ts`.
-- Remaining after the active slice: continue reducing `HistorySyncServiceLive`
-  size only if a new behavior-preserving boundary becomes clear.
+- Completed: `historySync/restoreController.ts` now owns backup restore RPC
+  orchestration and post-restore status publication.
+- Completed: `historySync/service.ts` now owns Effect service composition and
+  dependency wiring; `historySync.ts` is now the compatibility export facade.
+- Completed: facade consumer migration moved internal server imports and tests
+  to the modules that own the referenced behavior.
+- Completed: public facade freeze and audit backlog reset kept
+  `historySync.ts` as an explicit compatibility facade and moves the audit from
+  extraction tracking to hardening tracking.
+- Completed: first-sync recovery phase tracking added durable phase metadata so
+  interrupted initial syncs are auditable before automatic resume is considered.
+- Active slice: first-sync recovery visibility is surfacing durable phase
+  metadata in settings without adding automatic resume.
+- Remaining after the active slice: future work should focus on behavior
+  hardening, not further mechanical extraction, unless a new owner boundary
+  becomes clearly useful.
 
 ## Reliability Risks
 
@@ -185,6 +205,10 @@ RPC imports and tests can move gradually.
   That is conservative, but the status should make manual sync recovery obvious.
 - Failed or interrupted syncs now run lifecycle stale-sync recovery so a stuck
   `syncing` status is republished as `error` instead of lingering forever.
+- Initial sync phase tracking is durable local state, separate from lifecycle
+  stale-status recovery, and should be used for future resumable first-sync work.
+- Initial sync recovery visibility is informational only; automatic resume
+  remains future work and needs a separate recovery design.
 - Project mappings can go stale if local projects are deleted or remote changes
   after plan creation. `syncId` covers remote sequence, not local project drift.
 - Backup restore assumes the backup schema has all copied tables. A migration
@@ -228,48 +252,26 @@ split. Avoid brittle end-to-end MySQL/browser tests for core correctness.
   - keep status decoding for every state stable.
   - topbar/settings status text for retrying, mapping, sync progress, and error.
 
-## Ordered Cleanup Backlog
+## Remaining Hardening Backlog
 
-1. Extract pure planner functions without changing behavior.
-   - Files: add `apps/server/src/historySync/planner.ts`, keep re-exports from
-     `historySync.ts` temporarily.
-   - Tests: move/expand existing first-sync, autosave, mapping, receipt, and
-     remote-repair tests into table-driven planner tests.
-   - Must not change event ordering, sequence assignment, project rewrite, or
-     autosave gating.
+1. Make interrupted first sync resumable or explicitly recoverable.
+   - Remote merge events can be pushed before local import/state writes finish,
+     so use the durable phase marker to design recovery before changing
+     behavior.
 
-2. Introduce remote/local interfaces behind the existing service.
-   - Files: `remoteStore.ts`, `localRepository.ts`.
-   - Tests: use fake stores for full-sync and autosave orchestration cases.
-   - Must preserve MySQL schema and SQLite migration compatibility.
+2. Strengthen remote/local commit idempotency.
+   - Remote pushes and local state/receipt writes are not transactional together;
+     keep receipt seeding and duplicate-push prevention recomputable.
 
-3. Split status bus and lifecycle orchestration.
-   - Files: `statusBus.ts`, `service.ts`, compatibility facade in
-     `historySync.ts`.
-   - Tests: startup statuses, global subscriber behavior, RPC not-ready behavior,
-     running lock, pending autosave.
-   - Must preserve `subscribeServerConfig` and orchestration snapshot reload
-     semantics.
+3. Validate local project drift before applying saved mappings.
+   - `syncId` protects remote sequence drift, but deleted or changed local
+     projects can still make persisted mappings stale.
 
-4. Harden backup/restore.
-   - Files: `backup.ts`.
-   - Tests: missing backup, incompatible backup schema, restore reload failure.
-   - Behavior change to consider: validate attached backup tables before any
-     local delete.
+4. Improve autosave conflict UX without weakening safety.
+   - Unknown newer remote events should continue blocking autosave, but the
+     status and manual recovery path can be made clearer.
 
-5. Clean contract drift.
-   - Files: `packages/contracts/src/server.ts`, web mapping UI if needed.
-   - Removed unused `createIfMissing` and `repo-identity`.
-   - Must coordinate schema changes through server/web tests.
-
-6. Make projection reload failure explicit.
-   - Files: local repository/import path plus `apps/server/src/ws.ts` snapshot
-     reload behavior if needed.
-   - Tests: import succeeds but reload fails, restore succeeds but reload fails,
-     status/result reported to user.
-
-7. Revisit destructive recovery paths.
-   - Files: planner and local repository.
-   - Tests: replace-empty-local predicates and table coverage.
-   - Behavior to preserve until explicitly changed: projection-count based local
-     replacement remains available for recovery.
+5. Keep destructive table operations aligned with schema growth.
+   - `clearLocalHistory`, restore table copies, projection tables, checkpoint
+     tables, and future history-derived tables need a single review point before
+     migrations add new local history state.
