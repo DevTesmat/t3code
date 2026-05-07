@@ -1,8 +1,12 @@
-import { EnvironmentId, MessageId, ThreadId, TurnId } from "@t3tools/contracts";
+import { EnvironmentId, MessageId, ProviderItemId, ThreadId, TurnId } from "@t3tools/contracts";
 import { createRef } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { beforeAll, describe, expect, it, vi } from "vitest";
+import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { LegendListRef } from "@legendapp/list/react";
+import {
+  hydrateLiveCommandOutputSnapshot,
+  resetLiveCommandOutputForTests,
+} from "../../liveCommandOutput";
 
 vi.mock("@legendapp/list/react", async () => {
   const React = await import("react");
@@ -103,6 +107,10 @@ function buildProps() {
 }
 
 describe("MessagesTimeline", () => {
+  beforeEach(() => {
+    resetLiveCommandOutputForTests();
+  });
+
   it("renders inline terminal labels with the composer chip UI", async () => {
     const { MessagesTimeline } = await import("./MessagesTimeline");
     const markup = renderToStaticMarkup(
@@ -228,6 +236,54 @@ describe("MessagesTimeline", () => {
     expect(markup).toContain("bun run lint");
     expect(markup).not.toContain("line one");
     expect(markup).not.toContain("Output preview truncated");
+  });
+
+  it("auto-renders completed terminal output from the hydrated live buffer", async () => {
+    hydrateLiveCommandOutputSnapshot(ACTIVE_THREAD_ENVIRONMENT_ID, {
+      threadId: ThreadId.make("thread-1"),
+      turnId: TurnId.make("turn-1"),
+      toolCallId: ProviderItemId.make("tool-1"),
+      updatedAt: "2026-03-17T19:12:30.000Z",
+      text: "line one\nline two\nline three\nline four\nline five",
+      truncated: false,
+    });
+
+    const { MessagesTimeline } = await import("./MessagesTimeline");
+    const markup = renderToStaticMarkup(
+      <MessagesTimeline
+        {...buildProps()}
+        timelineEntries={[
+          {
+            id: "entry-1",
+            kind: "work",
+            createdAt: "2026-03-17T19:12:28.000Z",
+            entry: {
+              id: "work-1",
+              createdAt: "2026-03-17T19:12:28.000Z",
+              label: "Ran command",
+              tone: "tool",
+              itemType: "command_execution",
+              command: "bun run lint",
+              status: "completed",
+              toolCallId: "tool-1",
+              outputPreview: {
+                lines: ["line two", "line three", "line four", "line five"],
+                stream: "stdout",
+                truncated: true,
+              },
+            },
+          },
+        ]}
+      />,
+    );
+
+    expect(markup).toContain("Completed");
+    expect(markup).toContain("tool-output-preview");
+    expect(markup).toContain("overflow-auto");
+    expect(markup).toContain("whitespace-pre");
+    expect(markup).toContain("line one");
+    expect(markup).toContain("line five");
+    expect(markup).not.toContain("[output truncated]");
   });
 
   it("renders codebase exploration as one collapsed expandable row", async () => {

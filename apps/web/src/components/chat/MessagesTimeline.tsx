@@ -80,7 +80,11 @@ import {
   textContainsInlineTerminalContextLabels,
 } from "./userMessageTerminalContexts";
 import { formatWorkspaceRelativePath } from "../../filePathDisplay";
-import { useLiveCommandOutput } from "../../liveCommandOutput";
+import {
+  useLiveCommandOutput,
+  type LiveCommandOutputKey,
+  type LiveCommandOutputSnapshot,
+} from "../../liveCommandOutput";
 
 // ---------------------------------------------------------------------------
 // Context — shared state consumed by every row component via useContext.
@@ -983,7 +987,13 @@ function terminalCopyCommand(workEntry: Pick<TimelineWorkEntry, "command" | "raw
   return workEntry.rawCommand?.trim() || workEntry.command?.trim() || "Ran command";
 }
 
-function shouldAutoShowTerminalOutput(workEntry: TimelineWorkEntry): boolean {
+function shouldAutoShowTerminalOutput(
+  workEntry: TimelineWorkEntry,
+  liveOutput: LiveCommandOutputSnapshot,
+): boolean {
+  if (liveOutput.text.length > 0) {
+    return true;
+  }
   const outputPreview = workEntry.outputPreview;
   if (workEntry.status === "running" && workEntry.toolCallId) {
     return true;
@@ -1079,22 +1089,18 @@ function workActivityGroupStatus(
   return undefined;
 }
 
-const ToolOutputPreview = memo(function ToolOutputPreview(props: { workEntry: TimelineWorkEntry }) {
+const ToolOutputPreview = memo(function ToolOutputPreview(props: {
+  workEntry: TimelineWorkEntry;
+  liveOutput: LiveCommandOutputSnapshot;
+}) {
   const { workEntry } = props;
-  const ctx = use(TimelineRowCtx);
+  const liveOutput = props.liveOutput;
+  const liveOutputVersion = liveOutput.version;
   const outputPreview = workEntry.outputPreview;
   const outputPreviewLabel = commandOutputPreviewLabel(workEntry);
   const outputIsError = outputPreview?.stream === "stderr";
   const scrollerRef = useRef<HTMLDivElement | null>(null);
   const stickToBottomRef = useRef(true);
-  const liveKey = workEntry.toolCallId
-    ? {
-        environmentId: ctx.activeThreadEnvironmentId,
-        threadId: ctx.activeThreadId,
-        toolCallId: workEntry.toolCallId,
-      }
-    : null;
-  const liveOutput = useLiveCommandOutput(liveKey);
   const outputText =
     liveOutput.text.length > 0 ? liveOutput.text : (outputPreview?.lines.join("\n") ?? "");
   const outputTruncated =
@@ -1104,7 +1110,7 @@ const ToolOutputPreview = memo(function ToolOutputPreview(props: { workEntry: Ti
     const scroller = scrollerRef.current;
     if (!scroller || !stickToBottomRef.current) return;
     scroller.scrollTop = scroller.scrollHeight;
-  }, [liveOutput.version, outputPreview?.lines, outputPreview?.truncated]);
+  }, [liveOutputVersion, outputPreview?.lines, outputPreview?.truncated]);
 
   const handleScroll = useCallback(() => {
     const scroller = scrollerRef.current;
@@ -1379,10 +1385,22 @@ const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
     (workEntry.outputPreview?.lines.length ?? 0) > 0
       ? workEntry.outputPreview
       : null;
-  const hasLiveOutput = isTerminal && Boolean(workEntry.toolCallId);
+  const ctx = use(TimelineRowCtx);
+  const liveKey: LiveCommandOutputKey | null =
+    isTerminal && workEntry.toolCallId
+      ? {
+          environmentId: ctx.activeThreadEnvironmentId,
+          threadId: ctx.activeThreadId,
+          toolCallId: workEntry.toolCallId,
+        }
+      : null;
+  const liveOutput = useLiveCommandOutput(liveKey);
+  const hasLiveOutput =
+    liveOutput.text.length > 0 ||
+    (isTerminal && workEntry.status === "running" && Boolean(workEntry.toolCallId));
   const isExpandable = outputPreview !== null || hasLiveOutput;
   const toolKey = workEntryToolKey(workEntry);
-  const defaultOutputExpanded = isTerminal && shouldAutoShowTerminalOutput(workEntry);
+  const defaultOutputExpanded = isTerminal && shouldAutoShowTerminalOutput(workEntry, liveOutput);
   const showOutputPreview =
     isExpandable && (outputExpanded || (defaultOutputExpanded && !defaultOutputCollapsed));
 
@@ -1447,7 +1465,7 @@ const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
             </button>
           )}
         </div>
-        {showOutputPreview && <ToolOutputPreview workEntry={workEntry} />}
+        {showOutputPreview && <ToolOutputPreview workEntry={workEntry} liveOutput={liveOutput} />}
       </div>
     );
   }
@@ -1617,7 +1635,9 @@ const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
           </button>
         )}
       </div>
-      {isExpandable && outputExpanded && <ToolOutputPreview workEntry={workEntry} />}
+      {isExpandable && outputExpanded && (
+        <ToolOutputPreview workEntry={workEntry} liveOutput={liveOutput} />
+      )}
       {hasChangedFiles && !previewIsChangedFiles && (
         <div className="mt-1 flex flex-wrap gap-1 pl-6">
           {workEntry.changedFiles?.slice(0, 4).map((filePath) => {

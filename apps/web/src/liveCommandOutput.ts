@@ -6,8 +6,7 @@ import type {
   ThreadId,
 } from "@t3tools/contracts";
 
-const MAX_BUFFER_CHARS = 96_000;
-const MAX_BUFFER_LINES = 2_000;
+const MAX_BUFFER_CHARS = 5 * 1024 * 1024;
 const MAX_SEEN_CHUNKS = 4_000;
 
 export interface LiveCommandOutputKey {
@@ -52,12 +51,6 @@ function trimBufferedText(text: string): { text: string; truncated: boolean } {
     if (firstLineBreak >= 0) {
       nextText = nextText.slice(firstLineBreak + 1);
     }
-    truncated = true;
-  }
-
-  const lines = nextText.split(/\r\n|\n|\r/u);
-  if (lines.length > MAX_BUFFER_LINES) {
-    nextText = lines.slice(-MAX_BUFFER_LINES).join("\n");
     truncated = true;
   }
 
@@ -171,7 +164,7 @@ export function useLiveCommandOutput(
   return useSyncExternalStore(
     (subscriber) => subscribeLiveCommandOutput(keyInput, subscriber),
     () => readLiveCommandOutputSnapshot(keyInput),
-    () => EMPTY_SNAPSHOT,
+    () => readLiveCommandOutputSnapshot(keyInput),
   );
 }
 

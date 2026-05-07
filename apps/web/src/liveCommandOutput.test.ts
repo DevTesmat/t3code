@@ -94,4 +94,26 @@ describe("liveCommandOutput", () => {
       updatedAt: "2026-01-01T00:00:02.000Z",
     });
   });
+
+  it("keeps more than the old live line preview limit", () => {
+    const output = Array.from({ length: 2_100 }, (_, index) => `line ${index + 1}`).join("\n");
+
+    appendLiveCommandOutputDelta(environmentId, {
+      threadId,
+      turnId: TurnId.make("turn-1"),
+      toolCallId,
+      chunkId: EventId.make("chunk-1"),
+      createdAt: "2026-01-01T00:00:00.000Z",
+      delta: output,
+    });
+
+    const snapshot = readLiveCommandOutputSnapshot({
+      environmentId,
+      threadId,
+      toolCallId,
+    });
+    expect(snapshot.text.startsWith("line 1\nline 2")).toBe(true);
+    expect(snapshot.text).toContain("line 2100");
+    expect(snapshot.truncated).toBe(false);
+  });
 });
