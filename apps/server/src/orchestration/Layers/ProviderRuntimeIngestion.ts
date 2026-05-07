@@ -292,6 +292,7 @@ function normalizedToolLifecycleData(
     event.type !== "content.delta" &&
     "itemType" in event.payload &&
     (event.payload.itemType === "command_execution" ||
+      event.payload.itemType === "file_change" ||
       event.payload.itemType === "collab_agent_tool_call") &&
     typeof nextData.toolCallId !== "string"
   ) {
@@ -1764,6 +1765,10 @@ const make = Effect.gen(function* () {
         event.type === "content.delta" && event.payload.streamKind === "command_output"
           ? event.payload.delta
           : undefined;
+      const fileChangeOutputDelta =
+        event.type === "content.delta" && event.payload.streamKind === "file_change_output"
+          ? event.payload.delta
+          : undefined;
       const proposedPlanDelta =
         event.type === "turn.proposed.delta" ? event.payload.delta : undefined;
 
@@ -1810,24 +1815,26 @@ const make = Effect.gen(function* () {
 
       if (
         shouldProjectToParentThread &&
-        commandOutputDelta &&
-        commandOutputDelta.length > 0 &&
+        (commandOutputDelta || fileChangeOutputDelta) &&
         event.itemId
       ) {
+        const outputDelta = commandOutputDelta ?? fileChangeOutputDelta ?? "";
         const turnId = toTurnId(event.turnId);
-        yield* appendCommandOutputPreview({
-          threadId: thread.id,
-          ...(turnId ? { turnId } : {}),
-          itemId: event.itemId,
-          delta: commandOutputDelta,
-        });
+        if (commandOutputDelta) {
+          yield* appendCommandOutputPreview({
+            threadId: thread.id,
+            ...(turnId ? { turnId } : {}),
+            itemId: event.itemId,
+            delta: outputDelta,
+          });
+        }
         yield* publishCommandOutputDelta({
           threadId: thread.id,
           turnId: turnId ?? null,
           toolCallId: ProviderItemId.make(event.itemId),
           chunkId: event.eventId,
           createdAt: event.createdAt,
-          delta: commandOutputDelta,
+          delta: outputDelta,
         });
       }
 

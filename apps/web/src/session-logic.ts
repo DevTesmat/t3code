@@ -1230,6 +1230,17 @@ function extractCommandStatus(
   activityKind: OrchestrationThreadActivity["kind"],
   itemType: WorkLogEntry["itemType"] | undefined,
 ): WorkLogEntry["status"] | undefined {
+  if (itemType === "file_change") {
+    const payloadStatus = normalizeRuntimeStatus(payload?.status);
+    if (payloadStatus === "failed" || payloadStatus === "error") {
+      return "failed";
+    }
+    if (activityKind === "tool.completed" || payloadStatus === "completed") {
+      return "completed";
+    }
+    return "running";
+  }
+
   if (itemType !== "command_execution") {
     return undefined;
   }

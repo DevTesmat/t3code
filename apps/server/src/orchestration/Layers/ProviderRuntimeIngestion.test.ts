@@ -37,6 +37,10 @@ import { OrchestrationProjectionPipelineLive } from "./ProjectionPipeline.ts";
 import { OrchestrationProjectionSnapshotQueryLive } from "./ProjectionSnapshotQuery.ts";
 import { ProviderRuntimeIngestionLive } from "./ProviderRuntimeIngestion.ts";
 import {
+  readCommandOutputSnapshotsForThread,
+  resetCommandOutputBufferForTests,
+} from "../Services/CommandOutputBuffer.ts";
+import {
   OrchestrationEngineService,
   type OrchestrationEngineShape,
 } from "../Services/OrchestrationEngine.ts";
@@ -210,6 +214,7 @@ describe("ProviderRuntimeIngestion", () => {
     for (const dir of tempDirs.splice(0)) {
       fs.rmSync(dir, { recursive: true, force: true });
     }
+    resetCommandOutputBufferForTests();
   });
 
   async function createHarness(options?: { serverSettings?: Partial<ServerSettings> }) {
@@ -2908,6 +2913,80 @@ describe("ProviderRuntimeIngestion", () => {
     );
     expect(finalMessage?.text).toBe("hello live");
     expect(finalMessage?.streaming).toBe(false);
+  });
+
+  it("publishes file-change output deltas into the live output buffer", async () => {
+    const harness = await createHarness();
+    const now = new Date().toISOString();
+    const threadId = asThreadId("thread-1");
+    const turnId = asTurnId("turn-file-change-output");
+    const itemId = asItemId("item-file-change-output");
+
+    harness.emit({
+      type: "turn.started",
+      eventId: asEventId("evt-turn-started-file-change-output"),
+      provider: ProviderDriverKind.make("codex"),
+      createdAt: now,
+      threadId,
+      turnId,
+    });
+    await waitForThread(
+      harness.engine,
+      (thread) => thread.session?.status === "running" && thread.session?.activeTurnId === turnId,
+    );
+
+    harness.emit({
+      type: "item.started",
+      eventId: asEventId("evt-file-change-started"),
+      provider: ProviderDriverKind.make("codex"),
+      createdAt: now,
+      threadId,
+      turnId,
+      itemId,
+      payload: {
+        itemType: "file_change",
+        status: "in_progress",
+        title: "Edit src/app.ts",
+        data: { changes: [{ path: "src/app.ts" }] },
+      },
+    });
+
+    harness.emit({
+      type: "content.delta",
+      eventId: asEventId("evt-file-change-output-delta"),
+      provider: ProviderDriverKind.make("codex"),
+      createdAt: now,
+      threadId,
+      turnId,
+      itemId,
+      payload: {
+        streamKind: "file_change_output",
+        delta: "diff --git a/src/app.ts b/src/app.ts\n+hello\n",
+      },
+    });
+    await harness.drain();
+
+    const snapshots = await Effect.runPromise(readCommandOutputSnapshotsForThread(threadId));
+    expect(snapshots).toEqual([
+      expect.objectContaining({
+        threadId,
+        turnId,
+        toolCallId: itemId,
+        text: "diff --git a/src/app.ts b/src/app.ts\n+hello\n",
+      }),
+    ]);
+
+    const thread = await waitForThread(harness.engine, (entry) =>
+      entry.activities.some(
+        (activity: ProviderRuntimeTestActivity) => activity.id === "evt-file-change-started",
+      ),
+    );
+    const fileChangeActivity = thread.activities.find(
+      (activity: ProviderRuntimeTestActivity) => activity.id === "evt-file-change-started",
+    );
+    expect(
+      (fileChangeActivity?.payload as { data?: { toolCallId?: string } })?.data?.toolCallId,
+    ).toBe(itemId);
   });
 
   it("spills oversized buffered deltas and still finalizes full assistant text", async () => {

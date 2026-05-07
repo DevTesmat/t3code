@@ -286,6 +286,54 @@ describe("MessagesTimeline", () => {
     expect(markup).not.toContain("[output truncated]");
   });
 
+  it("auto-renders running file-change output from the hydrated live buffer", async () => {
+    hydrateLiveCommandOutputSnapshot(ACTIVE_THREAD_ENVIRONMENT_ID, {
+      threadId: ThreadId.make("thread-1"),
+      turnId: TurnId.make("turn-1"),
+      toolCallId: ProviderItemId.make("file-change-1"),
+      updatedAt: "2026-03-17T19:12:30.000Z",
+      text: [
+        "diff --git a/src/app.ts b/src/app.ts",
+        "@@ -1,2 +1,2 @@",
+        "-const value = 'old';",
+        "+const value = 'new';",
+        "",
+      ].join("\n"),
+      truncated: false,
+    });
+
+    const { MessagesTimeline } = await import("./MessagesTimeline");
+    const markup = renderToStaticMarkup(
+      <MessagesTimeline
+        {...buildProps()}
+        timelineEntries={[
+          {
+            id: "entry-1",
+            kind: "work",
+            createdAt: "2026-03-17T19:12:28.000Z",
+            entry: {
+              id: "work-1",
+              createdAt: "2026-03-17T19:12:28.000Z",
+              label: "Editing files",
+              tone: "tool",
+              itemType: "file_change",
+              status: "running",
+              toolCallId: "file-change-1",
+              changedFiles: ["src/app.ts"],
+            },
+          },
+        ]}
+      />,
+    );
+
+    expect(markup).toContain("Editing files");
+    expect(markup).toContain("src/app.ts");
+    expect(markup).toContain("-const value = &#x27;old&#x27;;");
+    expect(markup).toContain("+const value = &#x27;new&#x27;;");
+    expect(markup).toContain("bg-success");
+    expect(markup).toContain("bg-destructive");
+  });
+
   it("renders codebase exploration as one collapsed expandable row", async () => {
     const { MessagesTimeline } = await import("./MessagesTimeline");
     const markup = renderToStaticMarkup(

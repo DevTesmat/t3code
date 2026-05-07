@@ -1218,6 +1218,79 @@ const ToolOutputPreview = memo(function ToolOutputPreview(props: {
   );
 });
 
+type LivePatchLineKind = "addition" | "deletion" | "header" | "context";
+
+interface LivePatchLine {
+  readonly id: string;
+  readonly kind: LivePatchLineKind;
+  readonly text: string;
+}
+
+function parseLivePatchLines(text: string): LivePatchLine[] {
+  const normalized = text.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
+  const rawLines = normalized.split("\n");
+  const completeLineCount = normalized.endsWith("\n") ? rawLines.length - 1 : rawLines.length - 1;
+  const sourceLines = completeLineCount > 0 ? rawLines.slice(0, completeLineCount) : rawLines;
+  const visibleLines = sourceLines.slice(-300);
+
+  return visibleLines.map((line, index) => {
+    const kind: LivePatchLineKind =
+      line.startsWith("+") && !line.startsWith("+++")
+        ? "addition"
+        : line.startsWith("-") && !line.startsWith("---")
+          ? "deletion"
+          : line.startsWith("diff ") ||
+              line.startsWith("@@") ||
+              line.startsWith("+++") ||
+              line.startsWith("---") ||
+              line.startsWith("index ")
+            ? "header"
+            : "context";
+    return {
+      id: `${index}:${line}`,
+      kind,
+      text: line.length > 0 ? line : " ",
+    };
+  });
+}
+
+const LiveFileChangePreview = memo(function LiveFileChangePreview(props: {
+  liveOutput: LiveCommandOutputSnapshot;
+}) {
+  const { liveOutput } = props;
+  const lines = useMemo(() => parseLivePatchLines(liveOutput.text), [liveOutput.text]);
+
+  if (liveOutput.text.length === 0) {
+    return <InlineDiffMessage>Waiting for file-change stream...</InlineDiffMessage>;
+  }
+
+  return (
+    <div className="pl-7 pr-1 pb-1">
+      <div className="max-h-64 overflow-auto rounded-md border border-border/45 bg-muted/15 p-2 font-mono text-[10.5px] leading-4">
+        {liveOutput.truncated && (
+          <div className="mb-1 text-muted-foreground/55">Earlier streamed edits truncated.</div>
+        )}
+        <pre className="m-0 min-w-max font-inherit leading-inherit whitespace-pre">
+          {lines.map((line) => (
+            <div
+              key={line.id}
+              className={cn(
+                line.kind === "addition" &&
+                  "bg-success/8 text-success-foreground dark:text-success",
+                line.kind === "deletion" && "bg-destructive/8 text-destructive",
+                line.kind === "header" && "text-muted-foreground/65",
+                line.kind === "context" && "text-muted-foreground/85",
+              )}
+            >
+              {line.text}
+            </div>
+          ))}
+        </pre>
+      </div>
+    </div>
+  );
+});
+
 type InlineDiffThemeType = "light" | "dark";
 
 const INLINE_DIFF_UNSAFE_CSS = `${DIFF_RENDER_UNSAFE_CSS}
@@ -1260,13 +1333,38 @@ const InlineChangedFilesDiffPreview = memo(function InlineChangedFilesDiffPrevie
   workEntry: TimelineWorkEntry;
   changedFiles: ReadonlyArray<string>;
   workspaceRoot: string | undefined;
+  liveOutput?: LiveCommandOutputSnapshot | undefined;
 }) {
-  const { workEntry, changedFiles, workspaceRoot } = props;
+  const { workEntry, changedFiles, workspaceRoot, liveOutput } = props;
+  const ctx = use(TimelineRowCtx);
+  const turnId = workEntry.turnId ?? null;
+  const turnSummary = turnId ? ctx.turnDiffSummaryByTurnId.get(turnId) : undefined;
+  if ((!turnId || !turnSummary) && liveOutput && liveOutput.text.length > 0) {
+    return <LiveFileChangePreview liveOutput={liveOutput} />;
+  }
+
+  return (
+    <CompletedChangedFilesDiffPreview
+      workEntry={workEntry}
+      changedFiles={changedFiles}
+      workspaceRoot={workspaceRoot}
+      turnId={turnId}
+      turnSummary={turnSummary}
+    />
+  );
+});
+
+const CompletedChangedFilesDiffPreview = memo(function CompletedChangedFilesDiffPreview(props: {
+  workEntry: TimelineWorkEntry;
+  changedFiles: ReadonlyArray<string>;
+  workspaceRoot: string | undefined;
+  turnId: TurnId | null;
+  turnSummary: TurnDiffSummary | undefined;
+}) {
+  const { workEntry, changedFiles, workspaceRoot, turnId, turnSummary } = props;
   const ctx = use(TimelineRowCtx);
   const { resolvedTheme } = useTheme();
   const settings = useSettings();
-  const turnId = workEntry.turnId ?? null;
-  const turnSummary = turnId ? ctx.turnDiffSummaryByTurnId.get(turnId) : undefined;
   const checkpointTurnCount =
     turnId && turnSummary
       ? (turnSummary.checkpointTurnCount ?? ctx.inferredCheckpointTurnCountByTurnId[turnId])
@@ -1452,6 +1550,8 @@ const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
   const hasChangedFiles = (workEntry.changedFiles?.length ?? 0) > 0;
   const previewIsChangedFiles = hasChangedFiles && !workEntry.command && !workEntry.detail;
   const hasInlineDiff = hasChangedFiles && !isTerminal;
+  const isFileChange =
+    workEntry.itemType === "file_change" || workEntry.requestKind === "file-change";
   const outputPreview =
     (workEntry.itemType === "command_execution" || workEntry.command) &&
     (workEntry.outputPreview?.lines.length ?? 0) > 0
@@ -1459,7 +1559,7 @@ const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
       : null;
   const ctx = use(TimelineRowCtx);
   const liveKey: LiveCommandOutputKey | null =
-    isTerminal && workEntry.toolCallId
+    (isTerminal || isFileChange) && workEntry.toolCallId
       ? {
           environmentId: ctx.activeThreadEnvironmentId,
           threadId: ctx.activeThreadId,
@@ -1469,10 +1569,14 @@ const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
   const liveOutput = useLiveCommandOutput(liveKey);
   const hasLiveOutput =
     liveOutput.text.length > 0 ||
-    (isTerminal && workEntry.status === "running" && Boolean(workEntry.toolCallId));
+    ((isTerminal || isFileChange) &&
+      workEntry.status === "running" &&
+      Boolean(workEntry.toolCallId));
   const isExpandable = outputPreview !== null || hasLiveOutput;
   const toolKey = workEntryToolKey(workEntry);
   const defaultOutputExpanded = isTerminal && shouldAutoShowTerminalOutput(workEntry, liveOutput);
+  const defaultLivePatchExpanded =
+    isFileChange && workEntry.status === "running" && liveOutput.text.length > 0;
   const showOutputPreview =
     isExpandable && (outputExpanded || (defaultOutputExpanded && !defaultOutputCollapsed));
 
@@ -1542,14 +1646,15 @@ const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
     );
   }
 
-  if (hasInlineDiff) {
+  if (hasInlineDiff || (isFileChange && hasLiveOutput)) {
+    const showInlineDiffPreview = inlineDiffExpanded || defaultLivePatchExpanded;
     return (
       <div className="group rounded-lg px-1 py-0.5 transition-colors duration-150 hover:bg-muted/20 focus-within:bg-muted/20">
         <button
           type="button"
           className="flex min-h-7 w-full min-w-0 items-center gap-2 text-left transition-[opacity,translate] duration-200 focus-visible:outline-none"
-          aria-expanded={inlineDiffExpanded}
-          aria-label={inlineDiffExpanded ? "Collapse inline diff" : "Expand inline diff"}
+          aria-expanded={showInlineDiffPreview}
+          aria-label={showInlineDiffPreview ? "Collapse inline diff" : "Expand inline diff"}
           onClick={() => onToggleInlineDiffExpanded(toolKey)}
           data-testid="inline-diff-toggle"
         >
@@ -1584,17 +1689,21 @@ const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
           <ChevronRightIcon
             className={cn(
               "size-3.5 shrink-0 text-muted-foreground/45 opacity-0 transition-[opacity,transform,color] duration-150 group-hover:opacity-100 group-hover:text-muted-foreground/80 group-focus-within:opacity-100",
-              inlineDiffExpanded && "rotate-90 opacity-100",
+              showInlineDiffPreview && "rotate-90 opacity-100",
             )}
           />
         </button>
-        {inlineDiffExpanded && (
-          <InlineChangedFilesDiffPreview
-            workEntry={workEntry}
-            changedFiles={workEntry.changedFiles ?? []}
-            workspaceRoot={workspaceRoot}
-          />
-        )}
+        {showInlineDiffPreview &&
+          (hasChangedFiles ? (
+            <InlineChangedFilesDiffPreview
+              workEntry={workEntry}
+              changedFiles={workEntry.changedFiles ?? []}
+              workspaceRoot={workspaceRoot}
+              liveOutput={isFileChange ? liveOutput : undefined}
+            />
+          ) : (
+            <LiveFileChangePreview liveOutput={liveOutput} />
+          ))}
       </div>
     );
   }
