@@ -117,6 +117,9 @@ then harden the risky paths.
   compatibility validation.
 - `historySync/projectMappings.ts`: mapping plan/apply orchestration around the
   pure planner and local repository.
+- `historySync/config.ts`: settings, secret-backed MySQL connection
+  configuration, config snapshots, connection testing, and configured startup
+  status decisions.
 
 Keep `apps/server/src/historySync.ts` initially as the compatibility facade so
 RPC imports and tests can move gradually.
@@ -153,9 +156,22 @@ RPC imports and tests can move gradually.
   compatibility before destructive restore deletes run.
 - Completed: mapping contract drift cleanup removed unused
   `map-folder.createIfMissing` and `repo-identity` contract surface.
-- Active slice: destructive recovery guardrails are adding structured local
+- Completed: destructive recovery guardrails now provide structured local
   replacement decisions and table-list alignment checks.
-- Remaining after the active slice: any remaining service facade simplification.
+- Completed: `historySync/facade.ts` now owns module-level service control
+  registration, disabled config fallback before readiness, and not-ready
+  dispatch for mutating/manual calls.
+- Completed: `historySync/config.ts` now owns settings, secret-backed MySQL
+  config, config snapshots, connection testing, and configured startup status
+  decisions.
+- Completed: `historySync/syncRunner.ts` now owns first/full/autosave sync
+  algorithm execution, import coordination, and autosave retry handling.
+- Completed: `historySync/projectMappingController.ts` now owns mapping RPC
+  orchestration and sync continuation decisions.
+- Active slice: `historySync/restoreController.ts` is moving backup restore RPC
+  orchestration and post-restore status publication out of `historySync.ts`.
+- Remaining after the active slice: continue reducing `HistorySyncServiceLive`
+  size only if a new behavior-preserving boundary becomes clear.
 
 ## Reliability Risks
 
@@ -167,6 +183,8 @@ RPC imports and tests can move gradually.
   recomputable.
 - Autosave conflict handling stops further autosave on unknown remote events.
   That is conservative, but the status should make manual sync recovery obvious.
+- Failed or interrupted syncs now run lifecycle stale-sync recovery so a stuck
+  `syncing` status is republished as `error` instead of lingering forever.
 - Project mappings can go stale if local projects are deleted or remote changes
   after plan creation. `syncId` covers remote sequence, not local project drift.
 - Backup restore assumes the backup schema has all copied tables. A migration
