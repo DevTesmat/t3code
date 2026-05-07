@@ -2031,6 +2031,13 @@ describe("deriveTimelineEntries", () => {
           streaming: false,
         },
         {
+          id: MessageId.make("message-legacy-plan"),
+          role: "user",
+          text: "  PLEASE IMPLEMENT THIS PLAN:\n# Ship it",
+          createdAt: "2026-02-23T00:00:01.500Z",
+          streaming: false,
+        },
+        {
           id: MessageId.make("message-user"),
           role: "user",
           source: "user",

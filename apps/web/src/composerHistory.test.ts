@@ -140,4 +140,27 @@ describe("composerHistory", () => {
       { id: "user-2", text: "repeat" },
     ]);
   });
+
+  it("excludes harness and legacy plan implementation prompts from user history", () => {
+    expect(
+      userPromptHistoryFromMessages([
+        {
+          id: "harness-plan",
+          role: "user",
+          source: "harness",
+          text: "PLEASE IMPLEMENT THIS PLAN:\n# Ship it",
+        },
+        {
+          id: "legacy-plan",
+          role: "user",
+          text: "  PLEASE IMPLEMENT THIS PLAN:\n# Ship it",
+        },
+        { id: "legacy-user", role: "user", text: "normal legacy prompt" },
+        { id: "current-user", role: "user", source: "user", text: "normal prompt" },
+      ]),
+    ).toEqual([
+      { id: "legacy-user", text: "normal legacy prompt" },
+      { id: "current-user", text: "normal prompt" },
+    ]);
+  });
 });

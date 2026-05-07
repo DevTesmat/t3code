@@ -1,3 +1,5 @@
+import { isUserAuthoredMessage } from "./messageVisibility";
+
 export type ComposerHistoryDirection = "previous" | "next";
 
 export interface ComposerHistoryEntry {
@@ -16,13 +18,16 @@ export interface ComposerHistoryNavigationResult {
 }
 
 export function userPromptHistoryFromMessages(
-  messages: ReadonlyArray<{ id: string; role: string; text: string }>,
+  messages: ReadonlyArray<{ id: string; role: string; source?: string; text: string }>,
 ): ComposerHistoryEntry[] {
-  return messages.flatMap((message) => {
-    if (message.role !== "user") return [];
-    if (message.text.trim().length === 0) return [];
-    return [{ id: message.id, text: message.text }];
-  });
+  const entries: ComposerHistoryEntry[] = [];
+  for (const message of messages) {
+    if (message.role !== "user") continue;
+    if (message.text.trim().length === 0) continue;
+    if (!isUserAuthoredMessage(message)) continue;
+    entries.push({ id: message.id, text: message.text });
+  }
+  return entries;
 }
 
 export function navigateComposerHistory(input: {

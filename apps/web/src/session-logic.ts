@@ -24,6 +24,7 @@ import type {
   ThreadSession,
   TurnDiffSummary,
 } from "./types";
+import { isUserAuthoredMessage } from "./messageVisibility";
 
 export type ProviderPickerKind = ProviderDriverKind;
 
@@ -2099,11 +2100,7 @@ export function deriveTimelineEntries(
   workEntries: WorkLogEntry[],
 ): TimelineEntry[] {
   const messageRows: TimelineEntry[] = messages
-    .filter(
-      (message) =>
-        message.source !== "harness" &&
-        !message.text.trimStart().startsWith("PLEASE IMPLEMENT THIS PLAN:"),
-    )
+    .filter((message) => isUserAuthoredMessage(message))
     .map((message) => ({
       id: message.id,
       kind: "message",
