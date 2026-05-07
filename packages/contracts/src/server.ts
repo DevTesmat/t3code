@@ -167,6 +167,221 @@ export const ServerObservability = Schema.Struct({
 });
 export type ServerObservability = typeof ServerObservability.Type;
 
+export const HistorySyncStatus = Schema.Union([
+  Schema.Struct({
+    state: Schema.Literal("disabled"),
+    configured: Schema.Boolean,
+  }),
+  Schema.Struct({
+    state: Schema.Literal("needs-initial-sync"),
+    configured: Schema.Boolean,
+    lastSyncedAt: Schema.NullOr(IsoDateTime),
+  }),
+  Schema.Struct({
+    state: Schema.Literal("idle"),
+    configured: Schema.Boolean,
+    lastSyncedAt: Schema.NullOr(IsoDateTime),
+  }),
+  Schema.Struct({
+    state: Schema.Literal("syncing"),
+    configured: Schema.Boolean,
+    startedAt: IsoDateTime,
+    lastSyncedAt: Schema.NullOr(IsoDateTime),
+    progress: Schema.optionalKey(
+      Schema.Struct({
+        phase: TrimmedNonEmptyString,
+        label: TrimmedNonEmptyString,
+        current: NonNegativeInt,
+        total: NonNegativeInt,
+      }),
+    ),
+  }),
+  Schema.Struct({
+    state: Schema.Literal("retrying"),
+    configured: Schema.Boolean,
+    message: TrimmedNonEmptyString,
+    startedAt: IsoDateTime,
+    lastSyncedAt: Schema.NullOr(IsoDateTime),
+    firstFailedAt: IsoDateTime,
+    nextRetryAt: IsoDateTime,
+    attempt: NonNegativeInt,
+    maxAttempts: NonNegativeInt,
+    recentFailures: Schema.Array(
+      Schema.Struct({
+        failedAt: IsoDateTime,
+        message: TrimmedNonEmptyString,
+        attempt: NonNegativeInt,
+      }),
+    ),
+  }),
+  Schema.Struct({
+    state: Schema.Literal("error"),
+    configured: Schema.Boolean,
+    message: TrimmedNonEmptyString,
+    lastSyncedAt: Schema.NullOr(IsoDateTime),
+    retry: Schema.optionalKey(
+      Schema.Struct({
+        firstFailedAt: IsoDateTime,
+        finalFailedAt: IsoDateTime,
+        attempt: NonNegativeInt,
+        maxAttempts: NonNegativeInt,
+        recentFailures: Schema.Array(
+          Schema.Struct({
+            failedAt: IsoDateTime,
+            message: TrimmedNonEmptyString,
+            attempt: NonNegativeInt,
+          }),
+        ),
+      }),
+    ),
+  }),
+  Schema.Struct({
+    state: Schema.Literal("needs-project-mapping"),
+    configured: Schema.Boolean,
+    remoteMaxSequence: NonNegativeInt,
+    unresolvedProjectCount: NonNegativeInt,
+    lastSyncedAt: Schema.NullOr(IsoDateTime),
+  }),
+]);
+export type HistorySyncStatus = typeof HistorySyncStatus.Type;
+
+export const HistorySyncProjectMappingCandidateStatus = Schema.Literals(["unresolved", "mapped"]);
+export type HistorySyncProjectMappingCandidateStatus =
+  typeof HistorySyncProjectMappingCandidateStatus.Type;
+
+export const HistorySyncProjectMappingSuggestionReason = Schema.Literals([
+  "exact-path",
+  "repo-identity",
+  "basename",
+]);
+export type HistorySyncProjectMappingSuggestionReason =
+  typeof HistorySyncProjectMappingSuggestionReason.Type;
+
+export const HistorySyncProjectMappingCandidate = Schema.Struct({
+  remoteProjectId: ProjectId,
+  remoteTitle: TrimmedNonEmptyString,
+  remoteWorkspaceRoot: TrimmedNonEmptyString,
+  threadCount: NonNegativeInt,
+  suggestedLocalProjectId: Schema.optionalKey(ProjectId),
+  suggestedLocalWorkspaceRoot: Schema.optionalKey(TrimmedNonEmptyString),
+  suggestionReason: Schema.optionalKey(HistorySyncProjectMappingSuggestionReason),
+  status: HistorySyncProjectMappingCandidateStatus,
+});
+export type HistorySyncProjectMappingCandidate = typeof HistorySyncProjectMappingCandidate.Type;
+
+export const HistorySyncProjectMappingLocalProject = Schema.Struct({
+  projectId: ProjectId,
+  title: TrimmedNonEmptyString,
+  workspaceRoot: TrimmedNonEmptyString,
+});
+export type HistorySyncProjectMappingLocalProject =
+  typeof HistorySyncProjectMappingLocalProject.Type;
+
+export const HistorySyncProjectMappingAction = Schema.Union([
+  Schema.Struct({
+    remoteProjectId: ProjectId,
+    action: Schema.Literal("map-existing"),
+    localProjectId: ProjectId,
+  }),
+  Schema.Struct({
+    remoteProjectId: ProjectId,
+    action: Schema.Literal("map-folder"),
+    workspaceRoot: TrimmedNonEmptyString,
+    title: Schema.optionalKey(TrimmedNonEmptyString),
+    createIfMissing: Schema.optionalKey(Schema.Boolean),
+  }),
+  Schema.Struct({
+    remoteProjectId: ProjectId,
+    action: Schema.Literal("skip"),
+  }),
+]);
+export type HistorySyncProjectMappingAction = typeof HistorySyncProjectMappingAction.Type;
+
+export const HistorySyncProjectMappingPlan = Schema.Struct({
+  syncId: TrimmedNonEmptyString,
+  remoteMaxSequence: NonNegativeInt,
+  candidates: Schema.Array(HistorySyncProjectMappingCandidate),
+  localProjects: Schema.Array(HistorySyncProjectMappingLocalProject),
+});
+export type HistorySyncProjectMappingPlan = typeof HistorySyncProjectMappingPlan.Type;
+
+export const HistorySyncProjectMappingsApplyInput = Schema.Struct({
+  syncId: TrimmedNonEmptyString,
+  actions: Schema.Array(HistorySyncProjectMappingAction),
+});
+export type HistorySyncProjectMappingsApplyInput = typeof HistorySyncProjectMappingsApplyInput.Type;
+
+export const HistorySyncConnectionSummary = Schema.Struct({
+  host: TrimmedNonEmptyString,
+  port: Schema.Number,
+  database: TrimmedNonEmptyString,
+  username: TrimmedNonEmptyString,
+  tlsEnabled: Schema.Boolean,
+});
+export type HistorySyncConnectionSummary = typeof HistorySyncConnectionSummary.Type;
+
+export const HistorySyncBackupSummary = Schema.Struct({
+  createdAt: IsoDateTime,
+  path: TrimmedNonEmptyString,
+});
+export type HistorySyncBackupSummary = typeof HistorySyncBackupSummary.Type;
+
+export const HistorySyncMysqlFields = Schema.Struct({
+  host: TrimmedNonEmptyString,
+  port: Schema.Number,
+  database: TrimmedNonEmptyString,
+  username: TrimmedNonEmptyString,
+  password: Schema.String,
+  tlsEnabled: Schema.Boolean,
+});
+export type HistorySyncMysqlFields = typeof HistorySyncMysqlFields.Type;
+
+export const HistorySyncConfig = Schema.Struct({
+  enabled: Schema.Boolean,
+  configured: Schema.Boolean,
+  status: HistorySyncStatus,
+  intervalMs: Schema.Number,
+  shutdownFlushTimeoutMs: Schema.Number,
+  statusIndicatorEnabled: Schema.Boolean,
+  connectionSummary: Schema.optionalKey(HistorySyncConnectionSummary),
+  backup: Schema.optionalKey(HistorySyncBackupSummary),
+});
+export type HistorySyncConfig = typeof HistorySyncConfig.Type;
+
+export const HistorySyncSettingsPatch = Schema.Struct({
+  enabled: Schema.optionalKey(Schema.Boolean),
+  intervalMs: Schema.optionalKey(Schema.Number),
+  shutdownFlushTimeoutMs: Schema.optionalKey(Schema.Number),
+  statusIndicatorEnabled: Schema.optionalKey(Schema.Boolean),
+});
+export type HistorySyncSettingsPatch = typeof HistorySyncSettingsPatch.Type;
+
+export const HistorySyncUpdateConfigInput = Schema.Struct({
+  settings: Schema.optionalKey(HistorySyncSettingsPatch),
+  mysql: Schema.optionalKey(HistorySyncMysqlFields),
+  clearConnection: Schema.optionalKey(Schema.Boolean),
+});
+export type HistorySyncUpdateConfigInput = typeof HistorySyncUpdateConfigInput.Type;
+
+export const HistorySyncConnectionTestInput = Schema.Struct({
+  mysql: HistorySyncMysqlFields,
+});
+export type HistorySyncConnectionTestInput = typeof HistorySyncConnectionTestInput.Type;
+
+export const HistorySyncConnectionTestResult = Schema.Struct({
+  success: Schema.Boolean,
+  message: Schema.optionalKey(TrimmedNonEmptyString),
+});
+export type HistorySyncConnectionTestResult = typeof HistorySyncConnectionTestResult.Type;
+
+export class HistorySyncConfigError extends Schema.TaggedErrorClass<HistorySyncConfigError>()(
+  "HistorySyncConfigError",
+  {
+    message: TrimmedNonEmptyString,
+    cause: Schema.optional(Schema.Defect),
+  },
+) {}
+
 export const ServerConfig = Schema.Struct({
   environment: ExecutionEnvironmentDescriptor,
   auth: ServerAuthDescriptor,
@@ -177,6 +392,9 @@ export const ServerConfig = Schema.Struct({
   providers: ServerProviders,
   availableEditors: Schema.Array(EditorId),
   observability: ServerObservability,
+  historySync: Schema.optionalKey(HistorySyncStatus).pipe(
+    Schema.withDecodingDefault(Effect.succeed({ state: "disabled", configured: false })),
+  ),
   settings: ServerSettings,
 });
 export type ServerConfig = typeof ServerConfig.Type;
@@ -198,6 +416,7 @@ export const ServerConfigUpdatedPayload = Schema.Struct({
 export type ServerConfigUpdatedPayload = typeof ServerConfigUpdatedPayload.Type;
 
 export const ServerConfigKeybindingsUpdatedPayload = Schema.Struct({
+  keybindings: ResolvedKeybindingsConfig,
   issues: ServerConfigIssues,
 });
 export type ServerConfigKeybindingsUpdatedPayload =
@@ -212,6 +431,11 @@ export const ServerConfigSettingsUpdatedPayload = Schema.Struct({
   settings: ServerSettings,
 });
 export type ServerConfigSettingsUpdatedPayload = typeof ServerConfigSettingsUpdatedPayload.Type;
+
+export const ServerConfigHistorySyncStatusPayload = Schema.Struct({
+  historySync: HistorySyncStatus,
+});
+export type ServerConfigHistorySyncStatusPayload = typeof ServerConfigHistorySyncStatusPayload.Type;
 
 export const ServerConfigStreamSnapshotEvent = Schema.Struct({
   version: Schema.Literal(1),
@@ -244,11 +468,20 @@ export const ServerConfigStreamSettingsUpdatedEvent = Schema.Struct({
 export type ServerConfigStreamSettingsUpdatedEvent =
   typeof ServerConfigStreamSettingsUpdatedEvent.Type;
 
+export const ServerConfigStreamHistorySyncStatusEvent = Schema.Struct({
+  version: Schema.Literal(1),
+  type: Schema.Literal("historySyncStatus"),
+  payload: ServerConfigHistorySyncStatusPayload,
+});
+export type ServerConfigStreamHistorySyncStatusEvent =
+  typeof ServerConfigStreamHistorySyncStatusEvent.Type;
+
 export const ServerConfigStreamEvent = Schema.Union([
   ServerConfigStreamSnapshotEvent,
   ServerConfigStreamKeybindingsUpdatedEvent,
   ServerConfigStreamProviderStatusesEvent,
   ServerConfigStreamSettingsUpdatedEvent,
+  ServerConfigStreamHistorySyncStatusEvent,
 ]);
 export type ServerConfigStreamEvent = typeof ServerConfigStreamEvent.Type;
 

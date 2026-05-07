@@ -302,14 +302,17 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
               planId: "plan-1",
             },
           },
+          totalWorkDurationMs: 0,
           createdAt: "2026-02-24T00:00:02.000Z",
           updatedAt: "2026-02-24T00:00:03.000Z",
+          pinnedAt: null,
           archivedAt: null,
           deletedAt: null,
           messages: [
             {
               id: asMessageId("message-1"),
               role: "assistant",
+              source: "user",
               text: "hello from projection",
               turnId: asTurnId("turn-1"),
               streaming: false,
@@ -412,8 +415,10 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
               planId: "plan-1",
             },
           },
+          totalWorkDurationMs: 0,
           createdAt: "2026-02-24T00:00:02.000Z",
           updatedAt: "2026-02-24T00:00:03.000Z",
+          pinnedAt: null,
           archivedAt: null,
           session: {
             threadId: ThreadId.make("thread-1"),
@@ -427,6 +432,7 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
           latestUserMessageAt: "2026-02-24T00:00:04.000Z",
           hasPendingApprovals: true,
           hasPendingUserInput: false,
+          latestPendingUserInputAt: null,
           hasActionableProposedPlan: false,
         },
       ]);
@@ -435,6 +441,170 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
       assert.equal(threadDetail._tag, "Some");
       if (threadDetail._tag === "Some") {
         assert.deepEqual(threadDetail.value, snapshot.threads[0]);
+      }
+    }),
+  );
+
+  it.effect("sums completed thread work duration and ignores invalid turn rows", () =>
+    Effect.gen(function* () {
+      const snapshotQuery = yield* ProjectionSnapshotQuery;
+      const sql = yield* SqlClient.SqlClient;
+
+      yield* sql`DELETE FROM projection_projects`;
+      yield* sql`DELETE FROM projection_threads`;
+      yield* sql`DELETE FROM projection_turns`;
+
+      yield* sql`
+        INSERT INTO projection_projects (
+          project_id,
+          title,
+          workspace_root,
+          default_model_selection_json,
+          scripts_json,
+          created_at,
+          updated_at,
+          deleted_at
+        )
+        VALUES (
+          'project-work',
+          'Work Project',
+          '/tmp/project-work',
+          '{"provider":"codex","model":"gpt-5-codex"}',
+          '[]',
+          '2026-03-02T00:00:00.000Z',
+          '2026-03-02T00:00:00.000Z',
+          NULL
+        )
+      `;
+
+      yield* sql`
+        INSERT INTO projection_threads (
+          thread_id,
+          project_id,
+          title,
+          model_selection_json,
+          runtime_mode,
+          interaction_mode,
+          branch,
+          worktree_path,
+          latest_turn_id,
+          created_at,
+          updated_at,
+          deleted_at
+        )
+        VALUES (
+          'thread-work',
+          'project-work',
+          'Work Thread',
+          '{"provider":"codex","model":"gpt-5-codex"}',
+          'full-access',
+          'default',
+          NULL,
+          NULL,
+          'turn-error',
+          '2026-03-02T00:00:00.000Z',
+          '2026-03-02T00:00:00.000Z',
+          NULL
+        )
+      `;
+
+      yield* sql`
+        INSERT INTO projection_turns (
+          thread_id,
+          turn_id,
+          pending_message_id,
+          assistant_message_id,
+          state,
+          requested_at,
+          started_at,
+          completed_at,
+          checkpoint_turn_count,
+          checkpoint_ref,
+          checkpoint_status,
+          checkpoint_files_json
+        )
+        VALUES
+          (
+            'thread-work',
+            'turn-completed',
+            NULL,
+            NULL,
+            'completed',
+            '2026-03-02T00:00:00.000Z',
+            '2026-03-02T00:00:00.000Z',
+            '2026-03-02T00:00:04.000Z',
+            NULL,
+            NULL,
+            NULL,
+            '[]'
+          ),
+          (
+            'thread-work',
+            'turn-interrupted',
+            NULL,
+            NULL,
+            'interrupted',
+            '2026-03-02T00:00:05.000Z',
+            '2026-03-02T00:00:05.000Z',
+            '2026-03-02T00:00:08.000Z',
+            NULL,
+            NULL,
+            NULL,
+            '[]'
+          ),
+          (
+            'thread-work',
+            'turn-error',
+            NULL,
+            NULL,
+            'error',
+            '2026-03-02T00:00:09.000Z',
+            '2026-03-02T00:00:09.000Z',
+            '2026-03-02T00:00:11.000Z',
+            NULL,
+            NULL,
+            NULL,
+            '[]'
+          ),
+          (
+            'thread-work',
+            'turn-invalid',
+            NULL,
+            NULL,
+            'completed',
+            '2026-03-02T00:00:12.000Z',
+            '2026-03-02T00:00:13.000Z',
+            '2026-03-02T00:00:12.000Z',
+            NULL,
+            NULL,
+            NULL,
+            '[]'
+          ),
+          (
+            'thread-work',
+            NULL,
+            'message-pending',
+            NULL,
+            'pending',
+            '2026-03-02T00:00:14.000Z',
+            NULL,
+            NULL,
+            NULL,
+            NULL,
+            NULL,
+            '[]'
+          )
+      `;
+
+      const snapshot = yield* snapshotQuery.getSnapshot();
+      const shellSnapshot = yield* snapshotQuery.getShellSnapshot();
+      const threadDetail = yield* snapshotQuery.getThreadDetailById(ThreadId.make("thread-work"));
+
+      assert.equal(snapshot.threads[0]?.totalWorkDurationMs, 9_000);
+      assert.equal(shellSnapshot.threads[0]?.totalWorkDurationMs, 9_000);
+      assert.equal(threadDetail._tag, "Some");
+      if (threadDetail._tag === "Some") {
+        assert.equal(threadDetail.value.totalWorkDurationMs, 9_000);
       }
     }),
   );

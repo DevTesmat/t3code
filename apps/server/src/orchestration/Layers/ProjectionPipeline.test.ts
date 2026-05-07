@@ -26,6 +26,7 @@ import { OrchestrationEngineLive } from "./OrchestrationEngine.ts";
 import {
   ORCHESTRATION_PROJECTOR_NAMES,
   OrchestrationProjectionPipelineLive,
+  subscribeProjectionBootstrapProgress,
 } from "./ProjectionPipeline.ts";
 import { OrchestrationProjectionSnapshotQueryLive } from "./ProjectionSnapshotQuery.ts";
 import { OrchestrationEngineService } from "../Services/OrchestrationEngine.ts";
@@ -118,6 +119,7 @@ it.layer(BaseTestLayer)("OrchestrationProjectionPipeline", (it) => {
           threadId: ThreadId.make("thread-1"),
           messageId: MessageId.make("message-1"),
           role: "assistant",
+          source: "harness",
           text: "hello",
           turnId: null,
           streaming: false,
@@ -145,14 +147,16 @@ it.layer(BaseTestLayer)("OrchestrationProjectionPipeline", (it) => {
 
       const messageRows = yield* sql<{
         readonly messageId: string;
+        readonly source: string;
         readonly text: string;
       }>`
         SELECT
           message_id AS "messageId",
+          source,
           text
         FROM projection_thread_messages
       `;
-      assert.deepEqual(messageRows, [{ messageId: "message-1", text: "hello" }]);
+      assert.deepEqual(messageRows, [{ messageId: "message-1", source: "harness", text: "hello" }]);
 
       const stateRows = yield* sql<{
         readonly projector: string;
@@ -167,6 +171,343 @@ it.layer(BaseTestLayer)("OrchestrationProjectionPipeline", (it) => {
       assert.equal(stateRows.length, Object.keys(ORCHESTRATION_PROJECTOR_NAMES).length);
       for (const row of stateRows) {
         assert.equal(row.lastAppliedSequence, 3);
+      }
+    }),
+  );
+
+  it.effect("persists work duration when the running session settles", () =>
+    Effect.gen(function* () {
+      const projectionPipeline = yield* OrchestrationProjectionPipeline;
+      const eventStore = yield* OrchestrationEventStore;
+      const sql = yield* SqlClient.SqlClient;
+      const threadId = ThreadId.make("thread-work-duration");
+      const turnId = TurnId.make("turn-work-duration");
+      const appendEvent = (event: Parameters<typeof eventStore.append>[0]) =>
+        eventStore.append(event);
+
+      yield* appendEvent({
+        type: "project.created",
+        eventId: EventId.make("evt-work-duration-1"),
+        aggregateKind: "project",
+        aggregateId: ProjectId.make("project-work-duration"),
+        occurredAt: "2026-03-05T10:00:00.000Z",
+        commandId: CommandId.make("cmd-work-duration-1"),
+        causationEventId: null,
+        correlationId: CommandId.make("cmd-work-duration-1"),
+        metadata: {},
+        payload: {
+          projectId: ProjectId.make("project-work-duration"),
+          title: "Project Work Duration",
+          workspaceRoot: "/tmp/project-work-duration",
+          defaultModelSelection: null,
+          scripts: [],
+          createdAt: "2026-03-05T10:00:00.000Z",
+          updatedAt: "2026-03-05T10:00:00.000Z",
+        },
+      });
+
+      yield* appendEvent({
+        type: "thread.created",
+        eventId: EventId.make("evt-work-duration-2"),
+        aggregateKind: "thread",
+        aggregateId: threadId,
+        occurredAt: "2026-03-05T10:00:00.000Z",
+        commandId: CommandId.make("cmd-work-duration-2"),
+        causationEventId: null,
+        correlationId: CommandId.make("cmd-work-duration-2"),
+        metadata: {},
+        payload: {
+          threadId,
+          projectId: ProjectId.make("project-work-duration"),
+          title: "Thread Work Duration",
+          modelSelection: {
+            instanceId: ProviderInstanceId.make("codex"),
+            model: "gpt-5-codex",
+          },
+          runtimeMode: "full-access",
+          interactionMode: "default",
+          branch: null,
+          worktreePath: null,
+          createdAt: "2026-03-05T10:00:00.000Z",
+          updatedAt: "2026-03-05T10:00:00.000Z",
+        },
+      });
+
+      yield* appendEvent({
+        type: "thread.turn-start-requested",
+        eventId: EventId.make("evt-work-duration-3"),
+        aggregateKind: "thread",
+        aggregateId: threadId,
+        occurredAt: "2026-03-05T10:00:00.000Z",
+        commandId: CommandId.make("cmd-work-duration-3"),
+        causationEventId: null,
+        correlationId: CommandId.make("cmd-work-duration-3"),
+        metadata: {},
+        payload: {
+          threadId,
+          messageId: MessageId.make("message-work-duration-user"),
+          runtimeMode: "full-access",
+          interactionMode: "default",
+          createdAt: "2026-03-05T10:00:00.000Z",
+        },
+      });
+
+      yield* appendEvent({
+        type: "thread.session-set",
+        eventId: EventId.make("evt-work-duration-4"),
+        aggregateKind: "thread",
+        aggregateId: threadId,
+        occurredAt: "2026-03-05T10:00:01.000Z",
+        commandId: CommandId.make("cmd-work-duration-4"),
+        causationEventId: null,
+        correlationId: CommandId.make("cmd-work-duration-4"),
+        metadata: {},
+        payload: {
+          threadId,
+          session: {
+            threadId,
+            status: "running",
+            providerName: "codex",
+            runtimeMode: "full-access",
+            activeTurnId: turnId,
+            lastError: null,
+            updatedAt: "2026-03-05T10:00:01.000Z",
+          },
+        },
+      });
+
+      yield* appendEvent({
+        type: "thread.turn-diff-completed",
+        eventId: EventId.make("evt-work-duration-5"),
+        aggregateKind: "thread",
+        aggregateId: threadId,
+        occurredAt: "2026-03-05T10:00:03.000Z",
+        commandId: CommandId.make("cmd-work-duration-5"),
+        causationEventId: null,
+        correlationId: CommandId.make("cmd-work-duration-5"),
+        metadata: {},
+        payload: {
+          threadId,
+          turnId,
+          checkpointTurnCount: 1,
+          checkpointRef: CheckpointRef.make("refs/t3/checkpoints/thread-work-duration/turn/1"),
+          status: "ready",
+          files: [],
+          assistantMessageId: MessageId.make("message-work-duration-assistant"),
+          completedAt: "2026-03-05T10:00:03.000Z",
+        },
+      });
+
+      for (const [index, activity] of [
+        {
+          kind: "user-input.requested",
+          createdAt: "2026-03-05T10:00:04.000Z",
+          payload: { requestId: "request-work-duration" },
+        },
+        {
+          kind: "user-input.resolved",
+          createdAt: "2026-03-05T10:00:07.000Z",
+          payload: { requestId: "request-work-duration" },
+        },
+        {
+          kind: "approval.requested",
+          createdAt: "2026-03-05T10:00:08.000Z",
+          payload: { requestId: "approval-work-duration", requestKind: "command" },
+        },
+      ].entries()) {
+        yield* appendEvent({
+          type: "thread.activity-appended",
+          eventId: EventId.make(`evt-work-duration-activity-${index}`),
+          aggregateKind: "thread",
+          aggregateId: threadId,
+          occurredAt: activity.createdAt,
+          commandId: CommandId.make(`cmd-work-duration-activity-${index}`),
+          causationEventId: null,
+          correlationId: CommandId.make(`cmd-work-duration-activity-${index}`),
+          metadata: {},
+          payload: {
+            threadId,
+            activity: {
+              id: EventId.make(`activity-work-duration-${index}`),
+              tone: "info",
+              kind: activity.kind,
+              summary: activity.kind,
+              payload: activity.payload,
+              turnId,
+              createdAt: activity.createdAt,
+            },
+          },
+        });
+      }
+
+      yield* appendEvent({
+        type: "thread.session-set",
+        eventId: EventId.make("evt-work-duration-6"),
+        aggregateKind: "thread",
+        aggregateId: threadId,
+        occurredAt: "2026-03-05T10:00:11.000Z",
+        commandId: CommandId.make("cmd-work-duration-6"),
+        causationEventId: null,
+        correlationId: CommandId.make("cmd-work-duration-6"),
+        metadata: {},
+        payload: {
+          threadId,
+          session: {
+            threadId,
+            status: "ready",
+            providerName: "codex",
+            runtimeMode: "full-access",
+            activeTurnId: null,
+            lastError: null,
+            updatedAt: "2026-03-05T10:00:11.000Z",
+          },
+        },
+      });
+
+      yield* projectionPipeline.bootstrap;
+
+      const rows = yield* sql<{
+        readonly workDurationMs: number | null;
+        readonly totalWorkDurationMs: number;
+      }>`
+        SELECT
+          work_duration_ms AS "workDurationMs",
+          (
+            SELECT COALESCE(SUM(work_duration_ms), 0)
+            FROM projection_turns
+            WHERE thread_id = ${threadId}
+          ) AS "totalWorkDurationMs"
+        FROM projection_turns
+        WHERE thread_id = ${threadId}
+          AND turn_id = ${turnId}
+      `;
+
+      assert.deepEqual(rows, [{ workDurationMs: 8_000, totalWorkDurationMs: 8_000 }]);
+    }),
+  );
+
+  it.effect("reports single-pass bootstrap progress and advances all projector states", () =>
+    Effect.gen(function* () {
+      const projectionPipeline = yield* OrchestrationProjectionPipeline;
+      const eventStore = yield* OrchestrationEventStore;
+      const sql = yield* SqlClient.SqlClient;
+      const now = new Date().toISOString();
+      const progressEvents: Array<{
+        readonly projector: string;
+        readonly projectedCount: number;
+        readonly maxSequence: number;
+        readonly completed: boolean;
+      }> = [];
+
+      const unsubscribe = yield* subscribeProjectionBootstrapProgress((progress) =>
+        Effect.sync(() => {
+          progressEvents.push(progress);
+        }),
+      );
+
+      yield* eventStore.append({
+        type: "project.created",
+        eventId: EventId.make("evt-progress-1"),
+        aggregateKind: "project",
+        aggregateId: ProjectId.make("project-progress"),
+        occurredAt: now,
+        commandId: CommandId.make("cmd-progress-1"),
+        causationEventId: null,
+        correlationId: CommandId.make("cmd-progress-1"),
+        metadata: {},
+        payload: {
+          projectId: ProjectId.make("project-progress"),
+          title: "Project Progress",
+          workspaceRoot: "/tmp/project-progress",
+          defaultModelSelection: null,
+          scripts: [],
+          createdAt: now,
+          updatedAt: now,
+        },
+      });
+
+      yield* eventStore.append({
+        type: "thread.created",
+        eventId: EventId.make("evt-progress-2"),
+        aggregateKind: "thread",
+        aggregateId: ThreadId.make("thread-progress"),
+        occurredAt: now,
+        commandId: CommandId.make("cmd-progress-2"),
+        causationEventId: null,
+        correlationId: CommandId.make("cmd-progress-2"),
+        metadata: {},
+        payload: {
+          threadId: ThreadId.make("thread-progress"),
+          projectId: ProjectId.make("project-progress"),
+          title: "Thread Progress",
+          modelSelection: {
+            instanceId: ProviderInstanceId.make("codex"),
+            model: "gpt-5-codex",
+          },
+          runtimeMode: "full-access",
+          interactionMode: "default",
+          branch: null,
+          worktreePath: null,
+          createdAt: now,
+          updatedAt: now,
+        },
+      });
+
+      yield* eventStore.append({
+        type: "thread.message-sent",
+        eventId: EventId.make("evt-progress-3"),
+        aggregateKind: "thread",
+        aggregateId: ThreadId.make("thread-progress"),
+        occurredAt: now,
+        commandId: CommandId.make("cmd-progress-3"),
+        causationEventId: null,
+        correlationId: CommandId.make("cmd-progress-3"),
+        metadata: {},
+        payload: {
+          threadId: ThreadId.make("thread-progress"),
+          messageId: MessageId.make("message-progress"),
+          role: "user",
+          source: "user",
+          text: "hello",
+          turnId: null,
+          streaming: false,
+          createdAt: now,
+          updatedAt: now,
+        },
+      });
+
+      yield* projectionPipeline.bootstrap.pipe(Effect.ensuring(Effect.sync(unsubscribe)));
+
+      assert.equal(
+        progressEvents.some((progress) => progress.projector === "projection.history"),
+        true,
+      );
+      assert.equal(
+        progressEvents.some((progress) => progress.projector === "projection.thread-summaries"),
+        true,
+      );
+      assert.equal(
+        progressEvents.some((progress) => progress.projector === "projection.threads"),
+        false,
+      );
+      for (const progress of progressEvents) {
+        assert.equal(
+          progress.projectedCount <= progress.maxSequence || progress.maxSequence === 0,
+          true,
+        );
+      }
+
+      const stateRows = yield* sql<{ readonly lastAppliedSequence: number }>`
+        SELECT last_applied_sequence AS "lastAppliedSequence"
+        FROM projection_state
+      `;
+      const maxSequenceRows = yield* sql<{ readonly maxSequence: number }>`
+        SELECT MAX(sequence) AS "maxSequence" FROM orchestration_events
+      `;
+      const maxSequence = maxSequenceRows[0]?.maxSequence ?? 0;
+      assert.equal(stateRows.length, Object.keys(ORCHESTRATION_PROJECTOR_NAMES).length);
+      for (const row of stateRows) {
+        assert.equal(row.lastAppliedSequence, maxSequence);
       }
     }),
   );

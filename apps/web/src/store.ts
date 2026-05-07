@@ -22,6 +22,7 @@ import { isProviderDriverKind, ProviderDriverKind } from "@t3tools/contracts";
 import type { ThreadId, TurnId } from "@t3tools/contracts";
 import { Schema } from "effect";
 import { resolveModelSlugForProvider } from "@t3tools/shared/model";
+import { computeWorkDurationMs } from "@t3tools/shared/workDuration";
 import { create } from "zustand";
 import {
   type ChatMessage,
@@ -123,6 +124,7 @@ const MAX_THREAD_MESSAGES = 2_000;
 const MAX_THREAD_CHECKPOINTS = 500;
 const MAX_THREAD_PROPOSED_PLANS = 200;
 const MAX_THREAD_ACTIVITIES = 500;
+const MAX_LIVE_PROPOSED_PLAN_CHARS = 120_000;
 const EMPTY_THREAD_IDS: ThreadId[] = [];
 
 function arraysEqual<T>(left: readonly T[], right: readonly T[]): boolean {
@@ -175,6 +177,7 @@ function mapMessage(environmentId: EnvironmentId, message: OrchestrationMessage)
   return {
     id: message.id,
     role: message.role,
+    source: message.source ?? "user",
     text: message.text,
     turnId: message.turnId,
     createdAt: message.createdAt,
@@ -244,9 +247,11 @@ function mapThread(thread: OrchestrationThread, environmentId: EnvironmentId): T
     proposedPlans: thread.proposedPlans.map(mapProposedPlan),
     error: sanitizeThreadErrorMessage(thread.session?.lastError),
     createdAt: thread.createdAt,
+    pinnedAt: thread.pinnedAt ?? null,
     archivedAt: thread.archivedAt,
     updatedAt: thread.updatedAt,
     latestTurn: thread.latestTurn,
+    totalWorkDurationMs: thread.totalWorkDurationMs ?? 0,
     pendingSourceProposedPlan: thread.latestTurn?.sourceProposedPlan,
     branch: thread.branch,
     worktreePath: thread.worktreePath,
@@ -275,10 +280,12 @@ function mapThreadShell(
     interactionMode: thread.interactionMode,
     error: sanitizeThreadErrorMessage(thread.session?.lastError),
     createdAt: thread.createdAt,
+    pinnedAt: thread.pinnedAt ?? null,
     archivedAt: thread.archivedAt,
     updatedAt: thread.updatedAt,
     branch: thread.branch,
     worktreePath: thread.worktreePath,
+    totalWorkDurationMs: thread.totalWorkDurationMs ?? 0,
   };
   const session = thread.session ? mapSession(thread.session) : null;
   const turnState: ThreadTurnState = {
@@ -293,6 +300,7 @@ function mapThreadShell(
     interactionMode: thread.interactionMode,
     session,
     createdAt: thread.createdAt,
+    pinnedAt: thread.pinnedAt ?? null,
     archivedAt: thread.archivedAt,
     updatedAt: thread.updatedAt,
     latestTurn: thread.latestTurn,
@@ -301,7 +309,9 @@ function mapThreadShell(
     latestUserMessageAt: thread.latestUserMessageAt,
     hasPendingApprovals: thread.hasPendingApprovals,
     hasPendingUserInput: thread.hasPendingUserInput,
+    latestPendingUserInputAt: thread.latestPendingUserInputAt,
     hasActionableProposedPlan: thread.hasActionableProposedPlan,
+    totalWorkDurationMs: thread.totalWorkDurationMs ?? 0,
   };
   return {
     shell,
@@ -323,10 +333,12 @@ function toThreadShell(thread: Thread): ThreadShell {
     interactionMode: thread.interactionMode,
     error: thread.error,
     createdAt: thread.createdAt,
+    pinnedAt: thread.pinnedAt ?? null,
     archivedAt: thread.archivedAt,
     updatedAt: thread.updatedAt,
     branch: thread.branch,
     worktreePath: thread.worktreePath,
+    totalWorkDurationMs: thread.totalWorkDurationMs,
   };
 }
 
@@ -394,6 +406,7 @@ function sidebarThreadSummariesEqual(
     left.interactionMode === right.interactionMode &&
     threadSessionsEqual(left.session, right.session) &&
     left.createdAt === right.createdAt &&
+    left.pinnedAt === right.pinnedAt &&
     left.archivedAt === right.archivedAt &&
     left.updatedAt === right.updatedAt &&
     latestTurnsEqual(left.latestTurn, right.latestTurn) &&
@@ -402,7 +415,9 @@ function sidebarThreadSummariesEqual(
     left.latestUserMessageAt === right.latestUserMessageAt &&
     left.hasPendingApprovals === right.hasPendingApprovals &&
     left.hasPendingUserInput === right.hasPendingUserInput &&
-    left.hasActionableProposedPlan === right.hasActionableProposedPlan
+    left.latestPendingUserInputAt === right.latestPendingUserInputAt &&
+    left.hasActionableProposedPlan === right.hasActionableProposedPlan &&
+    left.totalWorkDurationMs === right.totalWorkDurationMs
   );
 }
 
@@ -419,10 +434,12 @@ function threadShellsEqual(left: ThreadShell | undefined, right: ThreadShell): b
     left.interactionMode === right.interactionMode &&
     left.error === right.error &&
     left.createdAt === right.createdAt &&
+    left.pinnedAt === right.pinnedAt &&
     left.archivedAt === right.archivedAt &&
     left.updatedAt === right.updatedAt &&
     left.branch === right.branch &&
-    left.worktreePath === right.worktreePath
+    left.worktreePath === right.worktreePath &&
+    left.totalWorkDurationMs === right.totalWorkDurationMs
   );
 }
 
@@ -1259,8 +1276,10 @@ function applyEnvironmentOrchestrationEvent(
           branch: event.payload.branch,
           worktreePath: event.payload.worktreePath,
           latestTurn: null,
+          totalWorkDurationMs: 0,
           createdAt: event.payload.createdAt,
           updatedAt: event.payload.updatedAt,
+          pinnedAt: event.payload.pinnedAt,
           archivedAt: null,
           deletedAt: null,
           messages: [],
@@ -1289,6 +1308,18 @@ function applyEnvironmentOrchestrationEvent(
         ...thread,
         archivedAt: null,
         updatedAt: event.payload.updatedAt,
+      }));
+
+    case "thread.pinned":
+      return updateThreadState(state, event.payload.threadId, (thread) => ({
+        ...thread,
+        pinnedAt: event.payload.pinnedAt,
+      }));
+
+    case "thread.unpinned":
+      return updateThreadState(state, event.payload.threadId, (thread) => ({
+        ...thread,
+        pinnedAt: null,
       }));
 
     case "thread.meta-updated":
@@ -1361,6 +1392,7 @@ function applyEnvironmentOrchestrationEvent(
         const message = mapMessage(thread.environmentId, {
           id: event.payload.messageId,
           role: event.payload.role,
+          source: event.payload.source ?? "user",
           text: event.payload.text,
           ...(event.payload.attachments !== undefined
             ? { attachments: event.payload.attachments }
@@ -1447,34 +1479,55 @@ function applyEnvironmentOrchestrationEvent(
       });
 
     case "thread.session-set":
-      return updateThreadState(state, event.payload.threadId, (thread) => ({
-        ...thread,
-        session: mapSession(event.payload.session),
-        error: sanitizeThreadErrorMessage(event.payload.session.lastError),
-        latestTurn:
-          event.payload.session.status === "running" && event.payload.session.activeTurnId !== null
-            ? buildLatestTurn({
-                previous: thread.latestTurn,
-                turnId: event.payload.session.activeTurnId,
-                state: "running",
-                requestedAt:
-                  thread.latestTurn?.turnId === event.payload.session.activeTurnId
-                    ? thread.latestTurn.requestedAt
-                    : event.payload.session.updatedAt,
-                startedAt:
-                  thread.latestTurn?.turnId === event.payload.session.activeTurnId
-                    ? (thread.latestTurn.startedAt ?? event.payload.session.updatedAt)
-                    : event.payload.session.updatedAt,
-                completedAt: null,
-                assistantMessageId:
-                  thread.latestTurn?.turnId === event.payload.session.activeTurnId
-                    ? thread.latestTurn.assistantMessageId
-                    : null,
-                sourceProposedPlan: thread.pendingSourceProposedPlan,
-              })
-            : thread.latestTurn,
-        updatedAt: event.occurredAt,
-      }));
+      return updateThreadState(state, event.payload.threadId, (thread) => {
+        const settlingTurnId =
+          thread.session?.orchestrationStatus === "running" &&
+          event.payload.session.status !== "running"
+            ? (thread.session.activeTurnId ?? null)
+            : null;
+        const shouldAddWorkDuration =
+          settlingTurnId !== null &&
+          thread.latestTurn?.turnId === settlingTurnId &&
+          thread.latestTurn.startedAt !== null;
+        const completedWorkDurationMs = shouldAddWorkDuration
+          ? computeWorkDurationMs({
+              startedAt: thread.latestTurn!.startedAt,
+              completedAt: event.payload.session.updatedAt,
+              activities: thread.activities,
+            })
+          : 0;
+
+        return {
+          ...thread,
+          session: mapSession(event.payload.session),
+          error: sanitizeThreadErrorMessage(event.payload.session.lastError),
+          latestTurn:
+            event.payload.session.status === "running" &&
+            event.payload.session.activeTurnId !== null
+              ? buildLatestTurn({
+                  previous: thread.latestTurn,
+                  turnId: event.payload.session.activeTurnId,
+                  state: "running",
+                  requestedAt:
+                    thread.latestTurn?.turnId === event.payload.session.activeTurnId
+                      ? thread.latestTurn.requestedAt
+                      : event.payload.session.updatedAt,
+                  startedAt:
+                    thread.latestTurn?.turnId === event.payload.session.activeTurnId
+                      ? (thread.latestTurn.startedAt ?? event.payload.session.updatedAt)
+                      : event.payload.session.updatedAt,
+                  completedAt: null,
+                  assistantMessageId:
+                    thread.latestTurn?.turnId === event.payload.session.activeTurnId
+                      ? thread.latestTurn.assistantMessageId
+                      : null,
+                  sourceProposedPlan: thread.pendingSourceProposedPlan,
+                })
+              : thread.latestTurn,
+          totalWorkDurationMs: (thread.totalWorkDurationMs ?? 0) + completedWorkDurationMs,
+          updatedAt: event.occurredAt,
+        };
+      });
 
     case "thread.session-stop-requested":
       return updateThreadState(state, event.payload.threadId, (thread) =>
@@ -1496,6 +1549,44 @@ function applyEnvironmentOrchestrationEvent(
     case "thread.proposed-plan-upserted":
       return updateThreadState(state, event.payload.threadId, (thread) => {
         const proposedPlan = mapProposedPlan(event.payload.proposedPlan);
+        const proposedPlans = [
+          ...thread.proposedPlans.filter((entry) => entry.id !== proposedPlan.id),
+          proposedPlan,
+        ]
+          .toSorted(
+            (left, right) =>
+              left.createdAt.localeCompare(right.createdAt) || left.id.localeCompare(right.id),
+          )
+          .slice(-MAX_THREAD_PROPOSED_PLANS);
+        return {
+          ...thread,
+          proposedPlans,
+          updatedAt: event.occurredAt,
+        };
+      });
+
+    case "thread.proposed-plan-delta-received":
+      return updateThreadState(state, event.payload.threadId, (thread) => {
+        const existing = thread.proposedPlans.find((entry) => entry.id === event.payload.planId);
+        if (existing && !existing.streaming) {
+          return thread;
+        }
+        const nextPlanMarkdown = `${existing?.planMarkdown ?? ""}${event.payload.delta}`.slice(
+          -MAX_LIVE_PROPOSED_PLAN_CHARS,
+        );
+        if (nextPlanMarkdown.trim().length === 0) {
+          return thread;
+        }
+        const proposedPlan: ProposedPlan = {
+          id: event.payload.planId,
+          turnId: event.payload.turnId,
+          planMarkdown: nextPlanMarkdown,
+          streaming: true,
+          implementedAt: null,
+          implementationThreadId: null,
+          createdAt: existing?.createdAt ?? event.payload.createdAt,
+          updatedAt: event.payload.createdAt,
+        };
         const proposedPlans = [
           ...thread.proposedPlans.filter((entry) => entry.id !== proposedPlan.id),
           proposedPlan,

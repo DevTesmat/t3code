@@ -152,6 +152,9 @@ jobs:
             fi
           fi
 
+      - name: Format
+        run: bun run fmt:check
+
       - name: Lint
         run: bun run lint
 
@@ -160,6 +163,20 @@ jobs:
 
       - name: Test
         run: bun run test
+
+      - name: Install browser test runtime
+        run: bun run --cwd apps/web test:browser:install
+
+      - name: Browser test
+        run: bun run --cwd apps/web test:browser
+
+      - name: Build desktop pipeline
+        run: bun run build:desktop
+
+      - name: Verify preload bundle output
+        run: |
+          test -f apps/desktop/dist-electron/preload.cjs
+          grep -nE "desktopBridge|getLocalEnvironmentBootstrap|PICK_FOLDER_CHANNEL|wsUrl" apps/desktop/dist-electron/preload.cjs
 
       - id: previous_tag
         name: Resolve previous release tag

@@ -2,13 +2,17 @@ import {
   ApprovalRequestId,
   type AssistantDeliveryMode,
   CommandId,
+  EventId,
   MessageId,
+  ProviderItemId,
   type OrchestrationEvent,
   type OrchestrationProposedPlanId,
+  type OrchestrationReadModel,
   CheckpointRef,
   isToolLifecycleItemType,
   ThreadId,
   type ThreadTokenUsageSnapshot,
+  type ToolLifecycleItemType,
   TurnId,
   type OrchestrationThreadActivity,
   type ProviderRuntimeEvent,
@@ -17,6 +21,8 @@ import { Cache, Cause, Duration, Effect, Layer, Option, Stream } from "effect";
 import { makeDrainableWorker } from "@t3tools/shared/DrainableWorker";
 
 import { ProviderService } from "../../provider/Services/ProviderService.ts";
+import { OrchestrationCommandReceiptRepository } from "../../persistence/Services/OrchestrationCommandReceipts.ts";
+import { OrchestrationCommandReceiptRepositoryLive } from "../../persistence/Layers/OrchestrationCommandReceipts.ts";
 import { ProjectionTurnRepository } from "../../persistence/Services/ProjectionTurns.ts";
 import { ProjectionTurnRepositoryLive } from "../../persistence/Layers/ProjectionTurns.ts";
 import { resolveThreadWorkspaceCwd } from "../../checkpointing/Utils.ts";
@@ -27,10 +33,31 @@ import {
   type ProviderRuntimeIngestionShape,
 } from "../Services/ProviderRuntimeIngestion.ts";
 import { ServerSettingsService } from "../../serverSettings.ts";
+import { publishCommandOutputDelta } from "../Services/CommandOutputDeltaBus.ts";
 
 const providerTurnKey = (threadId: ThreadId, turnId: TurnId) => `${threadId}:${turnId}`;
+const stableIdentityPart = (value: unknown): string =>
+  encodeURIComponent(String(value ?? "")).replaceAll("%", "~");
+
+const providerEventIdentity = (event: ProviderRuntimeEvent): string =>
+  [
+    event.provider,
+    event.providerInstanceId ?? "",
+    event.threadId,
+    event.turnId ?? "",
+    event.itemId ?? "",
+    event.requestId ?? "",
+    event.type,
+    event.eventId,
+  ]
+    .map(stableIdentityPart)
+    .join(":");
+
 const providerCommandId = (event: ProviderRuntimeEvent, tag: string): CommandId =>
-  CommandId.make(`provider:${event.eventId}:${tag}:${crypto.randomUUID()}`);
+  CommandId.make(`provider:${providerEventIdentity(event)}:${stableIdentityPart(tag)}`);
+
+const providerEventReceiptCommandId = (event: ProviderRuntimeEvent): CommandId =>
+  providerCommandId(event, "runtime-event-processed");
 
 interface AssistantSegmentState {
   baseKey: string;
@@ -44,8 +71,26 @@ const BUFFERED_MESSAGE_TEXT_BY_MESSAGE_ID_CACHE_CAPACITY = 20_000;
 const BUFFERED_MESSAGE_TEXT_BY_MESSAGE_ID_TTL = Duration.minutes(120);
 const BUFFERED_PROPOSED_PLAN_BY_ID_CACHE_CAPACITY = 10_000;
 const BUFFERED_PROPOSED_PLAN_BY_ID_TTL = Duration.minutes(120);
+const PROVIDER_RUNTIME_INGESTION_QUEUE_CAPACITY = 10_000;
 const MAX_BUFFERED_ASSISTANT_CHARS = 24_000;
 const STRICT_PROVIDER_LIFECYCLE_GUARD = process.env.T3CODE_STRICT_PROVIDER_LIFECYCLE_GUARD !== "0";
+const TERMINAL_OUTPUT_PREVIEW_LINE_COUNT = 4;
+const TERMINAL_OUTPUT_PREVIEW_LINE_MAX_LENGTH = 240;
+
+type TerminalOutputPreviewStream = "stdout" | "stderr" | "mixed" | "unknown";
+
+interface TerminalOutputPreview {
+  lines: string[];
+  stream: TerminalOutputPreviewStream;
+  truncated: boolean;
+}
+
+interface TerminalOutputPreviewBuffer {
+  lines: string[];
+  pendingLine: string;
+  stream: TerminalOutputPreviewStream;
+  truncated: boolean;
+}
 
 type TurnStartRequestedDomainEvent = Extract<
   OrchestrationEvent,
@@ -79,6 +124,232 @@ function sameId(left: string | null | undefined, right: string | null | undefine
 
 function truncateDetail(value: string, limit = 180): string {
   return value.length > limit ? `${value.slice(0, limit - 3)}...` : value;
+}
+
+function truncateTerminalPreviewLine(value: string): { line: string; truncated: boolean } {
+  if (value.length <= TERMINAL_OUTPUT_PREVIEW_LINE_MAX_LENGTH) {
+    return { line: value, truncated: false };
+  }
+  return {
+    line: `${value.slice(0, TERMINAL_OUTPUT_PREVIEW_LINE_MAX_LENGTH - 1)}…`,
+    truncated: true,
+  };
+}
+
+function normalizeTerminalPreviewLine(value: string): { line: string | null; truncated: boolean } {
+  const trimmed = value.trim();
+  if (trimmed.length === 0) {
+    return { line: null, truncated: false };
+  }
+  const truncated = truncateTerminalPreviewLine(trimmed);
+  return { line: truncated.line, truncated: truncated.truncated };
+}
+
+function appendTerminalPreviewLine(
+  state: TerminalOutputPreviewBuffer,
+  value: string,
+): TerminalOutputPreviewBuffer {
+  const normalized = normalizeTerminalPreviewLine(value);
+  if (!normalized.line) {
+    return {
+      ...state,
+      truncated: state.truncated || normalized.truncated,
+    };
+  }
+
+  const lines = [...state.lines, normalized.line];
+  const droppedLines = lines.length > TERMINAL_OUTPUT_PREVIEW_LINE_COUNT;
+  return {
+    ...state,
+    lines: droppedLines ? lines.slice(-TERMINAL_OUTPUT_PREVIEW_LINE_COUNT) : lines,
+    truncated: state.truncated || normalized.truncated || droppedLines,
+  };
+}
+
+function appendTerminalOutputPreviewDelta(
+  existing: TerminalOutputPreviewBuffer | undefined,
+  delta: string,
+): TerminalOutputPreviewBuffer {
+  let state: TerminalOutputPreviewBuffer = existing ?? {
+    lines: [],
+    pendingLine: "",
+    stream: "unknown",
+    truncated: false,
+  };
+  const combined = `${state.pendingLine}${delta}`;
+  const parts = combined.split(/\r\n|\n|\r/u);
+  const endsWithNewline = /\r\n$|\n$|\r$/u.test(combined);
+  const completeParts = endsWithNewline ? parts : parts.slice(0, -1);
+  const pendingPart = endsWithNewline ? "" : (parts.at(-1) ?? "");
+
+  for (const part of completeParts) {
+    state = appendTerminalPreviewLine(state, part);
+  }
+
+  const pending = truncateTerminalPreviewLine(pendingPart);
+  return {
+    ...state,
+    pendingLine: pending.line,
+    truncated: state.truncated || pending.truncated,
+  };
+}
+
+function terminalOutputPreviewFromBuffer(
+  state: TerminalOutputPreviewBuffer | undefined,
+): TerminalOutputPreview | undefined {
+  if (!state) {
+    return undefined;
+  }
+  const pending = normalizeTerminalPreviewLine(state.pendingLine);
+  const lines = pending.line ? [...state.lines, pending.line] : state.lines;
+  const droppedLines = lines.length > TERMINAL_OUTPUT_PREVIEW_LINE_COUNT;
+  const previewLines = droppedLines ? lines.slice(-TERMINAL_OUTPUT_PREVIEW_LINE_COUNT) : lines;
+  if (previewLines.length === 0) {
+    return undefined;
+  }
+  return {
+    lines: previewLines,
+    stream: state.stream,
+    truncated: state.truncated || pending.truncated || droppedLines,
+  };
+}
+
+function asRecord(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === "object" ? (value as Record<string, unknown>) : null;
+}
+
+function asTrimmedString(value: unknown): string | null {
+  if (typeof value !== "string") {
+    return null;
+  }
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : null;
+}
+
+function asNumber(value: unknown): number | null {
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+function isFailedRawOutput(rawOutput: Record<string, unknown>): boolean {
+  const status = asTrimmedString(rawOutput.status)?.toLowerCase();
+  const exitCode = asNumber(rawOutput.exitCode);
+  return (
+    (typeof exitCode === "number" && exitCode !== 0) || status === "failed" || status === "error"
+  );
+}
+
+function terminalOutputPreviewFromText(
+  text: string,
+  stream: TerminalOutputPreviewStream,
+): TerminalOutputPreview | undefined {
+  const buffer = appendTerminalOutputPreviewDelta(undefined, text);
+  const preview = terminalOutputPreviewFromBuffer({ ...buffer, stream });
+  return preview;
+}
+
+function terminalOutputPreviewFromRawOutput(data: unknown): TerminalOutputPreview | undefined {
+  const rawOutput = asRecord(asRecord(data)?.rawOutput);
+  if (!rawOutput) {
+    return undefined;
+  }
+
+  const stdout = asTrimmedString(rawOutput.stdout);
+  const stderr = asTrimmedString(rawOutput.stderr);
+  if (stderr && (isFailedRawOutput(rawOutput) || !stdout)) {
+    return terminalOutputPreviewFromText(stderr, "stderr");
+  }
+  if (stdout && stderr) {
+    return terminalOutputPreviewFromText(`${stdout}\n${stderr}`, "mixed");
+  }
+  if (stdout) {
+    return terminalOutputPreviewFromText(stdout, "stdout");
+  }
+  return undefined;
+}
+
+function commandOutputPreviewKey(
+  threadId: ThreadId,
+  turnId: TurnId | undefined,
+  itemId: string,
+): string {
+  return `${threadId}:${turnId ?? ""}:${itemId}`;
+}
+
+function normalizedToolLifecycleData(
+  event: ProviderRuntimeEvent,
+  itemType: ToolLifecycleItemType,
+  outputPreview: TerminalOutputPreview | undefined,
+): unknown {
+  const data = asRecord(
+    "payload" in event && "data" in event.payload ? event.payload.data : undefined,
+  );
+  if (!data && !outputPreview && !event.itemId) {
+    return "payload" in event && "data" in event.payload ? event.payload.data : undefined;
+  }
+  const nextData: Record<string, unknown> = data ? sanitizeToolLifecycleData(data, itemType) : {};
+  if (
+    event.itemId &&
+    event.type !== "content.delta" &&
+    "itemType" in event.payload &&
+    (event.payload.itemType === "command_execution" ||
+      event.payload.itemType === "collab_agent_tool_call") &&
+    typeof nextData.toolCallId !== "string"
+  ) {
+    nextData.toolCallId = event.itemId;
+  }
+  if (outputPreview) {
+    nextData.outputPreview = outputPreview;
+  }
+  return nextData;
+}
+
+function sanitizeToolLifecycleData(
+  data: Record<string, unknown>,
+  itemType: ToolLifecycleItemType,
+): Record<string, unknown> {
+  const nextData = { ...data };
+  if (itemType === "command_execution") {
+    delete nextData.rawOutput;
+  }
+  if (itemType === "collab_agent_tool_call") {
+    Object.assign(nextData, extractCollabAgentLifecycleData(data));
+  }
+  return nextData;
+}
+
+function extractCollabAgentLifecycleData(data: Record<string, unknown>): Record<string, unknown> {
+  const item = asRecord(data.item) ?? data;
+  const result: Record<string, unknown> = {};
+  const tool = asTrimmedString(item.tool);
+  const senderThreadId = asTrimmedString(item.senderThreadId);
+  const receiverThreadIds = Array.isArray(item.receiverThreadIds)
+    ? item.receiverThreadIds.filter((value): value is string => typeof value === "string")
+    : undefined;
+  const status = asTrimmedString(item.status);
+  const model = asTrimmedString(item.model);
+  const reasoningEffort = asTrimmedString(item.reasoningEffort);
+  const prompt = asTrimmedString(item.prompt);
+  const agentsStates = asRecord(item.agentsStates);
+
+  if (tool) result.collabTool = tool;
+  if (senderThreadId) result.senderThreadId = senderThreadId;
+  if (receiverThreadIds && receiverThreadIds.length > 0)
+    result.receiverThreadIds = receiverThreadIds;
+  if (agentsStates) result.agentsStates = agentsStates;
+  if (status) result.status = status;
+  if (model) result.model = model;
+  if (reasoningEffort) result.reasoningEffort = reasoningEffort;
+  if (prompt) result.promptPreview = truncateDetail(prompt, 240);
+
+  for (const receiverThreadId of receiverThreadIds ?? []) {
+    const state = asRecord(agentsStates?.[receiverThreadId]);
+    const nickname = asTrimmedString(state?.agent_nickname ?? state?.agentNickname);
+    const role = asTrimmedString(state?.agent_role ?? state?.agentRole);
+    if (nickname && typeof result.agentNickname !== "string") result.agentNickname = nickname;
+    if (role && typeof result.agentRole !== "string") result.agentRole = role;
+  }
+
+  return result;
 }
 
 function normalizeProposedPlanMarkdown(planMarkdown: string | undefined): string | undefined {
@@ -451,6 +722,11 @@ function runtimeEventToActivities(
       if (!isToolLifecycleItemType(event.payload.itemType)) {
         return [];
       }
+      const outputPreview =
+        event.payload.itemType === "command_execution"
+          ? terminalOutputPreviewFromRawOutput(event.payload.data)
+          : undefined;
+      const data = normalizedToolLifecycleData(event, event.payload.itemType, outputPreview);
       return [
         {
           id: event.eventId,
@@ -462,7 +738,7 @@ function runtimeEventToActivities(
             itemType: event.payload.itemType,
             ...(event.payload.status ? { status: event.payload.status } : {}),
             ...(event.payload.detail ? { detail: truncateDetail(event.payload.detail) } : {}),
-            ...(event.payload.data !== undefined ? { data: event.payload.data } : {}),
+            ...(data !== undefined ? { data } : {}),
           },
           turnId: toTurnId(event.turnId) ?? null,
           ...maybeSequence,
@@ -474,6 +750,11 @@ function runtimeEventToActivities(
       if (!isToolLifecycleItemType(event.payload.itemType)) {
         return [];
       }
+      const outputPreview =
+        event.payload.itemType === "command_execution"
+          ? terminalOutputPreviewFromRawOutput(event.payload.data)
+          : undefined;
+      const data = normalizedToolLifecycleData(event, event.payload.itemType, outputPreview);
       return [
         {
           id: event.eventId,
@@ -484,7 +765,7 @@ function runtimeEventToActivities(
           payload: {
             itemType: event.payload.itemType,
             ...(event.payload.detail ? { detail: truncateDetail(event.payload.detail) } : {}),
-            ...(event.payload.data !== undefined ? { data: event.payload.data } : {}),
+            ...(data !== undefined ? { data } : {}),
           },
           turnId: toTurnId(event.turnId) ?? null,
           ...maybeSequence,
@@ -496,6 +777,7 @@ function runtimeEventToActivities(
       if (!isToolLifecycleItemType(event.payload.itemType)) {
         return [];
       }
+      const data = normalizedToolLifecycleData(event, event.payload.itemType, undefined);
       return [
         {
           id: event.eventId,
@@ -506,6 +788,7 @@ function runtimeEventToActivities(
           payload: {
             itemType: event.payload.itemType,
             ...(event.payload.detail ? { detail: truncateDetail(event.payload.detail) } : {}),
+            ...(data !== undefined ? { data } : {}),
           },
           turnId: toTurnId(event.turnId) ?? null,
           ...maybeSequence,
@@ -520,8 +803,125 @@ function runtimeEventToActivities(
   return [];
 }
 
+function providerThreadIdFromRuntimeEvent(event: ProviderRuntimeEvent): string | undefined {
+  const fromRefs = event.providerRefs?.providerThreadId;
+  if (fromRefs) {
+    return fromRefs;
+  }
+  const data = asRecord(
+    "payload" in event && "data" in event.payload ? event.payload.data : undefined,
+  );
+  return asTrimmedString(data?.threadId) ?? undefined;
+}
+
+type ProviderThreadScope = "parent" | "knownChild" | "unknownChild" | "unscoped";
+
+function providerThreadScopeFromRuntimeEvent(
+  event: ProviderRuntimeEvent,
+  input: {
+    readonly parentProviderThreadId?: string | undefined;
+    readonly childProviderThreadIds: ReadonlySet<string>;
+  },
+): ProviderThreadScope {
+  const providerThreadId = providerThreadIdFromRuntimeEvent(event);
+  if (!providerThreadId) {
+    return "unscoped";
+  }
+  if (providerThreadId === input.parentProviderThreadId) {
+    return "parent";
+  }
+  if (input.childProviderThreadIds.has(providerThreadId)) {
+    return "knownChild";
+  }
+  return "unknownChild";
+}
+
+function runtimeEventToSubagentTranscriptActivity(
+  event: ProviderRuntimeEvent,
+  input: {
+    readonly parentProviderThreadId?: string | undefined;
+    readonly childProviderThreadIds: ReadonlySet<string>;
+  },
+): OrchestrationThreadActivity | null {
+  if (
+    event.type !== "item.started" &&
+    event.type !== "item.updated" &&
+    event.type !== "item.completed"
+  ) {
+    return null;
+  }
+  if (event.payload.itemType === "collab_agent_tool_call") {
+    return null;
+  }
+
+  const providerThreadId = providerThreadIdFromRuntimeEvent(event);
+  if (!providerThreadId || providerThreadScopeFromRuntimeEvent(event, input) !== "knownChild") {
+    return null;
+  }
+
+  const data = asRecord("data" in event.payload ? event.payload.data : undefined);
+  const rawItem = asRecord(data?.item);
+  const rawText = asTrimmedString(rawItem?.text ?? event.payload.detail);
+  const phase = asTrimmedString(rawItem?.phase);
+  const providerTurnId = event.providerRefs?.providerTurnId ?? asTrimmedString(data?.turnId);
+  const status =
+    "status" in event.payload && typeof event.payload.status === "string"
+      ? event.payload.status
+      : event.type === "item.completed"
+        ? "completed"
+        : event.type === "item.started"
+          ? "inProgress"
+          : undefined;
+
+  return {
+    id: EventId.make(`${event.eventId}:subagent-transcript`),
+    createdAt: event.createdAt,
+    tone: event.payload.itemType === "command_execution" ? "tool" : "info",
+    kind: `subagent.${event.type}`,
+    summary: event.payload.title ?? "Subagent activity",
+    payload: {
+      providerThreadId,
+      itemType: event.payload.itemType,
+      ...(event.itemId ? { itemId: event.itemId } : {}),
+      ...(providerTurnId ? { providerTurnId } : {}),
+      ...(status ? { status } : {}),
+      ...(rawText ? { text: rawText } : {}),
+      ...(phase ? { phase } : {}),
+      ...(event.payload.detail ? { detail: truncateDetail(event.payload.detail, 1_000) } : {}),
+      ...(data ? { data } : {}),
+    },
+    turnId: toTurnId(event.turnId) ?? null,
+    ...(() => {
+      const eventWithSequence = event as ProviderRuntimeEvent & { sessionSequence?: number };
+      return eventWithSequence.sessionSequence !== undefined
+        ? { sequence: eventWithSequence.sessionSequence }
+        : {};
+    })(),
+  };
+}
+
+function collabReceiverThreadIdsFromRuntimeEvent(event: ProviderRuntimeEvent): string[] {
+  if (
+    event.type !== "item.started" &&
+    event.type !== "item.updated" &&
+    event.type !== "item.completed"
+  ) {
+    return [];
+  }
+  if (event.payload.itemType !== "collab_agent_tool_call") {
+    return [];
+  }
+  const data = normalizedToolLifecycleData(event, "collab_agent_tool_call", undefined);
+  const normalized = asRecord(data);
+  const receiverThreadIds = normalized?.receiverThreadIds;
+  return Array.isArray(receiverThreadIds)
+    ? receiverThreadIds.filter((value): value is string => typeof value === "string")
+    : [];
+}
+
 const make = Effect.gen(function* () {
   const orchestrationEngine = yield* OrchestrationEngineService;
+  const commandReceiptRepository = yield* OrchestrationCommandReceiptRepository;
   const providerService = yield* ProviderService;
   const projectionTurnRepository = yield* ProjectionTurnRepository;
   const serverSettingsService = yield* ServerSettingsService;
@@ -552,6 +952,10 @@ const make = Effect.gen(function* () {
     timeToLive: BUFFERED_PROPOSED_PLAN_BY_ID_TTL,
     lookup: () => Effect.succeed({ text: "", createdAt: "" }),
   });
+
+  const commandOutputPreviewByItemKey = new Map<string, TerminalOutputPreviewBuffer>();
+  const parentProviderThreadIdByThreadId = new Map<string, string>();
+  const childProviderThreadIdsByThreadId = new Map<string, Set<string>>();
 
   const isGitRepoForThread = Effect.fn("isGitRepoForThread")(function* (threadId: ThreadId) {
     const readModel = yield* orchestrationEngine.getReadModel();
@@ -745,6 +1149,46 @@ const make = Effect.gen(function* () {
 
   const clearBufferedProposedPlan = (planId: string) =>
     Cache.invalidate(bufferedProposedPlanById, planId);
+
+  const appendCommandOutputPreview = (input: {
+    threadId: ThreadId;
+    turnId?: TurnId;
+    itemId: string;
+    delta: string;
+  }) =>
+    Effect.sync(() => {
+      const key = commandOutputPreviewKey(input.threadId, input.turnId, input.itemId);
+      const next = appendTerminalOutputPreviewDelta(
+        commandOutputPreviewByItemKey.get(key),
+        input.delta,
+      );
+      commandOutputPreviewByItemKey.set(key, next);
+      return terminalOutputPreviewFromBuffer(next);
+    });
+
+  const getCommandOutputPreview = (input: {
+    threadId: ThreadId;
+    turnId?: TurnId;
+    itemId: string;
+  }) =>
+    Effect.sync(() =>
+      terminalOutputPreviewFromBuffer(
+        commandOutputPreviewByItemKey.get(
+          commandOutputPreviewKey(input.threadId, input.turnId, input.itemId),
+        ),
+      ),
+    );
+
+  const clearCommandOutputPreview = (input: {
+    threadId: ThreadId;
+    turnId?: TurnId;
+    itemId: string;
+  }) =>
+    Effect.sync(() => {
+      commandOutputPreviewByItemKey.delete(
+        commandOutputPreviewKey(input.threadId, input.turnId, input.itemId),
+      );
+    });
 
   const clearAssistantMessageState = (messageId: MessageId) =>
     clearBufferedAssistantText(messageId);
@@ -978,6 +1422,7 @@ const make = Effect.gen(function* () {
     Effect.gen(function* () {
       const prefix = `${threadId}:`;
       const proposedPlanPrefix = `plan:${threadId}:`;
+      const commandOutputPreviewPrefix = `${threadId}:`;
       const turnKeys = Array.from(yield* Cache.keys(turnMessageIdsByTurnKey));
       const assistantSegmentKeys = Array.from(yield* Cache.keys(assistantSegmentStateByTurnKey));
       const proposedPlanKeys = Array.from(yield* Cache.keys(bufferedProposedPlanById));
@@ -1016,6 +1461,11 @@ const make = Effect.gen(function* () {
             : Effect.void,
         { concurrency: 1 },
       ).pipe(Effect.asVoid);
+      for (const key of commandOutputPreviewByItemKey.keys()) {
+        if (key.startsWith(commandOutputPreviewPrefix)) {
+          commandOutputPreviewByItemKey.delete(key);
+        }
+      }
     });
 
   const getSourceProposedPlanReferenceForPendingTurnStart = Effect.fn(
@@ -1050,17 +1500,40 @@ const make = Effect.gen(function* () {
 
   const getSourceProposedPlanReferenceForAcceptedTurnStart = Effect.fn(
     "getSourceProposedPlanReferenceForAcceptedTurnStart",
-  )(function* (threadId: ThreadId, eventTurnId: TurnId | undefined) {
+  )(function* (
+    thread: OrchestrationReadModel["threads"][number],
+    eventTurnId: TurnId | undefined,
+    allowRecoveryFallback: boolean,
+  ) {
     if (eventTurnId === undefined) {
       return null;
     }
 
-    const expectedTurnId = yield* getExpectedProviderTurnIdForThread(threadId);
-    if (!sameId(expectedTurnId, eventTurnId)) {
+    const expectedTurnId = yield* getExpectedProviderTurnIdForThread(thread.id);
+    if (expectedTurnId !== undefined && !sameId(expectedTurnId, eventTurnId)) {
       return null;
     }
 
-    return yield* getSourceProposedPlanReferenceForPendingTurnStart(threadId);
+    if (expectedTurnId === undefined && !allowRecoveryFallback) {
+      return null;
+    }
+
+    const pendingSourcePlan = yield* getSourceProposedPlanReferenceForPendingTurnStart(thread.id);
+    if (pendingSourcePlan === null) {
+      return null;
+    }
+
+    if (expectedTurnId === undefined) {
+      const readModel = yield* orchestrationEngine.getReadModel();
+      const sourceThread = readModel.threads.find(
+        (entry) => entry.id === pendingSourcePlan.sourceThreadId,
+      );
+      if (!sourceThread || sourceThread.projectId !== thread.projectId) {
+        return null;
+      }
+    }
+
+    return pendingSourcePlan;
   });
 
   const markSourceProposedPlanImplemented = Effect.fn("markSourceProposedPlanImplemented")(
@@ -1080,7 +1553,7 @@ const make = Effect.gen(function* () {
       yield* orchestrationEngine.dispatch({
         type: "thread.proposed-plan.upsert",
         commandId: CommandId.make(
-          `provider:source-proposed-plan-implemented:${implementationThreadId}:${crypto.randomUUID()}`,
+          `provider:source-proposed-plan-implemented:${sourceThreadId}:${sourcePlanId}:${implementationThreadId}`,
         ),
         threadId: sourceThread.id,
         proposedPlan: {
@@ -1094,6 +1567,27 @@ const make = Effect.gen(function* () {
     },
   );
 
+  const hasProcessedProviderEvent = (event: ProviderRuntimeEvent) =>
+    commandReceiptRepository
+      .getByCommandId({
+        commandId: providerEventReceiptCommandId(event),
+      })
+      .pipe(Effect.map(Option.isSome));
+
+  const markProviderEventProcessed = (event: ProviderRuntimeEvent) =>
+    Effect.gen(function* () {
+      const readModel = yield* orchestrationEngine.getReadModel();
+      yield* commandReceiptRepository.upsert({
+        commandId: providerEventReceiptCommandId(event),
+        aggregateKind: "thread",
+        aggregateId: event.threadId,
+        acceptedAt: event.createdAt,
+        resultSequence: readModel.snapshotSequence,
+        status: "accepted",
+        error: null,
+      });
+    });
+
   const processRuntimeEvent = (event: ProviderRuntimeEvent) =>
     Effect.gen(function* () {
       const readModel = yield* orchestrationEngine.getReadModel();
@@ -1103,6 +1597,33 @@ const make = Effect.gen(function* () {
       const now = event.createdAt;
       const eventTurnId = toTurnId(event.turnId);
       const activeTurnId = thread.session?.activeTurnId ?? null;
+      if (event.type === "thread.started" && event.payload?.providerThreadId) {
+        parentProviderThreadIdByThreadId.set(thread.id, event.payload.providerThreadId);
+      }
+      const collabReceiverThreadIds = collabReceiverThreadIdsFromRuntimeEvent(event);
+      const childProviderThreadIds =
+        childProviderThreadIdsByThreadId.get(thread.id) ?? new Set<string>();
+      if (collabReceiverThreadIds.length > 0) {
+        for (const receiverThreadId of collabReceiverThreadIds) {
+          childProviderThreadIds.add(receiverThreadId);
+        }
+        childProviderThreadIdsByThreadId.set(thread.id, childProviderThreadIds);
+      }
+      const eventProviderThreadId = providerThreadIdFromRuntimeEvent(event);
+      const currentParentProviderThreadId = parentProviderThreadIdByThreadId.get(thread.id);
+      if (
+        currentParentProviderThreadId === undefined &&
+        eventProviderThreadId !== undefined &&
+        !childProviderThreadIds.has(eventProviderThreadId)
+      ) {
+        parentProviderThreadIdByThreadId.set(thread.id, eventProviderThreadId);
+      }
+      const providerThreadScope = providerThreadScopeFromRuntimeEvent(event, {
+        parentProviderThreadId: parentProviderThreadIdByThreadId.get(thread.id),
+        childProviderThreadIds,
+      });
+      const shouldProjectToParentThread =
+        providerThreadScope === "parent" || providerThreadScope === "unscoped";
 
       const conflictsWithActiveTurn =
         activeTurnId !== null && eventTurnId !== undefined && !sameId(activeTurnId, eventTurnId);
@@ -1119,8 +1640,14 @@ const make = Effect.gen(function* () {
           case "thread.started":
             return true;
           case "turn.started":
+            if (!shouldProjectToParentThread) {
+              return false;
+            }
             return !conflictsWithActiveTurn;
           case "turn.completed":
+            if (!shouldProjectToParentThread) {
+              return false;
+            }
             if (conflictsWithActiveTurn || missingTurnForActiveTurn) {
               return false;
             }
@@ -1136,16 +1663,21 @@ const make = Effect.gen(function* () {
       })();
       const acceptedTurnStartedSourcePlan =
         event.type === "turn.started" && shouldApplyThreadLifecycle
-          ? yield* getSourceProposedPlanReferenceForAcceptedTurnStart(thread.id, eventTurnId)
+          ? yield* getSourceProposedPlanReferenceForAcceptedTurnStart(
+              thread,
+              eventTurnId,
+              shouldProjectToParentThread && activeTurnId === null,
+            )
           : null;
 
       if (
-        event.type === "session.started" ||
-        event.type === "session.state.changed" ||
-        event.type === "session.exited" ||
-        event.type === "thread.started" ||
-        event.type === "turn.started" ||
-        event.type === "turn.completed"
+        shouldProjectToParentThread &&
+        (event.type === "session.started" ||
+          event.type === "session.state.changed" ||
+          event.type === "session.exited" ||
+          event.type === "thread.started" ||
+          event.type === "turn.started" ||
+          event.type === "turn.completed")
       ) {
         const nextActiveTurnId =
           event.type === "turn.started"
@@ -1228,10 +1760,14 @@ const make = Effect.gen(function* () {
         event.type === "content.delta" && event.payload.streamKind === "assistant_text"
           ? event.payload.delta
           : undefined;
+      const commandOutputDelta =
+        event.type === "content.delta" && event.payload.streamKind === "command_output"
+          ? event.payload.delta
+          : undefined;
       const proposedPlanDelta =
         event.type === "turn.proposed.delta" ? event.payload.delta : undefined;
 
-      if (assistantDelta && assistantDelta.length > 0) {
+      if (shouldProjectToParentThread && assistantDelta && assistantDelta.length > 0) {
         const turnId = toTurnId(event.turnId);
         const assistantMessageId = yield* getOrCreateAssistantMessageId({
           threadId: thread.id,
@@ -1272,11 +1808,34 @@ const make = Effect.gen(function* () {
         }
       }
 
+      if (
+        shouldProjectToParentThread &&
+        commandOutputDelta &&
+        commandOutputDelta.length > 0 &&
+        event.itemId
+      ) {
+        const turnId = toTurnId(event.turnId);
+        yield* appendCommandOutputPreview({
+          threadId: thread.id,
+          ...(turnId ? { turnId } : {}),
+          itemId: event.itemId,
+          delta: commandOutputDelta,
+        });
+        yield* publishCommandOutputDelta({
+          threadId: thread.id,
+          turnId: turnId ?? null,
+          toolCallId: ProviderItemId.make(event.itemId),
+          chunkId: event.eventId,
+          createdAt: event.createdAt,
+          delta: commandOutputDelta,
+        });
+      }
+
       const pauseForUserTurnId =
         event.type === "request.opened" || event.type === "user-input.requested"
           ? toTurnId(event.turnId)
           : undefined;
-      if (pauseForUserTurnId) {
+      if (shouldProjectToParentThread && pauseForUserTurnId) {
         const assistantDeliveryMode: AssistantDeliveryMode = yield* Effect.map(
           serverSettingsService.getSettings,
           (settings) => (settings.enableAssistantStreaming ? "streaming" : "buffered"),
@@ -1315,9 +1874,18 @@ const make = Effect.gen(function* () {
         });
       }
 
-      if (proposedPlanDelta && proposedPlanDelta.length > 0) {
+      if (shouldProjectToParentThread && proposedPlanDelta && proposedPlanDelta.length > 0) {
         const planId = proposedPlanIdFromEvent(event, thread.id);
         yield* appendBufferedProposedPlan(planId, proposedPlanDelta, now);
+        yield* orchestrationEngine.dispatch({
+          type: "thread.proposed-plan.delta.receive",
+          commandId: providerCommandId(event, "proposed-plan-delta"),
+          threadId: thread.id,
+          planId,
+          turnId: toTurnId(event.turnId) ?? null,
+          delta: proposedPlanDelta,
+          createdAt: now,
+        });
       }
 
       const assistantCompletion =
@@ -1338,7 +1906,7 @@ const make = Effect.gen(function* () {
             }
           : undefined;
 
-      if (assistantCompletion) {
+      if (shouldProjectToParentThread && assistantCompletion) {
         const turnId = toTurnId(event.turnId);
         const activeAssistantMessageId = turnId
           ? yield* getActiveAssistantMessageIdForTurn(thread.id, turnId)
@@ -1392,7 +1960,7 @@ const make = Effect.gen(function* () {
         }
       }
 
-      if (proposedPlanCompletion) {
+      if (shouldProjectToParentThread && proposedPlanCompletion) {
         yield* finalizeBufferedProposedPlan({
           event,
           threadId: thread.id,
@@ -1404,7 +1972,7 @@ const make = Effect.gen(function* () {
         });
       }
 
-      if (event.type === "turn.completed") {
+      if (shouldProjectToParentThread && event.type === "turn.completed") {
         const turnId = toTurnId(event.turnId);
         if (turnId) {
           const assistantMessageIds = yield* getAssistantMessageIdsForTurn(thread.id, turnId);
@@ -1439,11 +2007,11 @@ const make = Effect.gen(function* () {
         }
       }
 
-      if (event.type === "session.exited") {
+      if (shouldProjectToParentThread && event.type === "session.exited") {
         yield* clearTurnStateForSession(thread.id);
       }
 
-      if (event.type === "runtime.error") {
+      if (shouldProjectToParentThread && event.type === "runtime.error") {
         const runtimeErrorMessage = event.payload.message;
 
         const shouldApplyRuntimeError = !STRICT_PROVIDER_LIFECYCLE_GUARD
@@ -1472,7 +2040,11 @@ const make = Effect.gen(function* () {
         }
       }
 
-      if (event.type === "thread.metadata.updated" && event.payload.name) {
+      if (
+        shouldProjectToParentThread &&
+        event.type === "thread.metadata.updated" &&
+        event.payload.name
+      ) {
         yield* orchestrationEngine.dispatch({
           type: "thread.meta.update",
           commandId: providerCommandId(event, "thread-meta-update"),
@@ -1481,7 +2053,7 @@ const make = Effect.gen(function* () {
         });
       }
 
-      if (event.type === "turn.diff.updated") {
+      if (shouldProjectToParentThread && event.type === "turn.diff.updated") {
         const turnId = toTurnId(event.turnId);
         if (turnId && (yield* isGitRepoForThread(thread.id))) {
           // Skip if a checkpoint already exists for this turn. A real
@@ -1515,22 +2087,87 @@ const make = Effect.gen(function* () {
         }
       }
 
-      const activities = runtimeEventToActivities(event);
-      yield* Effect.forEach(activities, (activity) =>
-        orchestrationEngine.dispatch({
+      const eventForActivities =
+        shouldProjectToParentThread &&
+        event.type === "item.completed" &&
+        event.payload.itemType === "command_execution"
+          ? yield* Effect.gen(function* () {
+              if (!event.itemId) {
+                return event;
+              }
+              const turnId = toTurnId(event.turnId);
+              const outputPreview = yield* getCommandOutputPreview({
+                threadId: thread.id,
+                ...(turnId ? { turnId } : {}),
+                itemId: event.itemId,
+              });
+              yield* clearCommandOutputPreview({
+                threadId: thread.id,
+                ...(turnId ? { turnId } : {}),
+                itemId: event.itemId,
+              });
+              if (!outputPreview) {
+                return event;
+              }
+              return {
+                ...event,
+                payload: {
+                  ...event.payload,
+                  data: normalizedToolLifecycleData(event, "command_execution", outputPreview),
+                },
+              } satisfies ProviderRuntimeEvent;
+            })
+          : event;
+
+      if (shouldProjectToParentThread) {
+        const activities = runtimeEventToActivities(eventForActivities);
+        yield* Effect.forEach(activities, (activity) =>
+          orchestrationEngine.dispatch({
+            type: "thread.activity.append",
+            commandId: providerCommandId(event, "thread-activity-append"),
+            threadId: thread.id,
+            activity,
+            createdAt: activity.createdAt,
+          }),
+        ).pipe(Effect.asVoid);
+      }
+
+      const subagentTranscriptActivity = runtimeEventToSubagentTranscriptActivity(event, {
+        parentProviderThreadId: parentProviderThreadIdByThreadId.get(thread.id),
+        childProviderThreadIds,
+      });
+      if (subagentTranscriptActivity) {
+        yield* orchestrationEngine.dispatch({
           type: "thread.activity.append",
-          commandId: providerCommandId(event, "thread-activity-append"),
+          commandId: providerCommandId(event, "subagent-transcript-activity-append"),
           threadId: thread.id,
-          activity,
-          createdAt: activity.createdAt,
-        }),
-      ).pipe(Effect.asVoid);
+          activity: subagentTranscriptActivity,
+          createdAt: subagentTranscriptActivity.createdAt,
+        });
+      }
+    });
+
+  const processRuntimeEventOnce = (event: ProviderRuntimeEvent) =>
+    Effect.gen(function* () {
+      if (yield* hasProcessedProviderEvent(event)) {
+        yield* Effect.logDebug("provider runtime event already processed", {
+          eventId: event.eventId,
+          eventType: event.type,
+          threadId: event.threadId,
+        });
+        return;
+      }
+
+      yield* processRuntimeEvent(event);
+      yield* markProviderEventProcessed(event);
     });
 
   const processDomainEvent = (_event: TurnStartRequestedDomainEvent) => Effect.void;
 
   const processInput = (input: RuntimeIngestionInput) =>
-    input.source === "runtime" ? processRuntimeEvent(input.event) : processDomainEvent(input.event);
+    input.source === "runtime"
+      ? processRuntimeEventOnce(input.event)
+      : processDomainEvent(input.event);
 
   const processInputSafely = (input: RuntimeIngestionInput) =>
     processInput(input).pipe(
@@ -1547,7 +2184,9 @@ const make = Effect.gen(function* () {
       }),
     );
 
-  const worker = yield* makeDrainableWorker(processInputSafely);
+  const worker = yield* makeDrainableWorker(processInputSafely, {
+    capacity: PROVIDER_RUNTIME_INGESTION_QUEUE_CAPACITY,
+  });
 
   const start: ProviderRuntimeIngestionShape["start"] = () =>
     Effect.gen(function* () {
@@ -1575,4 +2214,7 @@ const make = Effect.gen(function* () {
 export const ProviderRuntimeIngestionLive = Layer.effect(
   ProviderRuntimeIngestionService,
   make,
-).pipe(Layer.provide(ProjectionTurnRepositoryLive));
+).pipe(
+  Layer.provide(ProjectionTurnRepositoryLive),
+  Layer.provide(OrchestrationCommandReceiptRepositoryLive),
+);

@@ -10,13 +10,13 @@ import {
   ChatAttachment,
   MessageId,
   OrchestrationMessageRole,
+  OrchestrationMessageSource,
   ThreadId,
   TurnId,
   IsoDateTime,
 } from "@t3tools/contracts";
-import { Schema, Context } from "effect";
+import { Schema, Context, Effect } from "effect";
 import type { Option } from "effect";
-import type { Effect } from "effect";
 
 import type { ProjectionRepositoryError } from "../Errors.ts";
 
@@ -25,6 +25,9 @@ export const ProjectionThreadMessage = Schema.Struct({
   threadId: ThreadId,
   turnId: Schema.NullOr(TurnId),
   role: OrchestrationMessageRole,
+  source: Schema.optionalKey(OrchestrationMessageSource).pipe(
+    Schema.withDecodingDefault(Effect.succeed("user")),
+  ),
   text: Schema.String,
   attachments: Schema.optional(Schema.Array(ChatAttachment)),
   isStreaming: Schema.Boolean,

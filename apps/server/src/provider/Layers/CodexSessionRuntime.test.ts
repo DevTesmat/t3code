@@ -75,6 +75,19 @@ describe("buildTurnStartParams", () => {
         },
       },
     });
+    assert.match(CODEX_PLAN_MODE_DEVELOPER_INSTRUCTIONS, /compact, legible/);
+    assert.match(
+      CODEX_PLAN_MODE_DEVELOPER_INSTRUCTIONS,
+      /single-level feature- or outcome-oriented bullets/,
+    );
+    assert.match(CODEX_PLAN_MODE_DEVELOPER_INSTRUCTIONS, /Avoid nested bullets by default/);
+    assert.match(CODEX_PLAN_MODE_DEVELOPER_INSTRUCTIONS, /Aim for under 40 lines/);
+    assert.match(
+      CODEX_PLAN_MODE_DEVELOPER_INSTRUCTIONS,
+      /repetitive "Risk" \/ "Plan" \/ "Verification" subsections/,
+    );
+    assert.match(CODEX_PLAN_MODE_DEVELOPER_INSTRUCTIONS, /After the batch is done/);
+    assert.match(CODEX_PLAN_MODE_DEVELOPER_INSTRUCTIONS, /receiver thread ID/);
   });
 
   it("includes default collaboration mode and image attachments", () => {
@@ -120,6 +133,8 @@ describe("buildTurnStartParams", () => {
         },
       },
     });
+    assert.match(CODEX_DEFAULT_MODE_DEVELOPER_INSTRUCTIONS, /After the batch is done/);
+    assert.match(CODEX_DEFAULT_MODE_DEVELOPER_INSTRUCTIONS, /receiver thread ID/);
   });
 
   it("omits collaboration mode when interaction mode is absent", () => {

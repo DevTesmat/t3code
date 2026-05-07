@@ -39,10 +39,12 @@ const makeProjectionThreadRepository = Effect.gen(function* () {
           latest_turn_id,
           created_at,
           updated_at,
+          pinned_at,
           archived_at,
           latest_user_message_at,
           pending_approval_count,
           pending_user_input_count,
+          latest_pending_user_input_at,
           has_actionable_proposed_plan,
           deleted_at
         )
@@ -58,10 +60,12 @@ const makeProjectionThreadRepository = Effect.gen(function* () {
           ${row.latestTurnId},
           ${row.createdAt},
           ${row.updatedAt},
+          ${row.pinnedAt},
           ${row.archivedAt},
           ${row.latestUserMessageAt},
           ${row.pendingApprovalCount},
           ${row.pendingUserInputCount},
+          ${row.latestPendingUserInputAt},
           ${row.hasActionableProposedPlan},
           ${row.deletedAt}
         )
@@ -77,10 +81,12 @@ const makeProjectionThreadRepository = Effect.gen(function* () {
           latest_turn_id = excluded.latest_turn_id,
           created_at = excluded.created_at,
           updated_at = excluded.updated_at,
+          pinned_at = excluded.pinned_at,
           archived_at = excluded.archived_at,
           latest_user_message_at = excluded.latest_user_message_at,
           pending_approval_count = excluded.pending_approval_count,
           pending_user_input_count = excluded.pending_user_input_count,
+          latest_pending_user_input_at = excluded.latest_pending_user_input_at,
           has_actionable_proposed_plan = excluded.has_actionable_proposed_plan,
           deleted_at = excluded.deleted_at
       `,
@@ -103,10 +109,12 @@ const makeProjectionThreadRepository = Effect.gen(function* () {
           latest_turn_id AS "latestTurnId",
           created_at AS "createdAt",
           updated_at AS "updatedAt",
+          pinned_at AS "pinnedAt",
           archived_at AS "archivedAt",
           latest_user_message_at AS "latestUserMessageAt",
           pending_approval_count AS "pendingApprovalCount",
           pending_user_input_count AS "pendingUserInputCount",
+          latest_pending_user_input_at AS "latestPendingUserInputAt",
           has_actionable_proposed_plan AS "hasActionableProposedPlan",
           deleted_at AS "deletedAt"
         FROM projection_threads
@@ -131,10 +139,12 @@ const makeProjectionThreadRepository = Effect.gen(function* () {
           latest_turn_id AS "latestTurnId",
           created_at AS "createdAt",
           updated_at AS "updatedAt",
+          pinned_at AS "pinnedAt",
           archived_at AS "archivedAt",
           latest_user_message_at AS "latestUserMessageAt",
           pending_approval_count AS "pendingApprovalCount",
           pending_user_input_count AS "pendingUserInputCount",
+          latest_pending_user_input_at AS "latestPendingUserInputAt",
           has_actionable_proposed_plan AS "hasActionableProposedPlan",
           deleted_at AS "deletedAt"
         FROM projection_threads

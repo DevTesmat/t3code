@@ -82,6 +82,7 @@ export default Effect.gen(function* () {
       requested_at TEXT NOT NULL,
       started_at TEXT,
       completed_at TEXT,
+      work_duration_ms INTEGER,
       checkpoint_turn_count INTEGER,
       checkpoint_ref TEXT,
       checkpoint_status TEXT,

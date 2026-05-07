@@ -9,7 +9,10 @@ import "./index.css";
 import { isElectron } from "./env";
 import { getRouter } from "./router";
 import { APP_DISPLAY_NAME } from "./branding";
-import { syncDocumentWindowControlsOverlayClass } from "./lib/windowControlsOverlay";
+import {
+  syncDocumentDesktopWindowStateClass,
+  syncDocumentWindowControlsOverlayClass,
+} from "./lib/windowControlsOverlay";
 
 // Electron loads the app from a file-backed shell, so hash history avoids path resolution issues.
 const history = isElectron ? createHashHistory() : createBrowserHistory();
@@ -18,6 +21,7 @@ const router = getRouter(history);
 
 if (isElectron) {
   syncDocumentWindowControlsOverlayClass();
+  syncDocumentDesktopWindowStateClass();
 }
 
 document.title = APP_DISPLAY_NAME;

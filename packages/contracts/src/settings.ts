@@ -28,11 +28,19 @@ export const SidebarProjectGroupingMode = Schema.Literals([
 export type SidebarProjectGroupingMode = typeof SidebarProjectGroupingMode.Type;
 export const DEFAULT_SIDEBAR_PROJECT_GROUPING_MODE: SidebarProjectGroupingMode = "repository";
 
+export const GitQuickActionPreference = Schema.Literals(["commit_push", "commit_push_pr"]);
+export type GitQuickActionPreference = typeof GitQuickActionPreference.Type;
+export const DEFAULT_GIT_QUICK_ACTION_PREFERENCE: GitQuickActionPreference = "commit_push_pr";
+
 export const ClientSettingsSchema = Schema.Struct({
   autoOpenPlanSidebar: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(true))),
   confirmThreadArchive: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
   confirmThreadDelete: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(true))),
   diffWordWrap: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
+  notificationSoundsEnabled: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(true))),
+  gitQuickActionPreference: GitQuickActionPreference.pipe(
+    Schema.withDecodingDefault(Effect.succeed(DEFAULT_GIT_QUICK_ACTION_PREFERENCE)),
+  ),
   // Model favorites. Historically keyed by provider kind, now
   // widened to `ProviderInstanceId` so users can favorite a specific model
   // on a custom provider instance (e.g. "Codex Personal · gpt-5") without
@@ -136,8 +144,27 @@ export const ObservabilitySettings = Schema.Struct({
 });
 export type ObservabilitySettings = typeof ObservabilitySettings.Type;
 
+export const HistorySyncSettings = Schema.Struct({
+  enabled: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
+  intervalMs: Schema.Number.pipe(Schema.withDecodingDefault(Effect.succeed(120_000))),
+  shutdownFlushTimeoutMs: Schema.Number.pipe(Schema.withDecodingDefault(Effect.succeed(5_000))),
+  statusIndicatorEnabled: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(true))),
+  connectionSummary: Schema.optionalKey(
+    Schema.NullOr(
+      Schema.Struct({
+        host: TrimmedNonEmptyString,
+        port: Schema.Number,
+        database: TrimmedNonEmptyString,
+        username: TrimmedNonEmptyString,
+        tlsEnabled: Schema.Boolean,
+      }),
+    ),
+  ),
+});
+export type HistorySyncSettings = typeof HistorySyncSettings.Type;
+
 export const ServerSettings = Schema.Struct({
-  enableAssistantStreaming: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
+  enableAssistantStreaming: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(true))),
   defaultThreadEnvMode: ThreadEnvMode.pipe(
     Schema.withDecodingDefault(Effect.succeed("local" as const satisfies ThreadEnvMode)),
   ),
@@ -172,6 +199,7 @@ export const ServerSettings = Schema.Struct({
     Schema.withDecodingDefault(Effect.succeed({})),
   ),
   observability: ObservabilitySettings.pipe(Schema.withDecodingDefault(Effect.succeed({}))),
+  historySync: HistorySyncSettings.pipe(Schema.withDecodingDefault(Effect.succeed({}))),
 });
 export type ServerSettings = typeof ServerSettings.Type;
 
@@ -249,6 +277,25 @@ export const ServerSettingsPatch = Schema.Struct({
       otlpMetricsUrl: Schema.optionalKey(Schema.String),
     }),
   ),
+  historySync: Schema.optionalKey(
+    Schema.Struct({
+      enabled: Schema.optionalKey(Schema.Boolean),
+      intervalMs: Schema.optionalKey(Schema.Number),
+      shutdownFlushTimeoutMs: Schema.optionalKey(Schema.Number),
+      statusIndicatorEnabled: Schema.optionalKey(Schema.Boolean),
+      connectionSummary: Schema.optionalKey(
+        Schema.NullOr(
+          Schema.Struct({
+            host: TrimmedNonEmptyString,
+            port: Schema.Number,
+            database: TrimmedNonEmptyString,
+            username: TrimmedNonEmptyString,
+            tlsEnabled: Schema.Boolean,
+          }),
+        ),
+      ),
+    }),
+  ),
   providers: Schema.optionalKey(
     Schema.Struct({
       codex: Schema.optionalKey(CodexSettingsPatch),
@@ -270,6 +317,8 @@ export const ClientSettingsPatch = Schema.Struct({
   confirmThreadArchive: Schema.optionalKey(Schema.Boolean),
   confirmThreadDelete: Schema.optionalKey(Schema.Boolean),
   diffWordWrap: Schema.optionalKey(Schema.Boolean),
+  notificationSoundsEnabled: Schema.optionalKey(Schema.Boolean),
+  gitQuickActionPreference: Schema.optionalKey(GitQuickActionPreference),
   favorites: Schema.optionalKey(
     Schema.Array(
       Schema.Struct({

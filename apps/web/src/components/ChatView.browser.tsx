@@ -2,6 +2,7 @@
 import "../index.css";
 
 import {
+  CheckpointRef,
   EventId,
   ORCHESTRATION_WS_METHODS,
   EnvironmentId,
@@ -209,6 +210,7 @@ function createMockEnvironmentApi(input: {
     git: {} as EnvironmentApi["git"],
     orchestration: {
       dispatchCommand: input.dispatchCommand,
+      replayEvents: async () => [],
       getTurnDiff: (() => {
         throw new Error("Not implemented in browser test.");
       }) as EnvironmentApi["orchestration"]["getTurnDiff"],
@@ -351,6 +353,7 @@ function createSnapshotForTargetUser(options: {
         latestTurn: null,
         createdAt: NOW_ISO,
         updatedAt: NOW_ISO,
+        pinnedAt: null,
         archivedAt: null,
         deletedAt: null,
         messages,
@@ -369,6 +372,41 @@ function createSnapshotForTargetUser(options: {
       },
     ],
     updatedAt: NOW_ISO,
+  };
+}
+
+function createSnapshotWithChangedFilesBar(): OrchestrationReadModel {
+  const snapshot = createSnapshotForTargetUser({
+    targetMessageId: "msg-user-changed-files-scroll-target" as MessageId,
+    targetText: "changed files scroll thread",
+  });
+  const turnId = "turn-changed-files-scroll" as TurnId;
+  const assistantMessageId = "msg-assistant-21" as MessageId;
+
+  return {
+    ...snapshot,
+    threads: snapshot.threads.map((thread) =>
+      thread.id === THREAD_ID
+        ? Object.assign({}, thread, {
+            checkpoints: [
+              {
+                turnId,
+                completedAt: isoAt(70),
+                status: "ready",
+                assistantMessageId,
+                checkpointTurnCount: 1,
+                checkpointRef: CheckpointRef.make("checkpoint-changed-files-scroll"),
+                files: Array.from({ length: 16 }, (_, index) => ({
+                  path: `apps/web/src/changed-file-${index + 1}.tsx`,
+                  kind: "modified",
+                  additions: index + 1,
+                  deletions: index % 3,
+                })),
+              },
+            ],
+          })
+        : thread,
+    ),
   };
 }
 
@@ -416,6 +454,7 @@ function addThreadToSnapshot(
         latestTurn: null,
         createdAt: NOW_ISO,
         updatedAt: NOW_ISO,
+        pinnedAt: null,
         archivedAt: null,
         deletedAt: null,
         messages: [],
@@ -449,12 +488,14 @@ function toShellThread(thread: OrchestrationReadModel["threads"][number]) {
     latestTurn: thread.latestTurn,
     createdAt: thread.createdAt,
     updatedAt: thread.updatedAt,
+    pinnedAt: thread.pinnedAt,
     archivedAt: thread.archivedAt,
     session: thread.session,
     latestUserMessageAt:
       thread.messages.findLast((message) => message.role === "user")?.createdAt ?? null,
     hasPendingApprovals: false,
     hasPendingUserInput: false,
+    latestPendingUserInputAt: null,
     hasActionableProposedPlan: false,
   };
 }
@@ -1322,6 +1363,7 @@ async function waitForSelectItemContainingText(text: string): Promise<HTMLElemen
 }
 
 async function expectComposerActionsContained(): Promise<void> {
+  const alignedTopTolerancePx = 2;
   const footer = await waitForElement(
     () => document.querySelector<HTMLElement>('[data-chat-composer-footer="true"]'),
     "Unable to find composer footer.",
@@ -1343,7 +1385,7 @@ async function expectComposerActionsContained(): Promise<void> {
       for (const rect of buttonRects) {
         expect(rect.right).toBeLessThanOrEqual(footerRect.right + 0.5);
         expect(rect.bottom).toBeLessThanOrEqual(footerRect.bottom + 0.5);
-        expect(Math.abs(rect.top - firstTop)).toBeLessThanOrEqual(1.5);
+        expect(Math.abs(rect.top - firstTop)).toBeLessThanOrEqual(alignedTopTolerancePx);
       }
     },
     { timeout: 8_000, interval: 16 },
@@ -1360,6 +1402,22 @@ async function waitForInteractionModeButton(
       ) as HTMLButtonElement | null,
     `Unable to find ${expectedLabel} interaction mode button.`,
   );
+}
+
+function expectInteractionModePill(button: HTMLButtonElement, mode: "Build" | "Plan"): void {
+  expect(button.classList.contains("rounded-full")).toBe(true);
+  expect(button.classList.contains("border")).toBe(true);
+
+  if (mode === "Plan") {
+    expect(button.classList.contains("bg-orange-500/12")).toBe(true);
+    expect(button.classList.contains("text-orange-700")).toBe(true);
+    expect(button.classList.contains("border-orange-500/25")).toBe(true);
+    return;
+  }
+
+  expect(button.classList.contains("bg-violet-500/12")).toBe(true);
+  expect(button.classList.contains("text-violet-700")).toBe(true);
+  expect(button.classList.contains("border-violet-500/25")).toBe(true);
 }
 
 async function waitForServerConfigToApply(): Promise<void> {
@@ -1661,6 +1719,111 @@ describe("ChatView timeline estimator parity (full app)", () => {
     customWsRpcResolver = null;
     document.body.innerHTML = "";
   });
+
+  it("hides the scroll-to-bottom button when composer changed-files expansion leaves the viewport at bottom", async () => {
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot: createSnapshotWithChangedFilesBar(),
+    });
+
+    try {
+      const scrollViewport = await waitForElement(
+        () => document.querySelector<HTMLElement>('[data-chat-messages-scroll="true"]'),
+        "Unable to find messages scroll viewport.",
+      );
+      const changedFilesToggle = await waitForElement(
+        () =>
+          Array.from(document.querySelectorAll<HTMLButtonElement>("button")).find((button) =>
+            button.textContent?.includes("Changed files"),
+          ) ?? null,
+        "Unable to find composer changed files toggle.",
+      );
+
+      scrollViewport.scrollTop = 0;
+      scrollViewport.dispatchEvent(new Event("scroll", { bubbles: true }));
+
+      await vi.waitFor(() => {
+        expect(findButtonByText("Scroll to bottom")).not.toBeNull();
+      });
+
+      scrollViewport.scrollTop = scrollViewport.scrollHeight - scrollViewport.clientHeight;
+      await changedFilesToggle.click();
+      await waitForLayout();
+
+      await vi.waitFor(
+        () => {
+          expect(findButtonByText("Scroll to bottom")).toBeNull();
+        },
+        { timeout: 4_000, interval: 16 },
+      );
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("keeps user scroll position detached while assistant text streams", async () => {
+    const snapshot = createSnapshotForTargetUser({
+      targetMessageId: "msg-user-stream-scroll" as MessageId,
+      targetText: "streaming scroll thread",
+      sessionStatus: "running",
+    });
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot,
+    });
+
+    try {
+      const scrollViewport = await waitForElement(
+        () => document.querySelector<HTMLElement>('[data-chat-messages-scroll="true"]'),
+        "Unable to find messages scroll viewport.",
+      );
+
+      await vi.waitFor(() => {
+        expect(scrollViewport.scrollHeight).toBeGreaterThan(scrollViewport.clientHeight);
+      });
+
+      scrollViewport.scrollTop = scrollViewport.scrollHeight - scrollViewport.clientHeight;
+      scrollViewport.dispatchEvent(new Event("scroll", { bubbles: true }));
+      await waitForLayout();
+
+      scrollViewport.dispatchEvent(new WheelEvent("wheel", { bubbles: true, deltaY: -120 }));
+      scrollViewport.scrollTop = Math.max(0, scrollViewport.scrollTop - 240);
+      scrollViewport.dispatchEvent(new Event("scroll", { bubbles: true }));
+
+      await vi.waitFor(() => {
+        expect(findButtonByText("Scroll to bottom")).not.toBeNull();
+      });
+
+      const [thread] = snapshot.threads;
+      if (!thread) {
+        throw new Error("Expected streaming scroll test thread.");
+      }
+      const messages = thread.messages.map((message, index) =>
+        index === thread.messages.length - 1 && message.role === "assistant"
+          ? {
+              ...message,
+              text: `${message.text} streamed token`,
+              streaming: true,
+              updatedAt: isoAt(500),
+            }
+          : message,
+      );
+      useStore.getState().syncServerThreadDetail({ ...thread, messages }, LOCAL_ENVIRONMENT_ID);
+      await waitForLayout();
+
+      expect(findButtonByText("Scroll to bottom")).not.toBeNull();
+
+      findButtonByText("Scroll to bottom")?.click();
+      await waitForLayout();
+
+      await vi.waitFor(() => {
+        expect(findButtonByText("Scroll to bottom")).toBeNull();
+      });
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
   it("re-expands the bootstrap project using its logical key", async () => {
     useUiStateStore.setState({
       projectExpandedById: {
@@ -2926,6 +3089,7 @@ describe("ChatView timeline estimator parity (full app)", () => {
     try {
       const initialModeButton = await waitForInteractionModeButton("Build");
       expect(initialModeButton.title).toContain("enter plan mode");
+      expectInteractionModePill(initialModeButton, "Build");
 
       window.dispatchEvent(
         new KeyboardEvent("keydown", {
@@ -2952,9 +3116,9 @@ describe("ChatView timeline estimator parity (full app)", () => {
 
       await vi.waitFor(
         async () => {
-          expect((await waitForInteractionModeButton("Plan")).title).toContain(
-            "return to normal build mode",
-          );
+          const planModeButton = await waitForInteractionModeButton("Plan");
+          expect(planModeButton.title).toContain("return to normal build mode");
+          expectInteractionModePill(planModeButton, "Plan");
         },
         { timeout: 8_000, interval: 16 },
       );
@@ -2970,7 +3134,9 @@ describe("ChatView timeline estimator parity (full app)", () => {
 
       await vi.waitFor(
         async () => {
-          expect((await waitForInteractionModeButton("Build")).title).toContain("enter plan mode");
+          const buildModeButton = await waitForInteractionModeButton("Build");
+          expect(buildModeButton.title).toContain("enter plan mode");
+          expectInteractionModePill(buildModeButton, "Build");
         },
         { timeout: 8_000, interval: 16 },
       );

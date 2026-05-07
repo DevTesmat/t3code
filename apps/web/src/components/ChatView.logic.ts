@@ -3,6 +3,7 @@ import {
   isProviderDriverKind,
   ProjectId,
   type ModelSelection,
+  PROVIDER_SEND_TURN_MAX_ATTACHMENTS,
   type ProviderDriverKind,
   type ScopedThreadRef,
   type ThreadId,
@@ -13,6 +14,7 @@ import { type ComposerImageAttachment, type DraftThreadState } from "../composer
 import { Schema } from "effect";
 import { selectThreadByRef, useStore } from "../store";
 import {
+  appendTerminalContextsToPrompt,
   filterTerminalContextsWithText,
   stripInlineTerminalContextPlaceholders,
   type TerminalContextDraft,
@@ -45,6 +47,7 @@ export function buildLocalDraftThread(
     createdAt: draftThread.createdAt,
     archivedAt: null,
     latestTurn: null,
+    totalWorkDurationMs: 0,
     branch: draftThread.branch,
     worktreePath: draftThread.worktreePath,
     turnDiffSummaries: [],
@@ -218,6 +221,79 @@ export function buildExpiredTerminalContextToastCopy(
   return {
     title: `${noun} omitted from message`,
     description: "Re-add it if you want that terminal output included.",
+  };
+}
+
+export interface QueuedComposerMessageLike<TAttachment = unknown> {
+  readonly text: string;
+  readonly attachments: ReadonlyArray<TAttachment>;
+  readonly terminalContexts: ReadonlyArray<TerminalContextDraft>;
+}
+
+export interface DeletableQueuedComposerMessageLike {
+  readonly id: string;
+  readonly attachments: ReadonlyArray<{ readonly previewUrl?: string }>;
+}
+
+export function deleteQueuedComposerMessage<TMessage extends DeletableQueuedComposerMessageLike>(
+  messages: ReadonlyArray<TMessage>,
+  messageId: string,
+  revokePreviewUrl: (previewUrl: string | undefined) => void = revokeBlobPreviewUrl,
+): TMessage[] {
+  const next: TMessage[] = [];
+
+  for (const message of messages) {
+    if (message.id !== messageId) {
+      next.push(message);
+      continue;
+    }
+
+    for (const attachment of message.attachments) {
+      revokePreviewUrl(attachment.previewUrl);
+    }
+  }
+
+  return next;
+}
+
+export type BuildQueuedComposerFlushResult<TAttachment = unknown> =
+  | {
+      readonly ok: true;
+      readonly text: string;
+      readonly attachments: TAttachment[];
+    }
+  | {
+      readonly ok: false;
+      readonly reason: "too-many-attachments";
+      readonly attachmentCount: number;
+      readonly maxAttachmentCount: number;
+    };
+
+export function buildQueuedComposerFlush<TAttachment>(
+  messages: ReadonlyArray<QueuedComposerMessageLike<TAttachment>>,
+): BuildQueuedComposerFlushResult<TAttachment> {
+  const attachmentCount = messages.reduce(
+    (count, message) => count + message.attachments.length,
+    0,
+  );
+  if (attachmentCount > PROVIDER_SEND_TURN_MAX_ATTACHMENTS) {
+    return {
+      ok: false,
+      reason: "too-many-attachments",
+      attachmentCount,
+      maxAttachmentCount: PROVIDER_SEND_TURN_MAX_ATTACHMENTS,
+    };
+  }
+
+  return {
+    ok: true,
+    text: messages
+      .map((message, index) => {
+        const text = appendTerminalContextsToPrompt(message.text, message.terminalContexts).trim();
+        return `Queued message ${index + 1}:\n${text}`;
+      })
+      .join("\n\n"),
+    attachments: messages.flatMap((message) => [...message.attachments]),
   };
 }
 

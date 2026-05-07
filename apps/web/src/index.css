@@ -3,6 +3,7 @@
 @custom-variant dark (&:is(.dark, .dark *));
 /* Window Controls Overlay: active when Electron exposes native titlebar control geometry. */
 @custom-variant wco (&:is(.wco, .wco *));
+@custom-variant desktop-fullscreen (&:is(.desktop-fullscreen, .desktop-fullscreen *));
 
 @theme inline {
   --animate-skeleton: skeleton 2s -1s infinite linear;
@@ -195,6 +196,12 @@ code {
 }
 
 /* Window drag region (frameless titlebar) */
+.app-topbar-main {
+  transition-property: padding-left, padding-right;
+  transition-duration: 150ms;
+  transition-timing-function: ease-out;
+}
+
 .drag-region {
   -webkit-app-region: drag;
 }

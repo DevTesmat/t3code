@@ -10,14 +10,19 @@ import {
   OrchestrationEvent,
   OrchestrationGetTurnDiffInput,
   OrchestrationLatestTurn,
+  OrchestrationMessage,
   ProjectCreatedPayload,
   ProjectMetaUpdatedPayload,
   OrchestrationProposedPlan,
   OrchestrationSession,
+  OrchestrationThread,
+  OrchestrationThreadStreamItem,
+  OrchestrationThreadShell,
   ProjectCreateCommand,
   ThreadMetaUpdatedPayload,
   ThreadTurnStartCommand,
   ThreadCreatedPayload,
+  ThreadMessageSentPayload,
   ThreadTurnDiff,
   ThreadTurnStartRequestedPayload,
 } from "./orchestration.ts";
@@ -32,9 +37,16 @@ const decodeThreadTurnStartCommand = Schema.decodeUnknownEffect(ThreadTurnStartC
 const decodeThreadTurnStartRequestedPayload = Schema.decodeUnknownEffect(
   ThreadTurnStartRequestedPayload,
 );
+const decodeOrchestrationMessage = Schema.decodeUnknownEffect(OrchestrationMessage);
+const decodeThreadMessageSentPayload = Schema.decodeUnknownEffect(ThreadMessageSentPayload);
 const decodeOrchestrationLatestTurn = Schema.decodeUnknownEffect(OrchestrationLatestTurn);
 const decodeOrchestrationProposedPlan = Schema.decodeUnknownEffect(OrchestrationProposedPlan);
 const decodeOrchestrationSession = Schema.decodeUnknownEffect(OrchestrationSession);
+const decodeOrchestrationThread = Schema.decodeUnknownEffect(OrchestrationThread);
+const decodeOrchestrationThreadShell = Schema.decodeUnknownEffect(OrchestrationThreadShell);
+const decodeOrchestrationThreadStreamItem = Schema.decodeUnknownEffect(
+  OrchestrationThreadStreamItem,
+);
 
 function getOptionValue(
   options: ReadonlyArray<{ id: string; value: unknown }> | undefined,
@@ -83,6 +95,24 @@ it.effect("rejects thread turn diff when fromTurnCount > toTurnCount", () =>
       }),
     );
     assert.strictEqual(result._tag, "Failure");
+  }),
+);
+
+it.effect("decodes command output snapshot thread stream items", () =>
+  Effect.gen(function* () {
+    const parsed = yield* decodeOrchestrationThreadStreamItem({
+      kind: "command-output-snapshot",
+      snapshot: {
+        threadId: "thread-1",
+        turnId: "turn-1",
+        toolCallId: "tool-1",
+        updatedAt: "2026-01-01T00:00:00.000Z",
+        text: "full output",
+        truncated: false,
+      },
+    });
+
+    assert.strictEqual(parsed.kind, "command-output-snapshot");
   }),
 );
 
@@ -143,6 +173,47 @@ it.effect("decodes historical project.created payloads with a default provider",
       updatedAt: "2026-01-01T00:00:00.000Z",
     });
     assert.strictEqual(parsed.defaultModelSelection?.instanceId, "codex");
+  }),
+);
+
+it.effect("defaults missing thread work durations to zero", () =>
+  Effect.gen(function* () {
+    const baseThread = {
+      id: "thread-1",
+      projectId: "project-1",
+      title: "Thread",
+      modelSelection: { provider: "codex", model: "gpt-5.4" },
+      runtimeMode: "full-access",
+      interactionMode: "default",
+      branch: null,
+      worktreePath: null,
+      latestTurn: null,
+      createdAt: "2026-01-01T00:00:00.000Z",
+      updatedAt: "2026-01-01T00:00:00.000Z",
+      archivedAt: null,
+      session: null,
+    };
+
+    const thread = yield* decodeOrchestrationThread({
+      ...baseThread,
+      pinnedAt: null,
+      deletedAt: null,
+      messages: [],
+      proposedPlans: [],
+      activities: [],
+      checkpoints: [],
+    });
+    const shell = yield* decodeOrchestrationThreadShell({
+      ...baseThread,
+      latestUserMessageAt: null,
+      hasPendingApprovals: false,
+      hasPendingUserInput: false,
+      latestPendingUserInputAt: null,
+      hasActionableProposedPlan: false,
+    });
+
+    assert.strictEqual(thread.totalWorkDurationMs, 0);
+    assert.strictEqual(shell.totalWorkDurationMs, 0);
   }),
 );
 
@@ -281,6 +352,50 @@ it.effect("decodes thread.created runtime mode for historical events", () =>
 
     assert.strictEqual(parsed.runtimeMode, DEFAULT_RUNTIME_MODE);
     assert.strictEqual(parsed.modelSelection.instanceId, "codex");
+    assert.strictEqual(parsed.pinnedAt, null);
+  }),
+);
+
+it.effect("defaults historical messages and message events to user source", () =>
+  Effect.gen(function* () {
+    const message = yield* decodeOrchestrationMessage({
+      id: "msg-1",
+      role: "user",
+      text: "hello",
+      turnId: null,
+      streaming: false,
+      createdAt: "2026-01-01T00:00:00.000Z",
+      updatedAt: "2026-01-01T00:00:00.000Z",
+    });
+    const payload = yield* decodeThreadMessageSentPayload({
+      threadId: "thread-1",
+      messageId: "msg-1",
+      role: "user",
+      text: "hello",
+      turnId: null,
+      streaming: false,
+      createdAt: "2026-01-01T00:00:00.000Z",
+      updatedAt: "2026-01-01T00:00:00.000Z",
+    });
+
+    assert.strictEqual(message.source, "user");
+    assert.strictEqual(payload.source, "user");
+  }),
+);
+
+it.effect("decodes harness message source", () =>
+  Effect.gen(function* () {
+    const message = yield* decodeOrchestrationMessage({
+      id: "msg-harness",
+      role: "user",
+      source: "harness",
+      text: "PLEASE IMPLEMENT THIS PLAN:\n...",
+      turnId: null,
+      streaming: false,
+      createdAt: "2026-01-01T00:00:00.000Z",
+      updatedAt: "2026-01-01T00:00:00.000Z",
+    });
+    assert.strictEqual(message.source, "harness");
   }),
 );
 
@@ -313,6 +428,26 @@ it.effect("decodes thread archive and unarchive commands", () =>
 
     assert.strictEqual(archive.type, "thread.archive");
     assert.strictEqual(unarchive.type, "thread.unarchive");
+  }),
+);
+
+it.effect("decodes thread pin and unpin commands", () =>
+  Effect.gen(function* () {
+    const pin = yield* decodeOrchestrationCommand({
+      type: "thread.pin",
+      commandId: "cmd-pin-1",
+      threadId: "thread-1",
+      createdAt: "2026-01-01T00:00:00.000Z",
+    });
+    const unpin = yield* decodeOrchestrationCommand({
+      type: "thread.unpin",
+      commandId: "cmd-unpin-1",
+      threadId: "thread-1",
+      createdAt: "2026-01-02T00:00:00.000Z",
+    });
+
+    assert.strictEqual(pin.type, "thread.pin");
+    assert.strictEqual(unpin.type, "thread.unpin");
   }),
 );
 
@@ -355,6 +490,46 @@ it.effect("decodes thread archived and unarchived events", () =>
     assert.strictEqual(archived.type, "thread.archived");
     assert.strictEqual(archived.payload.archivedAt, "2026-01-01T00:00:00.000Z");
     assert.strictEqual(unarchived.type, "thread.unarchived");
+  }),
+);
+
+it.effect("decodes thread pinned and unpinned events", () =>
+  Effect.gen(function* () {
+    const pinned = yield* decodeOrchestrationEvent({
+      sequence: 1,
+      eventId: "event-pin-1",
+      aggregateKind: "thread",
+      aggregateId: "thread-1",
+      type: "thread.pinned",
+      occurredAt: "2026-01-01T00:00:00.000Z",
+      commandId: "cmd-pin-1",
+      causationEventId: null,
+      correlationId: "cmd-pin-1",
+      metadata: {},
+      payload: {
+        threadId: "thread-1",
+        pinnedAt: "2026-01-01T00:00:00.000Z",
+      },
+    });
+    const unpinned = yield* decodeOrchestrationEvent({
+      sequence: 2,
+      eventId: "event-unpin-1",
+      aggregateKind: "thread",
+      aggregateId: "thread-1",
+      type: "thread.unpinned",
+      occurredAt: "2026-01-02T00:00:00.000Z",
+      commandId: "cmd-unpin-1",
+      causationEventId: null,
+      correlationId: "cmd-unpin-1",
+      metadata: {},
+      payload: {
+        threadId: "thread-1",
+      },
+    });
+
+    assert.strictEqual(pinned.type, "thread.pinned");
+    assert.strictEqual(pinned.payload.pinnedAt, "2026-01-01T00:00:00.000Z");
+    assert.strictEqual(unpinned.type, "thread.unpinned");
   }),
 );
 
@@ -602,6 +777,64 @@ it.effect("defaults proposed plan implementation metadata for historical rows", 
     });
     assert.strictEqual(parsed.implementedAt, null);
     assert.strictEqual(parsed.implementationThreadId, null);
+  }),
+);
+
+it.effect("decodes client proposed plan import commands", () =>
+  Effect.gen(function* () {
+    const parsed = yield* decodeOrchestrationCommand({
+      type: "thread.proposed-plan.import",
+      commandId: "cmd-import-plan",
+      threadId: "thread-1",
+      planId: "plan-imported",
+      planMarkdown: "# Plan\n\n- Step",
+      createdAt: "2026-01-01T00:00:00.000Z",
+    });
+
+    assert.strictEqual(parsed.type, "thread.proposed-plan.import");
+    assert.strictEqual(parsed.planId, "plan-imported");
+    assert.strictEqual(parsed.planMarkdown, "# Plan\n\n- Step");
+  }),
+);
+
+it.effect("decodes internal proposed plan delta commands and events", () =>
+  Effect.gen(function* () {
+    const createdAt = "2026-01-01T00:00:00.000Z";
+    const command = yield* decodeOrchestrationCommand({
+      type: "thread.proposed-plan.delta.receive",
+      commandId: "cmd-plan-delta",
+      threadId: "thread-1",
+      planId: "plan-1",
+      turnId: "turn-1",
+      delta: "# Pla",
+      createdAt,
+    });
+    assert.strictEqual(command.type, "thread.proposed-plan.delta.receive");
+    assert.strictEqual(command.delta, "# Pla");
+
+    const event = yield* decodeOrchestrationEvent({
+      eventId: "evt-plan-delta",
+      aggregateKind: "thread",
+      aggregateId: "thread-1",
+      sequence: 1,
+      streamId: "thread-1",
+      streamVersion: 1,
+      type: "thread.proposed-plan-delta-received",
+      occurredAt: createdAt,
+      commandId: "cmd-plan-delta",
+      causationEventId: null,
+      correlationId: null,
+      metadata: {},
+      payload: {
+        threadId: "thread-1",
+        planId: "plan-1",
+        turnId: "turn-1",
+        delta: "# Pla",
+        createdAt,
+      },
+    });
+    assert.strictEqual(event.type, "thread.proposed-plan-delta-received");
+    assert.strictEqual(event.payload.delta, "# Pla");
   }),
 );
 

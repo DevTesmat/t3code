@@ -71,6 +71,13 @@ import {
 import {
   ServerConfigStreamEvent,
   ServerConfig,
+  HistorySyncConfig,
+  HistorySyncConfigError,
+  HistorySyncConnectionTestInput,
+  HistorySyncConnectionTestResult,
+  HistorySyncProjectMappingPlan,
+  HistorySyncProjectMappingsApplyInput,
+  HistorySyncUpdateConfigInput,
   ServerLifecycleStreamEvent,
   ServerProviderUpdatedPayload,
   ServerUpsertKeybindingInput,
@@ -119,6 +126,14 @@ export const WS_METHODS = {
   serverUpsertKeybinding: "server.upsertKeybinding",
   serverGetSettings: "server.getSettings",
   serverUpdateSettings: "server.updateSettings",
+  serverGetHistorySyncConfig: "server.getHistorySyncConfig",
+  serverUpdateHistorySyncConfig: "server.updateHistorySyncConfig",
+  serverRunHistorySync: "server.runHistorySync",
+  serverStartHistorySyncInitialImport: "server.startHistorySyncInitialImport",
+  serverRestoreHistorySyncBackup: "server.restoreHistorySyncBackup",
+  serverTestHistorySyncConnection: "server.testHistorySyncConnection",
+  serverGetHistorySyncProjectMappings: "server.getHistorySyncProjectMappings",
+  serverApplyHistorySyncProjectMappings: "server.applyHistorySyncProjectMappings",
 
   // Streaming subscriptions
   subscribeGitStatus: "subscribeGitStatus",
@@ -164,6 +179,72 @@ export const WsServerUpdateSettingsRpc = Rpc.make(WS_METHODS.serverUpdateSetting
   success: ServerSettings,
   error: ServerSettingsError,
 });
+
+export const WsServerGetHistorySyncConfigRpc = Rpc.make(WS_METHODS.serverGetHistorySyncConfig, {
+  payload: Schema.Struct({}),
+  success: HistorySyncConfig,
+  error: Schema.Union([ServerSettingsError, HistorySyncConfigError]),
+});
+
+export const WsServerUpdateHistorySyncConfigRpc = Rpc.make(
+  WS_METHODS.serverUpdateHistorySyncConfig,
+  {
+    payload: HistorySyncUpdateConfigInput,
+    success: HistorySyncConfig,
+    error: Schema.Union([ServerSettingsError, HistorySyncConfigError]),
+  },
+);
+
+export const WsServerStartHistorySyncInitialImportRpc = Rpc.make(
+  WS_METHODS.serverStartHistorySyncInitialImport,
+  {
+    payload: Schema.Struct({}),
+    success: HistorySyncConfig,
+    error: Schema.Union([ServerSettingsError, HistorySyncConfigError]),
+  },
+);
+
+export const WsServerRunHistorySyncRpc = Rpc.make(WS_METHODS.serverRunHistorySync, {
+  payload: Schema.Struct({}),
+  success: HistorySyncConfig,
+  error: Schema.Union([ServerSettingsError, HistorySyncConfigError]),
+});
+
+export const WsServerRestoreHistorySyncBackupRpc = Rpc.make(
+  WS_METHODS.serverRestoreHistorySyncBackup,
+  {
+    payload: Schema.Struct({}),
+    success: HistorySyncConfig,
+    error: Schema.Union([ServerSettingsError, HistorySyncConfigError]),
+  },
+);
+
+export const WsServerTestHistorySyncConnectionRpc = Rpc.make(
+  WS_METHODS.serverTestHistorySyncConnection,
+  {
+    payload: HistorySyncConnectionTestInput,
+    success: HistorySyncConnectionTestResult,
+    error: HistorySyncConfigError,
+  },
+);
+
+export const WsServerGetHistorySyncProjectMappingsRpc = Rpc.make(
+  WS_METHODS.serverGetHistorySyncProjectMappings,
+  {
+    payload: Schema.Struct({}),
+    success: HistorySyncProjectMappingPlan,
+    error: HistorySyncConfigError,
+  },
+);
+
+export const WsServerApplyHistorySyncProjectMappingsRpc = Rpc.make(
+  WS_METHODS.serverApplyHistorySyncProjectMappings,
+  {
+    payload: HistorySyncProjectMappingsApplyInput,
+    success: HistorySyncProjectMappingPlan,
+    error: HistorySyncConfigError,
+  },
+);
 
 export const WsProjectsSearchEntriesRpc = Rpc.make(WS_METHODS.projectsSearchEntries, {
   payload: ProjectSearchEntriesInput,
@@ -370,6 +451,14 @@ export const WsRpcGroup = RpcGroup.make(
   WsServerUpsertKeybindingRpc,
   WsServerGetSettingsRpc,
   WsServerUpdateSettingsRpc,
+  WsServerGetHistorySyncConfigRpc,
+  WsServerUpdateHistorySyncConfigRpc,
+  WsServerRunHistorySyncRpc,
+  WsServerStartHistorySyncInitialImportRpc,
+  WsServerRestoreHistorySyncBackupRpc,
+  WsServerTestHistorySyncConnectionRpc,
+  WsServerGetHistorySyncProjectMappingsRpc,
+  WsServerApplyHistorySyncProjectMappingsRpc,
   WsProjectsSearchEntriesRpc,
   WsProjectsWriteFileRpc,
   WsShellOpenInEditorRpc,

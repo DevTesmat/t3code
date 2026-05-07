@@ -1,6 +1,11 @@
 import { type TimelineEntry, type WorkLogEntry } from "../../session-logic";
+import { type ActiveTurnActivityState } from "../../session-logic";
 import { type ChatMessage, type ProposedPlan, type TurnDiffSummary } from "../../types";
 import { type MessageId } from "@t3tools/contracts";
+import {
+  classifyToolActivityGroup,
+  type ToolActivityGroupKind,
+} from "@t3tools/shared/toolActivity";
 
 export const MAX_VISIBLE_WORK_LOG_ENTRIES = 6;
 
@@ -17,6 +22,7 @@ export type MessagesTimelineRow =
       id: string;
       createdAt: string;
       groupedEntries: WorkLogEntry[];
+      activityGroupKind: ToolActivityGroupKind;
     }
   | {
       kind: "message";
@@ -35,7 +41,12 @@ export type MessagesTimelineRow =
       createdAt: string;
       proposedPlan: ProposedPlan;
     }
-  | { kind: "working"; id: string; createdAt: string | null };
+  | {
+      kind: "working";
+      id: string;
+      createdAt: string | null;
+      activityState: ActiveTurnActivityState;
+    };
 
 export interface StableMessagesTimelineRowsState {
   byId: Map<string, MessagesTimelineRow>;
@@ -62,7 +73,7 @@ export function computeMessageDurationStart(
 }
 
 export function normalizeCompactToolLabel(value: string): string {
-  return value.replace(/\s+(?:complete|completed)\s*$/i, "").trim();
+  return value.replace(/\s+(?:started|complete|completed)\s*$/i, "").trim();
 }
 
 export function resolveAssistantMessageCopyState({
@@ -112,6 +123,7 @@ export function deriveMessagesTimelineRows(input: {
   completionDividerBeforeEntryId: string | null;
   isWorking: boolean;
   activeTurnStartedAt: string | null;
+  activeTurnActivityState?: ActiveTurnActivityState | undefined;
   turnDiffSummaryByAssistantMessageId: ReadonlyMap<MessageId, TurnDiffSummary>;
   revertTurnCountByUserMessageId: ReadonlyMap<MessageId, number>;
 }): MessagesTimelineRow[] {
@@ -120,6 +132,8 @@ export function deriveMessagesTimelineRows(input: {
     input.timelineEntries.flatMap((entry) => (entry.kind === "message" ? [entry.message] : [])),
   );
   const terminalAssistantMessageIds = deriveTerminalAssistantMessageIds(input.timelineEntries);
+  const workGroupIdOccurrences = new Map<string, number>();
+  let pendingWorkEntries: Array<Extract<TimelineEntry, { kind: "work" }>> = [];
 
   for (let index = 0; index < input.timelineEntries.length; index += 1) {
     const timelineEntry = input.timelineEntries[index];
@@ -128,23 +142,12 @@ export function deriveMessagesTimelineRows(input: {
     }
 
     if (timelineEntry.kind === "work") {
-      const groupedEntries = [timelineEntry.entry];
-      let cursor = index + 1;
-      while (cursor < input.timelineEntries.length) {
-        const nextEntry = input.timelineEntries[cursor];
-        if (!nextEntry || nextEntry.kind !== "work") break;
-        groupedEntries.push(nextEntry.entry);
-        cursor += 1;
-      }
-      nextRows.push({
-        kind: "work",
-        id: timelineEntry.id,
-        createdAt: timelineEntry.createdAt,
-        groupedEntries,
-      });
-      index = cursor - 1;
+      pendingWorkEntries.push(timelineEntry);
       continue;
     }
+
+    appendWorkTimelineRows(pendingWorkEntries, nextRows, workGroupIdOccurrences);
+    pendingWorkEntries = [];
 
     if (timelineEntry.kind === "proposed-plan") {
       nextRows.push({
@@ -180,15 +183,106 @@ export function deriveMessagesTimelineRows(input: {
     });
   }
 
+  appendWorkTimelineRows(pendingWorkEntries, nextRows, workGroupIdOccurrences);
+
   if (input.isWorking) {
     nextRows.push({
       kind: "working",
       id: "working-indicator-row",
       createdAt: input.activeTurnStartedAt,
+      activityState: input.activeTurnActivityState ?? {
+        kind: "waitingForModel",
+        label: "Working",
+      },
     });
   }
 
   return nextRows;
+}
+
+function appendWorkTimelineRows(
+  timelineEntries: ReadonlyArray<Extract<TimelineEntry, { kind: "work" }>>,
+  nextRows: MessagesTimelineRow[],
+  workGroupIdOccurrences: Map<string, number>,
+) {
+  let explorationRow: Extract<MessagesTimelineRow, { kind: "work" }> | null = null;
+
+  for (let index = 0; index < timelineEntries.length; index += 1) {
+    const timelineEntry = timelineEntries[index];
+    if (!timelineEntry) {
+      continue;
+    }
+
+    const activityGroupKind = classifyWorkEntryActivityGroup(timelineEntry.entry);
+    if (activityGroupKind === "exploration") {
+      if (explorationRow) {
+        explorationRow.groupedEntries.push(timelineEntry.entry);
+        continue;
+      }
+
+      const groupedEntries = [timelineEntry.entry];
+      const baseRowId = stableWorkGroupRowId(groupedEntries, activityGroupKind);
+      explorationRow = {
+        kind: "work",
+        id: uniqueWorkGroupRowId(baseRowId, workGroupIdOccurrences),
+        createdAt: timelineEntry.createdAt,
+        groupedEntries,
+        activityGroupKind,
+      };
+      nextRows.push(explorationRow);
+      continue;
+    }
+
+    const groupedEntries = [timelineEntry.entry];
+    let cursor = index + 1;
+    while (cursor < timelineEntries.length) {
+      const nextEntry = timelineEntries[cursor];
+      if (!nextEntry) break;
+      const nextActivityGroupKind = classifyWorkEntryActivityGroup(nextEntry.entry);
+      if (nextActivityGroupKind !== activityGroupKind) break;
+      groupedEntries.push(nextEntry.entry);
+      cursor += 1;
+    }
+    const baseRowId = stableWorkGroupRowId(groupedEntries, activityGroupKind);
+    nextRows.push({
+      kind: "work",
+      id: uniqueWorkGroupRowId(baseRowId, workGroupIdOccurrences),
+      createdAt: timelineEntry.createdAt,
+      groupedEntries,
+      activityGroupKind,
+    });
+    index = cursor - 1;
+  }
+}
+
+function stableWorkEntryKey(entry: WorkLogEntry): string {
+  return entry.toolKey ?? entry.toolCallId ?? entry.id;
+}
+
+function stableWorkGroupRowId(
+  entries: ReadonlyArray<WorkLogEntry>,
+  activityGroupKind: ToolActivityGroupKind,
+): string {
+  const firstEntry = entries[0];
+  return `work-group:${activityGroupKind}:${firstEntry ? stableWorkEntryKey(firstEntry) : "empty"}`;
+}
+
+function uniqueWorkGroupRowId(baseRowId: string, occurrences: Map<string, number>): string {
+  const nextOccurrence = (occurrences.get(baseRowId) ?? 0) + 1;
+  occurrences.set(baseRowId, nextOccurrence);
+  return nextOccurrence === 1 ? baseRowId : `${baseRowId}:${nextOccurrence}`;
+}
+
+function classifyWorkEntryActivityGroup(entry: WorkLogEntry): ToolActivityGroupKind {
+  return classifyToolActivityGroup({
+    itemType: entry.itemType,
+    title: entry.toolTitle,
+    label: entry.label,
+    command: entry.command,
+    detail: entry.detail,
+    changedFiles: entry.changedFiles,
+    requestKind: entry.requestKind,
+  });
 }
 
 export function computeStableMessagesTimelineRows(
@@ -217,13 +311,22 @@ function isRowUnchanged(a: MessagesTimelineRow, b: MessagesTimelineRow): boolean
 
   switch (a.kind) {
     case "working":
-      return a.createdAt === (b as typeof a).createdAt;
+      return (
+        a.createdAt === (b as typeof a).createdAt &&
+        a.activityState.kind === (b as typeof a).activityState.kind &&
+        a.activityState.label === (b as typeof a).activityState.label &&
+        a.activityState.detail === (b as typeof a).activityState.detail
+      );
 
     case "proposed-plan":
       return a.proposedPlan === (b as typeof a).proposedPlan;
 
     case "work":
-      return a.groupedEntries === (b as typeof a).groupedEntries;
+      return (
+        a.createdAt === (b as typeof a).createdAt &&
+        a.activityGroupKind === (b as typeof a).activityGroupKind &&
+        areWorkEntryGroupsUnchanged(a.groupedEntries, (b as typeof a).groupedEntries)
+      );
 
     case "message": {
       const bm = b as typeof a;
@@ -237,4 +340,60 @@ function isRowUnchanged(a: MessagesTimelineRow, b: MessagesTimelineRow): boolean
       );
     }
   }
+}
+
+function areWorkEntryGroupsUnchanged(
+  a: ReadonlyArray<WorkLogEntry>,
+  b: ReadonlyArray<WorkLogEntry>,
+): boolean {
+  if (a === b) return true;
+  if (a.length !== b.length) return false;
+  return a.every((entry, index) => {
+    const other = b[index];
+    return other !== undefined && areWorkEntriesUnchanged(entry, other);
+  });
+}
+
+function areOptionalStringArraysUnchanged(
+  a: ReadonlyArray<string> | undefined,
+  b: ReadonlyArray<string> | undefined,
+): boolean {
+  if (a === b) return true;
+  if (!a || !b || a.length !== b.length) return false;
+  return a.every((entry, index) => entry === b[index]);
+}
+
+function areOutputPreviewsUnchanged(
+  a: WorkLogEntry["outputPreview"],
+  b: WorkLogEntry["outputPreview"],
+): boolean {
+  if (a === b) return true;
+  if (!a || !b) return false;
+  return (
+    a.stream === b.stream &&
+    a.truncated === b.truncated &&
+    areOptionalStringArraysUnchanged(a.lines, b.lines)
+  );
+}
+
+function areWorkEntriesUnchanged(a: WorkLogEntry, b: WorkLogEntry): boolean {
+  return (
+    a.id === b.id &&
+    a.createdAt === b.createdAt &&
+    a.turnId === b.turnId &&
+    a.label === b.label &&
+    a.detail === b.detail &&
+    a.command === b.command &&
+    a.rawCommand === b.rawCommand &&
+    a.status === b.status &&
+    a.exitCode === b.exitCode &&
+    a.tone === b.tone &&
+    a.toolTitle === b.toolTitle &&
+    a.itemType === b.itemType &&
+    a.requestKind === b.requestKind &&
+    a.toolCallId === b.toolCallId &&
+    a.toolKey === b.toolKey &&
+    areOptionalStringArraysUnchanged(a.changedFiles, b.changedFiles) &&
+    areOutputPreviewsUnchanged(a.outputPreview, b.outputPreview)
+  );
 }

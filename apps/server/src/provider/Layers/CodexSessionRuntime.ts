@@ -73,6 +73,11 @@ export type CodexResumeCursor = typeof CodexResumeCursorSchema.Type;
 type CodexThreadItem =
   | EffectCodexSchema.V2ThreadReadResponse["thread"]["turns"][number]["items"][number]
   | EffectCodexSchema.V2ThreadRollbackResponse["thread"]["turns"][number]["items"][number];
+type QueuedProviderEventInput = Omit<ProviderEvent, "id" | "provider" | "createdAt">;
+type BufferedChildProviderEvent = {
+  readonly receiverThreadId: string;
+  readonly event: QueuedProviderEventInput;
+};
 
 export interface CodexSessionRuntimeOptions {
   readonly threadId: ThreadId;
@@ -579,6 +584,58 @@ function rememberCollabReceiverTurns(
   }
 }
 
+function readCollabAgentToolCall(notification: CodexServerNotification):
+  | {
+      readonly tool: string | undefined;
+      readonly receiverThreadIds: string[];
+      readonly status: string | undefined;
+    }
+  | undefined {
+  if (notification.method !== "item/started" && notification.method !== "item/completed") {
+    return undefined;
+  }
+
+  const item = notification.params.item as {
+    readonly receiverThreadIds?: unknown;
+    readonly status?: unknown;
+    readonly tool?: unknown;
+    readonly type?: unknown;
+  };
+  if (item.type !== "collabAgentToolCall") {
+    return undefined;
+  }
+
+  return {
+    tool: typeof item.tool === "string" ? item.tool : undefined,
+    receiverThreadIds: Array.isArray(item.receiverThreadIds)
+      ? item.receiverThreadIds.filter((value): value is string => typeof value === "string")
+      : [],
+    status: typeof item.status === "string" ? item.status : undefined,
+  };
+}
+
+function isCompletedCollabWaitNotification(notification: CodexServerNotification): boolean {
+  const call = readCollabAgentToolCall(notification);
+  return (
+    notification.method === "item/completed" &&
+    call?.tool === "wait" &&
+    call.receiverThreadIds.length > 0
+  );
+}
+
+function shouldDropBufferedChildConversationNotification(
+  method: CodexRpc.ServerNotificationMethod,
+): boolean {
+  return (
+    method === "item/agentMessage/delta" ||
+    method === "item/commandExecution/outputDelta" ||
+    method === "item/fileChange/outputDelta" ||
+    method === "item/reasoning/summaryTextDelta" ||
+    method === "item/reasoning/textDelta" ||
+    method === "item/plan/delta"
+  );
+}
+
 function shouldSuppressChildConversationNotification(
   method: CodexRpc.ServerNotificationMethod,
 ): boolean {
@@ -593,8 +650,7 @@ function shouldSuppressChildConversationNotification(
     method === "thread/tokenUsage/updated" ||
     method === "turn/started" ||
     method === "turn/completed" ||
-    method === "turn/plan/updated" ||
-    method === "item/plan/delta"
+    method === "turn/plan/updated"
   );
 }
 
@@ -686,6 +742,11 @@ export const makeCodexSessionRuntime = (
     const approvalCorrelationsRef = yield* Ref.make(new Map<string, ApprovalCorrelation>());
     const pendingUserInputsRef = yield* Ref.make(new Map<ApprovalRequestId, PendingUserInput>());
     const collabReceiverTurnsRef = yield* Ref.make(new Map<string, TurnId>());
+    const collabReceiverActiveTurnsRef = yield* Ref.make(new Map<string, TurnId>());
+    const collabReleasedReceiversRef = yield* Ref.make(new Set<string>());
+    const collabBufferedChildEventsRef = yield* Ref.make(
+      new Map<string, BufferedChildProviderEvent[]>(),
+    );
     const closedRef = yield* Ref.make(false);
 
     // `~` is not shell-expanded when env vars are set via
@@ -749,6 +810,44 @@ export const makeCodexSessionRuntime = (
           ...event,
         }),
       );
+
+    const flushBufferedChildEvents = (
+      parentTurnId: TurnId | undefined,
+      receiverThreadIds: ReadonlySet<string>,
+    ) =>
+      Effect.gen(function* () {
+        if (!parentTurnId || receiverThreadIds.size === 0) {
+          return;
+        }
+
+        const parentTurnKey = String(parentTurnId);
+        const bufferedByParentTurn = yield* Ref.get(collabBufferedChildEventsRef);
+        const buffered = bufferedByParentTurn.get(parentTurnKey) ?? [];
+        if (buffered.length === 0) {
+          return;
+        }
+
+        const nextBuffered: BufferedChildProviderEvent[] = [];
+        const eventsToFlush: QueuedProviderEventInput[] = [];
+        for (const entry of buffered) {
+          if (receiverThreadIds.has(entry.receiverThreadId)) {
+            eventsToFlush.push(entry.event);
+          } else {
+            nextBuffered.push(entry);
+          }
+        }
+
+        yield* Ref.update(collabBufferedChildEventsRef, (current) => {
+          const next = new Map(current);
+          if (nextBuffered.length > 0) {
+            next.set(parentTurnKey, nextBuffered);
+          } else {
+            next.delete(parentTurnKey);
+          }
+          return next;
+        });
+        yield* Effect.forEach(eventsToFlush, emitEvent, { discard: true, concurrency: 1 });
+      });
     const emitSessionEvent = (method: string, message: string) =>
       emitEvent({
         kind: "session",
@@ -792,8 +891,28 @@ export const makeCodexSessionRuntime = (
             ? collabReceiverTurns.get(providerConversationId)
             : undefined;
         })();
+        const providerConversationId = readNotificationThreadId(notification);
 
         rememberCollabReceiverTurns(collabReceiverTurns, notification, route.turnId);
+        if (childParentTurnId && notification.method === "turn/started") {
+          const childTurnId = route.turnId;
+          if (providerConversationId && childTurnId) {
+            yield* Ref.update(collabReceiverActiveTurnsRef, (current) => {
+              const next = new Map(current);
+              next.set(providerConversationId, childTurnId);
+              return next;
+            });
+          }
+        }
+        if (childParentTurnId && notification.method === "turn/completed") {
+          if (providerConversationId) {
+            yield* Ref.update(collabReceiverActiveTurnsRef, (current) => {
+              const next = new Map(current);
+              next.delete(providerConversationId);
+              return next;
+            });
+          }
+        }
         if (childParentTurnId && shouldSuppressChildConversationNotification(notification.method)) {
           yield* Ref.set(collabReceiverTurnsRef, collabReceiverTurns);
           return;
@@ -826,7 +945,7 @@ export const makeCodexSessionRuntime = (
         }
 
         yield* Ref.set(collabReceiverTurnsRef, collabReceiverTurns);
-        yield* emitEvent({
+        const eventInput: QueuedProviderEventInput = {
           kind: "notification",
           threadId: options.threadId,
           method: notification.method,
@@ -838,7 +957,45 @@ export const makeCodexSessionRuntime = (
             ? { textDelta: notification.params.delta }
             : {}),
           ...(payload !== undefined ? { payload } : {}),
-        });
+        };
+
+        if (childParentTurnId && providerConversationId) {
+          if (shouldDropBufferedChildConversationNotification(notification.method)) {
+            return;
+          }
+          const releasedReceivers = yield* Ref.get(collabReleasedReceiversRef);
+          if (!releasedReceivers.has(providerConversationId)) {
+            yield* Ref.update(collabBufferedChildEventsRef, (current) => {
+              const parentTurnKey = String(childParentTurnId);
+              const next = new Map(current);
+              next.set(parentTurnKey, [
+                ...(next.get(parentTurnKey) ?? []),
+                {
+                  receiverThreadId: providerConversationId,
+                  event: eventInput,
+                },
+              ]);
+              return next;
+            });
+            return;
+          }
+        }
+
+        yield* emitEvent(eventInput);
+
+        if (isCompletedCollabWaitNotification(notification)) {
+          const waitedReceiverThreadIds = new Set(
+            readCollabAgentToolCall(notification)?.receiverThreadIds ?? [],
+          );
+          yield* Ref.update(collabReleasedReceiversRef, (current) => {
+            const next = new Set(current);
+            for (const receiverThreadId of waitedReceiverThreadIds) {
+              next.add(receiverThreadId);
+            }
+            return next;
+          });
+          yield* flushBufferedChildEvents(route.turnId, waitedReceiverThreadIds);
+        }
       });
 
     const currentSessionProviderThreadId = Effect.map(Ref.get(sessionRef), currentProviderThreadId);
@@ -1264,6 +1421,18 @@ export const makeCodexSessionRuntime = (
             threadId: providerThreadId,
             turnId: effectiveTurnId,
           });
+          const childActiveTurns = yield* Ref.get(collabReceiverActiveTurnsRef);
+          yield* Effect.forEach(
+            childActiveTurns,
+            ([childThreadId, childTurnId]) =>
+              client
+                .request("turn/interrupt", {
+                  threadId: childThreadId,
+                  turnId: childTurnId,
+                })
+                .pipe(Effect.ignore),
+            { concurrency: "unbounded", discard: true },
+          );
         }),
       readThread: Effect.gen(function* () {
         const providerThreadId = yield* readProviderThreadId;

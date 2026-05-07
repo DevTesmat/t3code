@@ -5,6 +5,8 @@ import {
   type AuthPairingLink,
   type DesktopServerExposureState,
   type EnvironmentId,
+  type HistorySyncConfig,
+  type HistorySyncProjectMappingPlan,
 } from "@t3tools/contracts";
 import { DateTime } from "effect";
 
@@ -56,7 +58,14 @@ import {
   type ServerClientSessionRecord,
   type ServerPairingLinkRecord,
 } from "~/environments/primary";
+import {
+  buildHistorySyncProjectMappingActions,
+  draftFromPlanCandidate,
+  type HistorySyncMappingDraft,
+} from "../../historySyncProjectMapping";
 import type { WsRpcClient } from "~/rpc/wsRpcClient";
+import { ensureLocalApi } from "../../localApi";
+import { useServerConfig } from "../../rpc/serverState";
 import {
   type SavedEnvironmentRecord,
   type SavedEnvironmentRuntimeState,
@@ -64,6 +73,7 @@ import {
   useSavedEnvironmentRuntimeStore,
   addSavedEnvironment,
   getPrimaryEnvironmentConnection,
+  refreshPrimaryEnvironmentProjectionSnapshot,
   reconnectSavedEnvironment,
   removeSavedEnvironment,
 } from "~/environments/runtime";
@@ -755,6 +765,659 @@ function SavedBackendListRow({
   );
 }
 
+type HistorySyncFormState = {
+  enabled: boolean;
+  host: string;
+  port: string;
+  database: string;
+  username: string;
+  password: string;
+  tlsEnabled: boolean;
+  shutdownFlushTimeoutMs: string;
+  statusIndicatorEnabled: boolean;
+};
+
+const emptyHistorySyncForm: HistorySyncFormState = {
+  enabled: false,
+  host: "",
+  port: "3306",
+  database: "",
+  username: "",
+  password: "",
+  tlsEnabled: false,
+  shutdownFlushTimeoutMs: "5000",
+  statusIndicatorEnabled: true,
+};
+
+function historySyncFormFromConfig(config: HistorySyncConfig): HistorySyncFormState {
+  return {
+    enabled: config.enabled,
+    host: config.connectionSummary?.host ?? "",
+    port: String(config.connectionSummary?.port ?? 3306),
+    database: config.connectionSummary?.database ?? "",
+    username: config.connectionSummary?.username ?? "",
+    password: "",
+    tlsEnabled: config.connectionSummary?.tlsEnabled ?? false,
+    shutdownFlushTimeoutMs: String(config.shutdownFlushTimeoutMs),
+    statusIndicatorEnabled: config.statusIndicatorEnabled,
+  };
+}
+
+function HistorySyncSettingsSection() {
+  const liveHistorySyncStatus = useServerConfig()?.historySync ?? null;
+  const [config, setConfig] = useState<HistorySyncConfig | null>(null);
+  const [form, setForm] = useState<HistorySyncFormState>(emptyHistorySyncForm);
+  const [error, setError] = useState<string | null>(null);
+  const [isSaving, setIsSaving] = useState(false);
+  const [isRunningSync, setIsRunningSync] = useState(false);
+  const [isStartingInitialSync, setIsStartingInitialSync] = useState(false);
+  const [isRestoringBackup, setIsRestoringBackup] = useState(false);
+  const [isTesting, setIsTesting] = useState(false);
+  const [mappingPlan, setMappingPlan] = useState<HistorySyncProjectMappingPlan | null>(null);
+  const [mappingDraftByProjectId, setMappingDraftByProjectId] = useState<
+    Record<string, HistorySyncMappingDraft>
+  >({});
+  const [isLoadingMappings, setIsLoadingMappings] = useState(false);
+  const [isApplyingMappings, setIsApplyingMappings] = useState(false);
+
+  const loadConfig = useCallback(async () => {
+    try {
+      const next = await ensureLocalApi().server.getHistorySyncConfig();
+      setConfig(next);
+      setForm(historySyncFormFromConfig(next));
+      setError(null);
+    } catch (loadError) {
+      setError(loadError instanceof Error ? loadError.message : "Failed to load history sync.");
+    }
+  }, []);
+
+  useEffect(() => {
+    void loadConfig();
+  }, [loadConfig]);
+
+  const loadMappingPlan = useCallback(async () => {
+    setIsLoadingMappings(true);
+    try {
+      const next = await ensureLocalApi().server.getHistorySyncProjectMappings();
+      setMappingPlan(next);
+      setMappingDraftByProjectId(
+        Object.fromEntries(
+          next.candidates
+            .filter((candidate) => candidate.status === "unresolved")
+            .map((candidate) => [candidate.remoteProjectId, draftFromPlanCandidate(candidate)]),
+        ),
+      );
+      setError(null);
+    } catch (loadError) {
+      setError(loadError instanceof Error ? loadError.message : "Failed to load project mappings.");
+    } finally {
+      setIsLoadingMappings(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (config?.status.state === "needs-project-mapping") {
+      void loadMappingPlan();
+    }
+  }, [config?.status.state, loadMappingPlan]);
+
+  const buildMysql = useCallback(() => {
+    const port = Number(form.port);
+    return {
+      host: form.host.trim(),
+      port,
+      database: form.database.trim(),
+      username: form.username.trim(),
+      password: form.password,
+      tlsEnabled: form.tlsEnabled,
+    };
+  }, [form]);
+
+  const handleTest = useCallback(async () => {
+    setIsTesting(true);
+    setError(null);
+    try {
+      const result = await ensureLocalApi().server.testHistorySyncConnection({
+        mysql: buildMysql(),
+      });
+      if (!result.success) {
+        setError(result.message ?? "Connection test failed.");
+        return;
+      }
+      toastManager.add({ type: "success", title: "Connection verified" });
+    } catch (testError) {
+      setError(testError instanceof Error ? testError.message : "Connection test failed.");
+    } finally {
+      setIsTesting(false);
+    }
+  }, [buildMysql]);
+
+  const handleSave = useCallback(async () => {
+    setIsSaving(true);
+    setError(null);
+    try {
+      const shutdownFlushTimeoutMs = Number(form.shutdownFlushTimeoutMs);
+      const summaryChanged =
+        config?.connectionSummary?.host !== form.host.trim() ||
+        String(config?.connectionSummary?.port ?? 3306) !== form.port ||
+        config?.connectionSummary?.database !== form.database.trim() ||
+        config?.connectionSummary?.username !== form.username.trim() ||
+        (config?.connectionSummary?.tlsEnabled ?? false) !== form.tlsEnabled;
+      const shouldSendMysql = form.password.length > 0 || !config?.configured || summaryChanged;
+      if (form.enabled && !config?.configured && form.password.length === 0) {
+        throw new Error("Save a verified MySQL connection before enabling history sync.");
+      }
+      if (shouldSendMysql && form.password.length === 0) {
+        throw new Error("Password is required when creating or changing the MySQL connection.");
+      }
+      const next = await ensureLocalApi().server.updateHistorySyncConfig({
+        settings: {
+          enabled: form.enabled,
+          shutdownFlushTimeoutMs,
+          statusIndicatorEnabled: form.statusIndicatorEnabled,
+        },
+        ...(shouldSendMysql ? { mysql: buildMysql() } : {}),
+      });
+      setConfig(next);
+      setForm(historySyncFormFromConfig(next));
+      toastManager.add({ type: "success", title: "History sync saved" });
+    } catch (saveError) {
+      setError(saveError instanceof Error ? saveError.message : "Failed to save history sync.");
+    } finally {
+      setIsSaving(false);
+    }
+  }, [buildMysql, config, form]);
+
+  const handleClear = useCallback(async () => {
+    setIsSaving(true);
+    setError(null);
+    try {
+      const next = await ensureLocalApi().server.updateHistorySyncConfig({
+        settings: { enabled: false },
+        clearConnection: true,
+      });
+      setConfig(next);
+      setForm(historySyncFormFromConfig(next));
+    } catch (clearError) {
+      setError(clearError instanceof Error ? clearError.message : "Failed to clear connection.");
+    } finally {
+      setIsSaving(false);
+    }
+  }, []);
+
+  const handleStartInitialSync = useCallback(async () => {
+    setIsStartingInitialSync(true);
+    setError(null);
+    try {
+      const next = await ensureLocalApi().server.startHistorySyncInitialImport();
+      setConfig(next);
+      setForm(historySyncFormFromConfig(next));
+      toastManager.add({ type: "success", title: "History sync started" });
+    } catch (startError) {
+      setError(startError instanceof Error ? startError.message : "Failed to start history sync.");
+    } finally {
+      setIsStartingInitialSync(false);
+    }
+  }, []);
+
+  const handleRunSync = useCallback(async () => {
+    setIsRunningSync(true);
+    setError(null);
+    try {
+      const next = await ensureLocalApi().server.runHistorySync();
+      setConfig(next);
+      setForm(historySyncFormFromConfig(next));
+      toastManager.add({ type: "success", title: "History sync started" });
+    } catch (syncError) {
+      setError(syncError instanceof Error ? syncError.message : "Failed to sync history.");
+    } finally {
+      setIsRunningSync(false);
+    }
+  }, []);
+
+  const handleRestoreBackup = useCallback(async () => {
+    setIsRestoringBackup(true);
+    setError(null);
+    try {
+      const next = await ensureLocalApi().server.restoreHistorySyncBackup();
+      setConfig(next);
+      setForm(historySyncFormFromConfig(next));
+      await refreshPrimaryEnvironmentProjectionSnapshot();
+      toastManager.add({ type: "success", title: "History sync backup restored" });
+    } catch (restoreError) {
+      setError(
+        restoreError instanceof Error ? restoreError.message : "Failed to restore history backup.",
+      );
+    } finally {
+      setIsRestoringBackup(false);
+    }
+  }, []);
+
+  const handlePickMappingFolder = useCallback(
+    async (remoteProjectId: string) => {
+      const folder = await ensureLocalApi().dialogs.pickFolder();
+      if (!folder) return;
+      const candidate = mappingPlan?.candidates.find(
+        (entry) => entry.remoteProjectId === remoteProjectId,
+      );
+      setMappingDraftByProjectId((current) => ({
+        ...current,
+        [remoteProjectId]: {
+          action: "map-folder",
+          workspaceRoot: folder,
+          title: candidate?.remoteTitle ?? "",
+        },
+      }));
+    },
+    [mappingPlan],
+  );
+
+  const handleApplyMappings = useCallback(async () => {
+    if (!mappingPlan) return;
+    setIsApplyingMappings(true);
+    setError(null);
+    try {
+      const actions = buildHistorySyncProjectMappingActions(mappingPlan, mappingDraftByProjectId);
+      const next = await ensureLocalApi().server.applyHistorySyncProjectMappings({
+        syncId: mappingPlan.syncId,
+        actions,
+      });
+      setMappingPlan(next);
+      await loadConfig();
+      toastManager.add({ type: "success", title: "Project mappings saved" });
+    } catch (applyError) {
+      setError(
+        applyError instanceof Error ? applyError.message : "Failed to apply project mappings.",
+      );
+    } finally {
+      setIsApplyingMappings(false);
+    }
+  }, [loadConfig, mappingDraftByProjectId, mappingPlan]);
+
+  const effectiveHistorySyncStatus = liveHistorySyncStatus ?? config?.status ?? null;
+  const statusText =
+    effectiveHistorySyncStatus === null
+      ? "Loading..."
+      : effectiveHistorySyncStatus.state === "error"
+        ? effectiveHistorySyncStatus.message
+        : effectiveHistorySyncStatus.state === "needs-project-mapping"
+          ? `${effectiveHistorySyncStatus.unresolvedProjectCount} project mapping${effectiveHistorySyncStatus.unresolvedProjectCount === 1 ? "" : "s"} needed`
+          : effectiveHistorySyncStatus.state === "needs-initial-sync"
+            ? "Ready to start"
+            : effectiveHistorySyncStatus.state;
+  const syncProgress =
+    effectiveHistorySyncStatus?.state === "syncing" ? effectiveHistorySyncStatus.progress : null;
+  const isHistorySyncing = effectiveHistorySyncStatus?.state === "syncing";
+  const unresolvedMappingCandidates =
+    mappingPlan?.candidates.filter((candidate) => candidate.status === "unresolved") ?? [];
+  const showInitialSyncAction =
+    config?.configured === true && effectiveHistorySyncStatus?.state === "needs-initial-sync";
+  const showSyncAction = config?.configured === true;
+  const showBackupRestoreAction = Boolean(config?.backup) && !isHistorySyncing;
+
+  return (
+    <SettingsSection title="History Sync">
+      <SettingsRow
+        title="Enable sync"
+        description={
+          config?.configured
+            ? "Sync history with the configured MySQL database."
+            : "Configure and save a MySQL connection first."
+        }
+        status={
+          <span
+            className={
+              effectiveHistorySyncStatus?.state === "error" ? "text-destructive" : undefined
+            }
+          >
+            {statusText}
+          </span>
+        }
+        control={
+          <Switch
+            checked={form.enabled}
+            disabled={!config}
+            onCheckedChange={(enabled) => setForm((current) => ({ ...current, enabled }))}
+            aria-label="Enable history sync"
+          />
+        }
+      />
+      {showSyncAction || showBackupRestoreAction ? (
+        <div className={ITEM_ROW_CLASSNAME}>
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+            {showInitialSyncAction ? (
+              <div className="min-w-0">
+                <h3 className="text-sm font-medium text-foreground">Initial history sync</h3>
+                <p className="mt-1 text-xs text-muted-foreground">
+                  Back up local threads, import the MySQL history, then merge the local threads
+                  back.
+                </p>
+              </div>
+            ) : (
+              <div className="min-w-0">
+                <h3 className="text-sm font-medium text-foreground">History sync</h3>
+                <p className="mt-1 text-xs text-muted-foreground">
+                  Fast-forward from MySQL, then persist safe local thread updates.
+                </p>
+              </div>
+            )}
+            <div className="flex shrink-0 flex-wrap justify-end gap-2">
+              {showBackupRestoreAction ? (
+                <Button
+                  size="xs"
+                  variant="outline"
+                  disabled={
+                    isRestoringBackup ||
+                    isStartingInitialSync ||
+                    isRunningSync ||
+                    isSaving ||
+                    isTesting
+                  }
+                  onClick={() => void handleRestoreBackup()}
+                >
+                  {isRestoringBackup ? "Restoring..." : "Restore backup"}
+                </Button>
+              ) : null}
+              {showInitialSyncAction ? (
+                <Button
+                  size="xs"
+                  disabled={
+                    isStartingInitialSync ||
+                    isRestoringBackup ||
+                    isRunningSync ||
+                    isSaving ||
+                    isTesting ||
+                    !config.configured
+                  }
+                  onClick={() => void handleStartInitialSync()}
+                >
+                  {isStartingInitialSync ? "Starting..." : "Start history sync"}
+                </Button>
+              ) : showSyncAction ? (
+                <Button
+                  size="xs"
+                  disabled={
+                    isRunningSync ||
+                    isHistorySyncing ||
+                    isStartingInitialSync ||
+                    isRestoringBackup ||
+                    isSaving ||
+                    isTesting
+                  }
+                  onClick={() => void handleRunSync()}
+                >
+                  {isRunningSync || isHistorySyncing ? "Syncing..." : "Sync now"}
+                </Button>
+              ) : null}
+            </div>
+          </div>
+        </div>
+      ) : null}
+      {syncProgress ? (
+        <div className={ITEM_ROW_CLASSNAME}>
+          <div className="space-y-2">
+            <div className="flex items-center justify-between gap-3 text-xs">
+              <span className="truncate text-muted-foreground">{syncProgress.label}</span>
+              <span className="shrink-0 tabular-nums text-muted-foreground">
+                {syncProgress.current}/{syncProgress.total}
+              </span>
+            </div>
+            <div className="h-1.5 overflow-hidden rounded-full bg-muted">
+              <div
+                className="h-full rounded-full bg-foreground transition-[width] duration-300"
+                style={{
+                  width: `${Math.min(
+                    100,
+                    Math.max(0, (syncProgress.current / Math.max(1, syncProgress.total)) * 100),
+                  )}%`,
+                }}
+              />
+            </div>
+          </div>
+        </div>
+      ) : null}
+      {effectiveHistorySyncStatus?.state === "needs-project-mapping" ? (
+        <div className={ITEM_ROW_CLASSNAME}>
+          <div className="space-y-4">
+            <div className="flex items-center justify-between gap-3">
+              <div className="min-w-0">
+                <h3 className="text-sm font-medium text-foreground">Map synced projects</h3>
+                <p className="mt-1 text-xs text-muted-foreground">
+                  Choose the local folder or project that matches each remote project.
+                </p>
+              </div>
+              <Button
+                size="xs"
+                variant="outline"
+                disabled={isLoadingMappings}
+                onClick={() => void loadMappingPlan()}
+              >
+                {isLoadingMappings ? "Loading..." : "Refresh"}
+              </Button>
+            </div>
+            {unresolvedMappingCandidates.map((candidate) => {
+              const draft =
+                mappingDraftByProjectId[candidate.remoteProjectId] ??
+                draftFromPlanCandidate(candidate);
+              return (
+                <div
+                  key={candidate.remoteProjectId}
+                  className="space-y-3 rounded-lg border border-border/60 bg-muted/20 p-3"
+                >
+                  <div className="min-w-0">
+                    <div className="truncate text-sm font-medium text-foreground">
+                      {candidate.remoteTitle}
+                    </div>
+                    <div className="mt-1 truncate text-xs text-muted-foreground">
+                      {candidate.remoteWorkspaceRoot}
+                    </div>
+                    <div className="mt-1 text-[11px] text-muted-foreground">
+                      {candidate.threadCount} thread{candidate.threadCount === 1 ? "" : "s"}
+                      {candidate.suggestionReason
+                        ? ` - suggested by ${candidate.suggestionReason.replace("-", " ")}`
+                        : ""}
+                    </div>
+                  </div>
+                  <div className="grid gap-2 sm:grid-cols-[10rem_1fr_auto]">
+                    <select
+                      className="h-8 rounded-md border border-input bg-background px-2 text-xs text-foreground"
+                      value={draft.action}
+                      disabled={isApplyingMappings}
+                      onChange={(event) => {
+                        const action = event.currentTarget
+                          .value as HistorySyncMappingDraft["action"];
+                        setMappingDraftByProjectId((current) => ({
+                          ...current,
+                          [candidate.remoteProjectId]:
+                            action === "map-existing"
+                              ? {
+                                  action,
+                                  localProjectId:
+                                    candidate.suggestedLocalProjectId ??
+                                    mappingPlan?.localProjects[0]?.projectId ??
+                                    "",
+                                }
+                              : action === "skip"
+                                ? { action }
+                                : {
+                                    action,
+                                    workspaceRoot: "",
+                                    title: candidate.remoteTitle,
+                                  },
+                        }));
+                      }}
+                    >
+                      <option value="map-existing">Existing project</option>
+                      <option value="map-folder">New folder</option>
+                      <option value="skip">Skip</option>
+                    </select>
+                    {draft.action === "map-existing" ? (
+                      <select
+                        className="h-8 rounded-md border border-input bg-background px-2 text-xs text-foreground"
+                        value={draft.localProjectId}
+                        disabled={isApplyingMappings}
+                        onChange={(event) =>
+                          setMappingDraftByProjectId((current) => ({
+                            ...current,
+                            [candidate.remoteProjectId]: {
+                              action: "map-existing",
+                              localProjectId: event.currentTarget.value,
+                            },
+                          }))
+                        }
+                      >
+                        {mappingPlan?.localProjects.map((project) => (
+                          <option key={project.projectId} value={project.projectId}>
+                            {project.title} - {project.workspaceRoot}
+                          </option>
+                        ))}
+                      </select>
+                    ) : draft.action === "map-folder" ? (
+                      <Input
+                        value={draft.workspaceRoot}
+                        placeholder="Local folder"
+                        disabled={isApplyingMappings}
+                        onChange={(event) =>
+                          setMappingDraftByProjectId((current) => ({
+                            ...current,
+                            [candidate.remoteProjectId]: {
+                              ...draft,
+                              workspaceRoot: event.currentTarget.value,
+                            },
+                          }))
+                        }
+                      />
+                    ) : (
+                      <div className="flex h-8 items-center text-xs text-muted-foreground">
+                        This project will stay only in MySQL for now.
+                      </div>
+                    )}
+                    {draft.action === "map-folder" ? (
+                      <Button
+                        size="xs"
+                        variant="outline"
+                        disabled={isApplyingMappings}
+                        onClick={() => void handlePickMappingFolder(candidate.remoteProjectId)}
+                      >
+                        Browse
+                      </Button>
+                    ) : (
+                      <span />
+                    )}
+                  </div>
+                </div>
+              );
+            })}
+            <div className="flex justify-end">
+              <Button
+                size="xs"
+                disabled={
+                  isApplyingMappings ||
+                  isLoadingMappings ||
+                  unresolvedMappingCandidates.length === 0
+                }
+                onClick={() => void handleApplyMappings()}
+              >
+                {isApplyingMappings ? "Applying..." : "Apply mappings"}
+              </Button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+      <div className={ITEM_ROW_CLASSNAME}>
+        <div className="grid gap-3 sm:grid-cols-2">
+          <Input
+            value={form.host}
+            placeholder="Host"
+            onChange={(event) => setForm((current) => ({ ...current, host: event.target.value }))}
+          />
+          <Input
+            value={form.port}
+            placeholder="3306"
+            inputMode="numeric"
+            onChange={(event) => setForm((current) => ({ ...current, port: event.target.value }))}
+          />
+          <Input
+            value={form.database}
+            placeholder="Database"
+            onChange={(event) =>
+              setForm((current) => ({ ...current, database: event.target.value }))
+            }
+          />
+          <Input
+            value={form.username}
+            placeholder="Username"
+            onChange={(event) =>
+              setForm((current) => ({ ...current, username: event.target.value }))
+            }
+          />
+          <Input
+            value={form.password}
+            placeholder={config?.configured ? "Password unchanged" : "Password"}
+            type="password"
+            onChange={(event) =>
+              setForm((current) => ({ ...current, password: event.target.value }))
+            }
+          />
+          <Input
+            value={form.shutdownFlushTimeoutMs}
+            placeholder="Shutdown flush timeout (ms)"
+            inputMode="numeric"
+            onChange={(event) =>
+              setForm((current) => ({
+                ...current,
+                shutdownFlushTimeoutMs: event.target.value,
+              }))
+            }
+          />
+        </div>
+        <div className="mt-4 flex flex-wrap items-center gap-4">
+          <label className="flex items-center gap-2 text-xs text-muted-foreground">
+            <Switch
+              checked={form.tlsEnabled}
+              onCheckedChange={(tlsEnabled) => setForm((current) => ({ ...current, tlsEnabled }))}
+              aria-label="Enable MySQL TLS"
+            />
+            TLS
+          </label>
+          <label className="flex items-center gap-2 text-xs text-muted-foreground">
+            <Switch
+              checked={form.statusIndicatorEnabled}
+              onCheckedChange={(statusIndicatorEnabled) =>
+                setForm((current) => ({ ...current, statusIndicatorEnabled }))
+              }
+              aria-label="Show sync status indicator"
+            />
+            Status indicator
+          </label>
+          <div className="ml-auto flex gap-2">
+            <Button
+              size="xs"
+              variant="outline"
+              disabled={isTesting || isSaving}
+              onClick={() => void handleTest()}
+            >
+              {isTesting ? "Testing..." : "Test connection"}
+            </Button>
+            <Button
+              size="xs"
+              variant="outline"
+              disabled={isSaving || !config?.configured}
+              onClick={() => void handleClear()}
+            >
+              Clear connection
+            </Button>
+            <Button size="xs" disabled={isSaving || !config} onClick={() => void handleSave()}>
+              {isSaving ? "Saving..." : "Save"}
+            </Button>
+          </div>
+        </div>
+        {error ? <p className="mt-3 text-xs text-destructive">{error}</p> : null}
+      </div>
+    </SettingsSection>
+  );
+}
+
 export function ConnectionsSettings() {
   const desktopBridge = window.desktopBridge;
   const [currentSessionRole, setCurrentSessionRole] = useState<"owner" | "client" | null>(
@@ -1131,6 +1794,8 @@ export function ConnectionsSettings() {
   );
   return (
     <SettingsPageContainer>
+      <HistorySyncSettingsSection />
+
       {canManageLocalBackend ? (
         <>
           <SettingsSection title="Manage local backend">

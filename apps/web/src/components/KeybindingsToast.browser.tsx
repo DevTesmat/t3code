@@ -164,6 +164,7 @@ function createMinimalSnapshot(): OrchestrationReadModel {
         latestTurn: null,
         createdAt: NOW_ISO,
         updatedAt: NOW_ISO,
+        pinnedAt: null,
         archivedAt: null,
         deletedAt: null,
         messages: [
@@ -220,12 +221,14 @@ function toShellSnapshot(snapshot: OrchestrationReadModel) {
       latestTurn: thread.latestTurn,
       createdAt: thread.createdAt,
       updatedAt: thread.updatedAt,
+      pinnedAt: thread.pinnedAt,
       archivedAt: thread.archivedAt,
       session: thread.session,
       latestUserMessageAt:
         thread.messages.findLast((message) => message.role === "user")?.createdAt ?? null,
       hasPendingApprovals: false,
       hasPendingUserInput: false,
+      latestPendingUserInputAt: null,
       hasActionableProposedPlan: false,
     })),
     updatedAt: snapshot.updatedAt,
@@ -289,7 +292,7 @@ function sendServerConfigUpdatedPush(issues: ServerConfig["issues"]) {
   rpcHarness.emitStreamValue(WS_METHODS.subscribeServerConfig, {
     version: 1,
     type: "keybindingsUpdated",
-    payload: { issues },
+    payload: { keybindings: fixture.serverConfig.keybindings, issues },
   });
 }
 

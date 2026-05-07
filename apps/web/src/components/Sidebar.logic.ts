@@ -12,6 +12,7 @@ import { isLatestTurnSettled } from "../session-logic";
 
 export const THREAD_SELECTION_SAFE_SELECTOR = "[data-thread-item], [data-thread-selection-safe]";
 export const THREAD_JUMP_HINT_SHOW_DELAY_MS = 100;
+export const DONE_THREAD_STATUS_TTL_MS = 60 * 60 * 1000;
 // Visible sidebar rows are prewarmed into the thread-detail cache so opening a
 // nearby thread usually reuses an already-hot subscription.
 export const SIDEBAR_THREAD_PREWARM_LIMIT = 10;
@@ -26,16 +27,11 @@ type SidebarProject = {
 export type ThreadTraversalDirection = "previous" | "next";
 
 export interface ThreadStatusPill {
-  label:
-    | "Working"
-    | "Connecting"
-    | "Completed"
-    | "Pending Approval"
-    | "Awaiting Input"
-    | "Plan Ready";
+  label: "Working" | "Connecting" | "Done" | "Pending Approval" | "Awaiting Input" | "Plan Ready";
   colorClass: string;
   dotClass: string;
   pulse: boolean;
+  showTextLabel?: boolean;
 }
 
 const THREAD_STATUS_PRIORITY: Record<ThreadStatusPill["label"], number> = {
@@ -44,7 +40,7 @@ const THREAD_STATUS_PRIORITY: Record<ThreadStatusPill["label"], number> = {
   Working: 3,
   Connecting: 3,
   "Plan Ready": 2,
-  Completed: 1,
+  Done: 1,
 };
 
 type ThreadStatusInput = Pick<
@@ -53,10 +49,12 @@ type ThreadStatusInput = Pick<
   | "hasPendingApprovals"
   | "hasPendingUserInput"
   | "interactionMode"
+  | "latestPendingUserInputAt"
   | "latestTurn"
   | "session"
 > & {
   lastVisitedAt?: string | undefined;
+  nowMs?: number | undefined;
 };
 
 export interface ThreadJumpHintVisibilityController {
@@ -144,15 +142,40 @@ export function useThreadJumpHintVisibility(): {
   };
 }
 
-export function hasUnseenCompletion(thread: ThreadStatusInput): boolean {
-  if (!thread.latestTurn?.completedAt) return false;
-  const completedAt = Date.parse(thread.latestTurn.completedAt);
-  if (Number.isNaN(completedAt)) return false;
-  if (!thread.lastVisitedAt) return true;
+export function hasUnseenTimestamp(
+  eventAt: string | null | undefined,
+  lastVisitedAt: string | null | undefined,
+): boolean {
+  if (!eventAt) return false;
+  const eventAtMs = Date.parse(eventAt);
+  if (Number.isNaN(eventAtMs)) return false;
+  if (!lastVisitedAt) return true;
 
-  const lastVisitedAt = Date.parse(thread.lastVisitedAt);
-  if (Number.isNaN(lastVisitedAt)) return true;
-  return completedAt > lastVisitedAt;
+  const lastVisitedAtMs = Date.parse(lastVisitedAt);
+  if (Number.isNaN(lastVisitedAtMs)) return true;
+  return eventAtMs > lastVisitedAtMs;
+}
+
+export function hasUnseenCompletion(thread: ThreadStatusInput): boolean {
+  return hasUnseenTimestamp(thread.latestTurn?.completedAt, thread.lastVisitedAt);
+}
+
+export function hasCompletedLatestTurn(thread: ThreadStatusInput): boolean {
+  return (
+    thread.latestTurn?.state === "completed" &&
+    isLatestTurnSettled(thread.latestTurn, thread.session)
+  );
+}
+
+export function hasFreshCompletedLatestTurn(thread: ThreadStatusInput): boolean {
+  if (!hasCompletedLatestTurn(thread)) {
+    return false;
+  }
+  const completedAtMs = Date.parse(thread.latestTurn?.completedAt ?? "");
+  if (Number.isNaN(completedAtMs)) {
+    return false;
+  }
+  return (thread.nowMs ?? Date.now()) - completedAtMs <= DONE_THREAD_STATUS_TTL_MS;
 }
 
 export function shouldClearThreadSelectionOnMouseDown(target: HTMLElement | null): boolean {
@@ -340,7 +363,10 @@ export function resolveThreadStatusPill(input: {
     };
   }
 
-  if (thread.hasPendingUserInput) {
+  if (
+    thread.hasPendingUserInput &&
+    hasUnseenTimestamp(thread.latestPendingUserInputAt, thread.lastVisitedAt)
+  ) {
     return {
       label: "Awaiting Input",
       colorClass: "text-indigo-600 dark:text-indigo-300/90",
@@ -381,12 +407,13 @@ export function resolveThreadStatusPill(input: {
     };
   }
 
-  if (hasUnseenCompletion(thread)) {
+  if (hasFreshCompletedLatestTurn(thread)) {
     return {
-      label: "Completed",
+      label: "Done",
       colorClass: "text-emerald-600 dark:text-emerald-300/90",
       dotClass: "bg-emerald-500 dark:bg-emerald-300/90",
       pulse: false,
+      showTextLabel: hasUnseenCompletion(thread),
     };
   }
 
@@ -411,51 +438,40 @@ export function resolveProjectStatusIndicator(
   return highestPriorityStatus;
 }
 
-export function getVisibleThreadsForProject<T extends Pick<Thread, "id">>(input: {
+export function getVisibleThreadsForProject<T extends Pick<Thread, "id" | "pinnedAt">>(input: {
   threads: readonly T[];
   activeThreadId: T["id"] | undefined;
-  isThreadListExpanded: boolean;
-  previewLimit: number;
+  visibleUnpinnedLimit: number;
 }): {
   hasHiddenThreads: boolean;
   visibleThreads: T[];
   hiddenThreads: T[];
 } {
-  const { activeThreadId, isThreadListExpanded, previewLimit, threads } = input;
-  const hasHiddenThreads = threads.length > previewLimit;
-
-  if (!hasHiddenThreads || isThreadListExpanded) {
-    return {
-      hasHiddenThreads,
-      hiddenThreads: [],
-      visibleThreads: [...threads],
-    };
+  const { activeThreadId, visibleUnpinnedLimit, threads } = input;
+  const unpinnedThreadIds = new Set(
+    threads
+      .filter((thread) => thread.pinnedAt == null)
+      .slice(0, Math.max(0, visibleUnpinnedLimit))
+      .map((thread) => thread.id),
+  );
+  const pinnedThreadIds = new Set(
+    threads.filter((thread) => thread.pinnedAt != null).map((thread) => thread.id),
+  );
+  const activeThread = activeThreadId
+    ? threads.find((thread) => thread.id === activeThreadId)
+    : undefined;
+  const visibleThreadIds = new Set([...pinnedThreadIds, ...unpinnedThreadIds]);
+  if (activeThread) {
+    visibleThreadIds.add(activeThread.id);
   }
 
-  const previewThreads = threads.slice(0, previewLimit);
-  if (!activeThreadId || previewThreads.some((thread) => thread.id === activeThreadId)) {
-    return {
-      hasHiddenThreads: true,
-      hiddenThreads: threads.slice(previewLimit),
-      visibleThreads: previewThreads,
-    };
-  }
-
-  const activeThread = threads.find((thread) => thread.id === activeThreadId);
-  if (!activeThread) {
-    return {
-      hasHiddenThreads: true,
-      hiddenThreads: threads.slice(previewLimit),
-      visibleThreads: previewThreads,
-    };
-  }
-
-  const visibleThreadIds = new Set([...previewThreads, activeThread].map((thread) => thread.id));
+  const visibleThreads = threads.filter((thread) => visibleThreadIds.has(thread.id));
+  const hiddenThreads = threads.filter((thread) => !visibleThreadIds.has(thread.id));
 
   return {
-    hasHiddenThreads: true,
-    hiddenThreads: threads.filter((thread) => !visibleThreadIds.has(thread.id)),
-    visibleThreads: threads.filter((thread) => visibleThreadIds.has(thread.id)),
+    hasHiddenThreads: hiddenThreads.length > 0,
+    hiddenThreads,
+    visibleThreads,
   };
 }
 

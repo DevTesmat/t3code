@@ -9,7 +9,11 @@ import { describe, expect, it } from "vitest";
 
 import {
   deriveCompletionDividerBeforeEntryId,
+  deriveActiveTurnActivityState,
   deriveActiveWorkStartedAt,
+  deriveThreadWorkDurationMs,
+  deriveThreadSubagents,
+  deriveThreadSubagentTranscripts,
   deriveActivePlanState,
   derivePendingApprovals,
   derivePendingUserInputs,
@@ -20,7 +24,9 @@ import {
   hasActionableProposedPlan,
   hasToolActivityForTurn,
   isLatestTurnSettled,
+  shouldShowPlanFollowUpPrompt,
 } from "./session-logic";
+import type { ChatMessage, ThreadSession } from "./types";
 
 function makeActivity(overrides: {
   id?: string;
@@ -44,6 +50,254 @@ function makeActivity(overrides: {
     ...(overrides.sequence !== undefined ? { sequence: overrides.sequence } : {}),
   };
 }
+
+function makeRunningSession(overrides: Partial<ThreadSession> = {}): ThreadSession {
+  return {
+    provider: "codex" as never,
+    status: "running",
+    activeTurnId: TurnId.make("turn-1"),
+    createdAt: "2026-02-23T00:00:00.000Z",
+    updatedAt: "2026-02-23T00:00:01.000Z",
+    orchestrationStatus: "running",
+    ...overrides,
+  };
+}
+
+function makeAssistantMessage(overrides: Partial<ChatMessage> = {}): ChatMessage {
+  return {
+    id: MessageId.make("assistant-1"),
+    role: "assistant",
+    text: "partial",
+    turnId: TurnId.make("turn-1"),
+    createdAt: "2026-02-23T00:00:02.000Z",
+    streaming: true,
+    ...overrides,
+  };
+}
+
+describe("deriveThreadSubagents", () => {
+  it("folds collab agent lifecycle activities into stable subagent rows", () => {
+    const activities: OrchestrationThreadActivity[] = [
+      makeActivity({
+        id: "spawn-started",
+        createdAt: "2026-02-23T00:00:01.000Z",
+        kind: "tool.started",
+        summary: "Subagent task started",
+        payload: {
+          itemType: "collab_agent_tool_call",
+          data: {
+            toolCallId: "collab-1",
+            collabTool: "spawnAgent",
+            receiverThreadIds: ["child-1", "child-2"],
+            model: "gpt-5.5",
+            reasoningEffort: "high",
+            promptPreview: "Inspect the server projection.",
+            agentsStates: {
+              "child-1": { status: "running", agent_nickname: "Explorer", agent_role: "explorer" },
+              "child-2": { status: "completed", agent_role: "worker" },
+            },
+          },
+        },
+      }),
+      makeActivity({
+        id: "close-child-1",
+        createdAt: "2026-02-23T00:00:02.000Z",
+        kind: "tool.completed",
+        summary: "Subagent task",
+        payload: {
+          itemType: "collab_agent_tool_call",
+          data: {
+            toolCallId: "collab-2",
+            collabTool: "closeAgent",
+            receiverThreadIds: ["child-1"],
+          },
+        },
+      }),
+      makeActivity({
+        id: "spawn-failed",
+        createdAt: "2026-02-23T00:00:03.000Z",
+        kind: "tool.completed",
+        summary: "Subagent task",
+        payload: {
+          itemType: "collab_agent_tool_call",
+          data: {
+            toolCallId: "collab-3",
+            collabTool: "spawnAgent",
+            receiverThreadIds: ["child-3"],
+            status: "failed",
+          },
+        },
+      }),
+    ];
+
+    expect(deriveThreadSubagents(activities)).toEqual([
+      {
+        threadId: "child-1",
+        createdAt: "2026-02-23T00:00:01.000Z",
+        updatedAt: "2026-02-23T00:00:02.000Z",
+        status: "closed",
+        running: false,
+        nickname: "Explorer",
+        role: "explorer",
+        model: "gpt-5.5",
+        reasoningEffort: "high",
+        promptPreview: "Inspect the server projection.",
+      },
+      {
+        threadId: "child-2",
+        createdAt: "2026-02-23T00:00:01.000Z",
+        updatedAt: "2026-02-23T00:00:01.000Z",
+        status: "completed",
+        running: false,
+        role: "worker",
+        model: "gpt-5.5",
+        reasoningEffort: "high",
+        promptPreview: "Inspect the server projection.",
+      },
+      {
+        threadId: "child-3",
+        createdAt: "2026-02-23T00:00:03.000Z",
+        updatedAt: "2026-02-23T00:00:03.000Z",
+        status: "failed",
+        running: false,
+      },
+    ]);
+  });
+});
+
+describe("deriveThreadSubagentTranscripts", () => {
+  it("builds read-only subagent messages from spawn metadata and child transcript activities", () => {
+    const activities: OrchestrationThreadActivity[] = [
+      makeActivity({
+        id: "spawn-child",
+        createdAt: "2026-02-23T00:00:01.000Z",
+        kind: "tool.completed",
+        summary: "Subagent task",
+        payload: {
+          itemType: "collab_agent_tool_call",
+          data: {
+            collabTool: "spawnAgent",
+            receiverThreadIds: ["child-1"],
+            promptPreview: "Inspect the server projection.",
+            agentsStates: {
+              "child-1": { status: "running", agent_nickname: "Explorer" },
+            },
+          },
+        },
+      }),
+      makeActivity({
+        id: "child-answer",
+        createdAt: "2026-02-23T00:00:02.000Z",
+        kind: "subagent.item.completed",
+        summary: "Assistant message",
+        tone: "info",
+        payload: {
+          providerThreadId: "child-1",
+          providerTurnId: "child-turn-1",
+          itemId: "child-message-1",
+          itemType: "assistant_message",
+          text: "Projection stores activity rows.",
+          phase: "final_answer",
+        },
+      }),
+    ];
+
+    const transcripts = deriveThreadSubagentTranscripts(activities);
+
+    expect(transcripts).toHaveLength(1);
+    expect(transcripts[0]?.subagent.threadId).toBe("child-1");
+    expect(transcripts[0]?.messages).toMatchObject([
+      {
+        role: "user",
+        text: "Inspect the server projection.",
+        streaming: false,
+      },
+      {
+        role: "assistant",
+        text: "Projection stores activity rows.",
+        streaming: false,
+      },
+    ]);
+    expect(transcripts[0]?.activities.map((activity) => activity.id)).toEqual(["child-answer"]);
+  });
+});
+
+describe("deriveWorkLogEntries subagent coordination", () => {
+  it("filters subagent transcript rows out of the parent work log", () => {
+    const activities: OrchestrationThreadActivity[] = [
+      makeActivity({
+        id: "child-answer",
+        createdAt: "2026-02-23T00:00:01.000Z",
+        kind: "subagent.item.completed",
+        summary: "Assistant message",
+        tone: "info",
+        payload: {
+          providerThreadId: "child-1",
+          itemType: "assistant_message",
+          text: "Subagent finding.",
+        },
+        turnId: "turn-1",
+      }),
+    ];
+
+    expect(deriveWorkLogEntries(activities, TurnId.make("turn-1"))).toEqual([]);
+  });
+
+  it("collapses repeated wait calls in one parent turn into a progress row", () => {
+    const activities: OrchestrationThreadActivity[] = [
+      makeActivity({
+        id: "wait-all",
+        createdAt: "2026-02-23T00:00:01.000Z",
+        kind: "tool.completed",
+        summary: "Subagent task",
+        payload: {
+          itemType: "collab_agent_tool_call",
+          data: {
+            toolCallId: "wait-1",
+            collabTool: "wait",
+            receiverThreadIds: ["child-1", "child-2", "child-3"],
+            agentsStates: {
+              "child-1": { status: "completed" },
+              "child-2": { status: "running" },
+              "child-3": { status: "running" },
+            },
+          },
+        },
+        turnId: "turn-1",
+      }),
+      makeActivity({
+        id: "wait-remaining",
+        createdAt: "2026-02-23T00:00:02.000Z",
+        kind: "tool.completed",
+        summary: "Subagent task",
+        payload: {
+          itemType: "collab_agent_tool_call",
+          data: {
+            toolCallId: "wait-2",
+            collabTool: "wait",
+            receiverThreadIds: ["child-1", "child-2", "child-3"],
+            agentsStates: {
+              "child-1": { status: "completed" },
+              "child-2": { status: "completed" },
+              "child-3": { status: "completed" },
+            },
+          },
+        },
+        turnId: "turn-1",
+      }),
+    ];
+
+    expect(deriveWorkLogEntries(activities, TurnId.make("turn-1"))).toMatchObject([
+      {
+        id: "wait-remaining",
+        label: "Waiting on subagents (3/3 complete)",
+        status: "completed",
+        itemType: "collab_agent_tool_call",
+        collabTool: "wait",
+      },
+    ]);
+  });
+});
 
 describe("derivePendingApprovals", () => {
   it("tracks open approvals and removes resolved ones", () => {
@@ -441,6 +695,29 @@ describe("findLatestProposedPlan", () => {
 
     expect(latestPlan?.planMarkdown).toBe("# Latest");
   });
+
+  it("makes no-turn imported proposed plans actionable when no session is running", () => {
+    const latestTurnSettled = isLatestTurnSettled(null, null);
+    const activeProposedPlan = latestTurnSettled
+      ? findLatestProposedPlan(
+          [
+            {
+              id: "plan-imported",
+              turnId: null,
+              planMarkdown: "# Imported plan",
+              implementedAt: null,
+              implementationThreadId: null,
+              createdAt: "2026-02-23T00:00:01.000Z",
+              updatedAt: "2026-02-23T00:00:01.000Z",
+            },
+          ],
+          null,
+        )
+      : null;
+
+    expect(latestTurnSettled).toBe(true);
+    expect(hasActionableProposedPlan(activeProposedPlan)).toBe(true);
+  });
 });
 
 describe("hasActionableProposedPlan", () => {
@@ -468,6 +745,48 @@ describe("hasActionableProposedPlan", () => {
         implementationThreadId: ThreadId.make("thread-implement"),
         createdAt: "2026-02-23T00:00:00.000Z",
         updatedAt: "2026-02-23T00:00:02.000Z",
+      }),
+    ).toBe(false);
+  });
+});
+
+describe("shouldShowPlanFollowUpPrompt", () => {
+  const proposedPlan = {
+    id: "plan-imported",
+    turnId: null,
+    planMarkdown: "# Imported plan",
+    implementedAt: null,
+    implementationThreadId: null,
+    createdAt: "2026-02-23T00:00:01.000Z",
+    updatedAt: "2026-02-23T00:00:01.000Z",
+  };
+
+  it("shows for settled no-turn imported plans without requiring plan interaction mode", () => {
+    expect(
+      shouldShowPlanFollowUpPrompt({
+        pendingApprovalCount: 0,
+        pendingUserInputCount: 0,
+        latestTurnSettled: true,
+        proposedPlan,
+      }),
+    ).toBe(true);
+  });
+
+  it("stays hidden while the thread is blocked or running", () => {
+    expect(
+      shouldShowPlanFollowUpPrompt({
+        pendingApprovalCount: 1,
+        pendingUserInputCount: 0,
+        latestTurnSettled: true,
+        proposedPlan,
+      }),
+    ).toBe(false);
+    expect(
+      shouldShowPlanFollowUpPrompt({
+        pendingApprovalCount: 0,
+        pendingUserInputCount: 0,
+        latestTurnSettled: false,
+        proposedPlan,
       }),
     ).toBe(false);
   });
@@ -571,7 +890,7 @@ describe("findSidebarProposedPlan", () => {
 });
 
 describe("deriveWorkLogEntries", () => {
-  it("omits tool started entries and keeps completed entries", () => {
+  it("collapses tool started entries with matching completed entries", () => {
     const activities: OrchestrationThreadActivity[] = [
       makeActivity({
         id: "tool-complete",
@@ -589,6 +908,155 @@ describe("deriveWorkLogEntries", () => {
 
     const entries = deriveWorkLogEntries(activities, undefined);
     expect(entries.map((entry) => entry.id)).toEqual(["tool-complete"]);
+  });
+
+  it("collapses old command started and completed entries without tool ids", () => {
+    const activities: OrchestrationThreadActivity[] = [
+      makeActivity({
+        id: "tool-start",
+        createdAt: "2026-02-23T00:00:02.000Z",
+        summary: "Ran command started",
+        kind: "tool.started",
+        payload: {
+          itemType: "command_execution",
+          detail: "git status --short",
+          data: { command: "git status --short" },
+        },
+      }),
+      makeActivity({
+        id: "tool-complete",
+        createdAt: "2026-02-23T00:00:03.000Z",
+        summary: "Ran command",
+        kind: "tool.completed",
+        payload: {
+          itemType: "command_execution",
+          detail: "git status --short",
+          data: { command: "git status --short", exitCode: 0 },
+        },
+      }),
+    ];
+
+    const entries = deriveWorkLogEntries(activities, undefined);
+    expect(entries).toHaveLength(1);
+    expect(entries[0]?.id).toBe("tool-complete");
+    expect(entries[0]?.label).toBe("Ran command");
+    expect(entries[0]?.status).toBe("completed");
+  });
+
+  it("reconciles command lifecycle by tool call id across intervening assistant text", () => {
+    const activities: OrchestrationThreadActivity[] = [
+      makeActivity({
+        id: "tool-start",
+        createdAt: "2026-02-23T00:00:01.000Z",
+        summary: "Ran command started",
+        kind: "tool.started",
+        turnId: "turn-1",
+        payload: {
+          itemType: "command_execution",
+          status: "in_progress",
+          detail: "bun run lint",
+          data: {
+            toolCallId: "tool-command-interleaved",
+            command: "bun run lint",
+          },
+        },
+      }),
+      makeActivity({
+        id: "tool-complete",
+        createdAt: "2026-02-23T00:00:03.000Z",
+        summary: "Ran command",
+        kind: "tool.completed",
+        turnId: "turn-1",
+        payload: {
+          itemType: "command_execution",
+          status: "completed",
+          detail: "bun run lint",
+          data: {
+            toolCallId: "tool-command-interleaved",
+            command: "bun run lint",
+            exitCode: 0,
+          },
+        },
+      }),
+    ];
+    const assistant = makeAssistantMessage({
+      id: MessageId.make("assistant-between-tool-events"),
+      createdAt: "2026-02-23T00:00:02.000Z",
+      streaming: false,
+      text: "Still working.",
+    });
+
+    const entries = deriveWorkLogEntries(activities, TurnId.make("turn-1"));
+    const timelineEntries = deriveTimelineEntries([assistant], [], entries);
+    const workTimelineEntries = timelineEntries.filter((entry) => entry.kind === "work");
+
+    expect(entries).toHaveLength(1);
+    expect(entries[0]).toMatchObject({
+      id: "tool-complete",
+      command: "bun run lint",
+      status: "completed",
+      toolCallId: "tool-command-interleaved",
+      toolKey: "tool:tool-command-interleaved",
+    });
+    expect(workTimelineEntries).toHaveLength(1);
+    expect(timelineEntries.map((entry) => entry.kind)).toEqual(["message", "work"]);
+  });
+
+  it("does not downgrade a completed command when a later update arrives for the same tool", () => {
+    const activities: OrchestrationThreadActivity[] = [
+      makeActivity({
+        id: "tool-complete",
+        createdAt: "2026-02-23T00:00:02.000Z",
+        summary: "Ran command",
+        kind: "tool.completed",
+        payload: {
+          itemType: "command_execution",
+          status: "completed",
+          detail: "bun run lint",
+          data: {
+            toolCallId: "tool-command-late-update",
+            command: "bun run lint",
+            outputPreview: {
+              lines: ["done"],
+              stream: "stdout",
+              truncated: false,
+            },
+          },
+        },
+      }),
+      makeActivity({
+        id: "tool-late-update",
+        createdAt: "2026-02-23T00:00:03.000Z",
+        summary: "Terminal output",
+        kind: "tool.updated",
+        payload: {
+          itemType: "command_execution",
+          status: "inProgress",
+          data: {
+            toolCallId: "tool-command-late-update",
+            outputPreview: {
+              lines: ["done", "summary"],
+              stream: "stdout",
+              truncated: false,
+            },
+          },
+        },
+      }),
+    ];
+
+    const entries = deriveWorkLogEntries(activities, undefined);
+
+    expect(entries).toHaveLength(1);
+    expect(entries[0]).toMatchObject({
+      id: "tool-late-update",
+      command: "bun run lint",
+      status: "completed",
+      outputPreview: {
+        lines: ["done", "summary"],
+        stream: "stdout",
+        truncated: false,
+      },
+    });
   });
 
   it("omits task.started but shows task.progress and task.completed", () => {
@@ -667,6 +1135,37 @@ describe("deriveWorkLogEntries", () => {
 
     const entries = deriveWorkLogEntries(activities, TurnId.make("turn-2"));
     expect(entries.map((entry) => entry.id)).toEqual(["turn-2"]);
+  });
+
+  it("preserves turn ids on derived work log entries", () => {
+    const activities: OrchestrationThreadActivity[] = [
+      makeActivity({
+        id: "file-change-start",
+        turnId: "turn-file-change",
+        summary: "File change started",
+        kind: "tool.started",
+        payload: {
+          itemType: "file_change",
+          data: { files: [{ path: "src/app.ts" }] },
+        },
+      }),
+      makeActivity({
+        id: "file-change-complete",
+        turnId: "turn-file-change",
+        createdAt: "2026-02-23T00:00:01.000Z",
+        summary: "File change complete",
+        kind: "tool.completed",
+        payload: {
+          itemType: "file_change",
+          data: { files: [{ path: "src/app.ts" }] },
+        },
+      }),
+    ];
+
+    const [entry] = deriveWorkLogEntries(activities, TurnId.make("turn-file-change"));
+    expect(entry?.id).toBe("file-change-complete");
+    expect(entry?.turnId).toBe(TurnId.make("turn-file-change"));
+    expect(entry?.changedFiles).toEqual(["src/app.ts"]);
   });
 
   it("omits checkpoint captured info entries", () => {
@@ -1072,6 +1571,214 @@ describe("deriveWorkLogEntries", () => {
     expect(entry?.command).toBeUndefined();
   });
 
+  it("derives terminal output preview from normalized command payloads", () => {
+    const activities: OrchestrationThreadActivity[] = [
+      makeActivity({
+        id: "command-preview-normalized",
+        kind: "tool.updated",
+        summary: "Terminal output",
+        payload: {
+          itemType: "command_execution",
+          data: {
+            toolCallId: "tool-command-preview",
+            outputPreview: {
+              lines: ["one", "two", "three", "four"],
+              stream: "stdout",
+              truncated: false,
+            },
+          },
+        },
+      }),
+    ];
+
+    const [entry] = deriveWorkLogEntries(activities, undefined);
+    expect(entry?.outputPreview).toEqual({
+      lines: ["one", "two", "three", "four"],
+      stream: "stdout",
+      truncated: false,
+    });
+  });
+
+  it("derives fallback terminal output preview from raw stdout", () => {
+    const activities: OrchestrationThreadActivity[] = [
+      makeActivity({
+        id: "command-preview-stdout",
+        kind: "tool.completed",
+        summary: "Ran command",
+        payload: {
+          itemType: "command_execution",
+          data: {
+            rawOutput: {
+              stdout: "\nline1\nline2\nline3\nline4\nline5\n",
+              stderr: "",
+              exitCode: 0,
+            },
+          },
+        },
+      }),
+    ];
+
+    const [entry] = deriveWorkLogEntries(activities, undefined);
+    expect(entry?.outputPreview).toEqual({
+      lines: ["line2", "line3", "line4", "line5"],
+      stream: "stdout",
+      truncated: true,
+    });
+  });
+
+  it("prefers stderr preview for failed command raw output", () => {
+    const activities: OrchestrationThreadActivity[] = [
+      makeActivity({
+        id: "command-preview-stderr",
+        kind: "tool.completed",
+        summary: "Ran command",
+        payload: {
+          itemType: "command_execution",
+          status: "failed",
+          data: {
+            rawOutput: {
+              stdout: "success-looking output\n",
+              stderr: "actual failure\n",
+              exitCode: 1,
+            },
+          },
+        },
+      }),
+    ];
+
+    const [entry] = deriveWorkLogEntries(activities, undefined);
+    expect(entry?.status).toBe("failed");
+    expect(entry?.exitCode).toBe(1);
+    expect(entry?.outputPreview).toEqual({
+      lines: ["actual failure"],
+      stream: "stderr",
+      truncated: false,
+    });
+  });
+
+  it("collapses command lifecycle rows while keeping the latest output preview", () => {
+    const activities: OrchestrationThreadActivity[] = [
+      makeActivity({
+        id: "command-preview-update",
+        createdAt: "2026-02-23T00:00:01.000Z",
+        kind: "tool.updated",
+        summary: "Terminal output",
+        payload: {
+          itemType: "command_execution",
+          data: {
+            toolCallId: "tool-command-collapse-preview",
+            outputPreview: {
+              lines: ["first"],
+              stream: "unknown",
+              truncated: false,
+            },
+          },
+        },
+      }),
+      makeActivity({
+        id: "command-preview-complete",
+        createdAt: "2026-02-23T00:00:02.000Z",
+        kind: "tool.completed",
+        summary: "Ran command",
+        payload: {
+          itemType: "command_execution",
+          data: {
+            toolCallId: "tool-command-collapse-preview",
+            command: "bun run lint",
+            outputPreview: {
+              lines: ["latest"],
+              stream: "stdout",
+              truncated: false,
+            },
+          },
+        },
+      }),
+    ];
+
+    const entries = deriveWorkLogEntries(activities, undefined);
+    expect(entries).toHaveLength(1);
+    expect(entries[0]).toMatchObject({
+      id: "command-preview-complete",
+      command: "bun run lint",
+      status: "completed",
+      outputPreview: {
+        lines: ["latest"],
+        stream: "stdout",
+        truncated: false,
+      },
+    });
+  });
+
+  it("collapses command lifecycle rows by tool call id while preserving earlier preview data", () => {
+    const activities: OrchestrationThreadActivity[] = [
+      makeActivity({
+        id: "command-preview-update",
+        createdAt: "2026-02-23T00:00:01.000Z",
+        kind: "tool.updated",
+        summary: "Terminal output",
+        payload: {
+          itemType: "command_execution",
+          data: {
+            toolCallId: "tool-command-preserve-preview",
+            outputPreview: {
+              lines: ["still running"],
+              stream: "stdout",
+              truncated: false,
+            },
+          },
+        },
+      }),
+      makeActivity({
+        id: "command-preview-complete",
+        createdAt: "2026-02-23T00:00:02.000Z",
+        kind: "tool.completed",
+        summary: "Ran command",
+        payload: {
+          itemType: "command_execution",
+          status: "completed",
+          data: {
+            toolCallId: "tool-command-preserve-preview",
+            command: "bun run lint",
+          },
+        },
+      }),
+    ];
+
+    const entries = deriveWorkLogEntries(activities, undefined);
+    expect(entries).toHaveLength(1);
+    expect(entries[0]).toMatchObject({
+      id: "command-preview-complete",
+      command: "bun run lint",
+      status: "completed",
+      outputPreview: {
+        lines: ["still running"],
+        stream: "stdout",
+        truncated: false,
+      },
+    });
+  });
+
+  it("derives failed terminal status from detail exit code", () => {
+    const activities: OrchestrationThreadActivity[] = [
+      makeActivity({
+        id: "command-detail-failed",
+        kind: "tool.completed",
+        summary: "Ran command",
+        payload: {
+          itemType: "command_execution",
+          detail: "bun run lint <exited with exit code 2>",
+        },
+      }),
+    ];
+
+    const [entry] = deriveWorkLogEntries(activities, undefined);
+    expect(entry).toMatchObject({
+      command: "bun run lint",
+      status: "failed",
+      exitCode: 2,
+    });
+  });
+
   it("collapses legacy completed tool rows that are missing tool metadata", () => {
     const activities: OrchestrationThreadActivity[] = [
       makeActivity({
@@ -1310,6 +2017,47 @@ describe("deriveTimelineEntries", () => {
     });
   });
 
+  it("hides harness implementation prompts while keeping proposed plan cards", () => {
+    const entries = deriveTimelineEntries(
+      [
+        {
+          id: MessageId.make("message-harness"),
+          role: "user",
+          source: "harness",
+          text: "PLEASE IMPLEMENT THIS PLAN:\n# Ship it",
+          createdAt: "2026-02-23T00:00:01.000Z",
+          streaming: false,
+        },
+        {
+          id: MessageId.make("message-user"),
+          role: "user",
+          source: "user",
+          text: "visible follow-up",
+          createdAt: "2026-02-23T00:00:03.000Z",
+          streaming: false,
+        },
+      ],
+      [
+        {
+          id: "plan:thread-1:turn:turn-1",
+          turnId: TurnId.make("turn-1"),
+          planMarkdown: "# Ship it",
+          implementedAt: null,
+          implementationThreadId: null,
+          createdAt: "2026-02-23T00:00:02.000Z",
+          updatedAt: "2026-02-23T00:00:02.000Z",
+        },
+      ],
+      [],
+    );
+
+    expect(entries.map((entry) => entry.id)).toEqual([
+      "plan:thread-1:turn:turn-1",
+      MessageId.make("message-user"),
+    ]);
+    expect(entries.map((entry) => entry.kind)).toEqual(["proposed-plan", "message"]);
+  });
+
   it("anchors the completion divider to latestTurn.assistantMessageId before timestamp fallback", () => {
     const entries = deriveTimelineEntries(
       [
@@ -1408,12 +2156,162 @@ describe("hasToolActivityForTurn", () => {
   });
 });
 
+describe("deriveActiveTurnActivityState", () => {
+  const baseInput = {
+    session: makeRunningSession(),
+    latestTurn: {
+      turnId: TurnId.make("turn-1"),
+      state: "running" as const,
+      requestedAt: "2026-02-23T00:00:00.000Z",
+      startedAt: "2026-02-23T00:00:01.000Z",
+      completedAt: null,
+      assistantMessageId: null,
+    },
+    activities: [] as OrchestrationThreadActivity[],
+    messages: [] as ChatMessage[],
+    pendingApprovals: [],
+    pendingUserInputs: [],
+    isSendBusy: false,
+    isConnecting: false,
+    isRevertingCheckpoint: false,
+  };
+
+  it("shows waiting for model stream after turn start before content or tool events", () => {
+    expect(deriveActiveTurnActivityState(baseInput)).toMatchObject({
+      kind: "waitingForModel",
+      label: "Waiting for model stream",
+    });
+  });
+
+  it("shows streaming response when the current assistant message is streaming", () => {
+    expect(
+      deriveActiveTurnActivityState({
+        ...baseInput,
+        messages: [makeAssistantMessage()],
+      }),
+    ).toMatchObject({
+      kind: "streamingAssistant",
+      label: "Streaming response",
+    });
+  });
+
+  it("shows the active tool and falls back after the tool completes", () => {
+    const toolStarted = makeActivity({
+      id: "tool-started",
+      turnId: "turn-1",
+      kind: "tool.started",
+      summary: "Terminal started",
+      payload: {
+        itemType: "command_execution",
+        title: "Terminal",
+        data: { toolCallId: "tool-1", command: "bun lint" },
+      },
+    });
+    const running = deriveActiveTurnActivityState({
+      ...baseInput,
+      activities: [toolStarted],
+    });
+
+    expect(running).toMatchObject({
+      kind: "runningTool",
+      label: "Running checks",
+      detail: "bun lint",
+    });
+
+    expect(
+      deriveActiveTurnActivityState({
+        ...baseInput,
+        activities: [
+          toolStarted,
+          makeActivity({
+            id: "tool-completed",
+            turnId: "turn-1",
+            kind: "tool.completed",
+            summary: "Terminal completed",
+            payload: {
+              itemType: "command_execution",
+              title: "Terminal",
+              data: { toolCallId: "tool-1", command: "bun lint" },
+            },
+          }),
+        ],
+      }),
+    ).toMatchObject({
+      kind: "waitingForModel",
+      label: "Waiting for model stream",
+    });
+  });
+
+  it("lets approval and user-input blockers override running states", () => {
+    expect(
+      deriveActiveTurnActivityState({
+        ...baseInput,
+        messages: [makeAssistantMessage()],
+        pendingApprovals: [
+          {
+            requestId: "approval-1" as never,
+            requestKind: "command",
+            createdAt: "2026-02-23T00:00:03.000Z",
+          },
+        ],
+      }),
+    ).toMatchObject({
+      kind: "awaitingApproval",
+      label: "Waiting for command approval",
+    });
+
+    expect(
+      deriveActiveTurnActivityState({
+        ...baseInput,
+        pendingUserInputs: [
+          {
+            requestId: "input-1" as never,
+            createdAt: "2026-02-23T00:00:03.000Z",
+            questions: [
+              {
+                id: "q1",
+                header: "Choice",
+                question: "Pick an option",
+                options: [{ label: "A", description: "Use A" }],
+                multiSelect: false,
+              },
+            ],
+          },
+        ],
+      }),
+    ).toMatchObject({
+      kind: "awaitingUserInput",
+      label: "Waiting for your answer",
+      detail: "Pick an option",
+    });
+  });
+});
+
 describe("isLatestTurnSettled", () => {
   const latestTurn = {
     turnId: TurnId.make("turn-1"),
     startedAt: "2026-02-27T21:10:00.000Z",
     completedAt: "2026-02-27T21:10:06.000Z",
   } as const;
+
+  it("returns true for idle threads that have no turns yet", () => {
+    expect(isLatestTurnSettled(null, null)).toBe(true);
+    expect(
+      isLatestTurnSettled(null, {
+        orchestrationStatus: "ready",
+        activeTurnId: undefined,
+      }),
+    ).toBe(true);
+  });
+
+  it("returns false for no-turn threads while a session is running", () => {
+    expect(
+      isLatestTurnSettled(null, {
+        orchestrationStatus: "running",
+        activeTurnId: TurnId.make("turn-1"),
+      }),
+    ).toBe(false);
+  });
 
   it("returns false while the same turn is still active in a running session", () => {
     expect(
@@ -1514,5 +2412,244 @@ describe("deriveActiveWorkStartedAt", () => {
         "2026-02-27T21:11:00.000Z",
       ),
     ).toBe("2026-02-27T21:11:00.000Z");
+  });
+});
+
+describe("deriveThreadWorkDurationMs", () => {
+  const userInputQuestions = [
+    {
+      id: "next_step",
+      header: "Next",
+      question: "What should happen next?",
+      options: [
+        {
+          label: "Continue",
+          description: "Continue the turn",
+        },
+      ],
+    },
+  ];
+
+  it("adds live running duration to persisted work time", () => {
+    const result = deriveThreadWorkDurationMs({
+      totalWorkDurationMs: 4_000,
+      latestTurn: {
+        turnId: TurnId.make("turn-1"),
+        startedAt: "2026-02-27T21:10:00.000Z",
+        completedAt: null,
+      },
+      session: {
+        orchestrationStatus: "running",
+        activeTurnId: TurnId.make("turn-1"),
+      },
+      sendStartedAt: null,
+      nowMs: Date.parse("2026-02-27T21:10:03.000Z"),
+    });
+
+    expect(result).toEqual({ durationMs: 7_000, ticking: true });
+  });
+
+  it("continues ticking while post-model tool work is active", () => {
+    const result = deriveThreadWorkDurationMs({
+      totalWorkDurationMs: 4_000,
+      latestTurn: {
+        turnId: TurnId.make("turn-1"),
+        startedAt: "2026-02-27T21:10:00.000Z",
+        completedAt: "2026-02-27T21:10:03.000Z",
+      },
+      session: {
+        orchestrationStatus: "running",
+        activeTurnId: TurnId.make("turn-1"),
+      },
+      sendStartedAt: null,
+      activities: [
+        makeActivity({
+          id: "tool-active",
+          createdAt: "2026-02-27T21:10:04.000Z",
+          kind: "tool.started",
+        }),
+      ],
+      nowMs: Date.parse("2026-02-27T21:10:06.000Z"),
+    });
+
+    expect(result).toEqual({ durationMs: 10_000, ticking: true });
+  });
+
+  it("pauses while a user-input request is open", () => {
+    const result = deriveThreadWorkDurationMs({
+      totalWorkDurationMs: 4_000,
+      latestTurn: {
+        turnId: TurnId.make("turn-1"),
+        startedAt: "2026-02-27T21:10:00.000Z",
+        completedAt: null,
+      },
+      session: {
+        orchestrationStatus: "running",
+        activeTurnId: TurnId.make("turn-1"),
+      },
+      sendStartedAt: null,
+      activities: [
+        makeActivity({
+          id: "user-input-open",
+          createdAt: "2026-02-27T21:10:03.000Z",
+          kind: "user-input.requested",
+          payload: {
+            requestId: "req-user-input-1",
+            questions: userInputQuestions,
+          },
+        }),
+      ],
+      nowMs: Date.parse("2026-02-27T21:10:08.000Z"),
+    });
+
+    expect(result).toEqual({ durationMs: 7_000, ticking: false });
+  });
+
+  it("subtracts completed user-input pause intervals after resolution", () => {
+    const result = deriveThreadWorkDurationMs({
+      totalWorkDurationMs: 4_000,
+      latestTurn: {
+        turnId: TurnId.make("turn-1"),
+        startedAt: "2026-02-27T21:10:00.000Z",
+        completedAt: null,
+      },
+      session: {
+        orchestrationStatus: "running",
+        activeTurnId: TurnId.make("turn-1"),
+      },
+      sendStartedAt: null,
+      activities: [
+        makeActivity({
+          id: "user-input-open",
+          createdAt: "2026-02-27T21:10:03.000Z",
+          kind: "user-input.requested",
+          payload: {
+            requestId: "req-user-input-1",
+            questions: userInputQuestions,
+          },
+        }),
+        makeActivity({
+          id: "user-input-resolved",
+          createdAt: "2026-02-27T21:10:07.000Z",
+          kind: "user-input.resolved",
+          payload: {
+            requestId: "req-user-input-1",
+          },
+        }),
+      ],
+      nowMs: Date.parse("2026-02-27T21:10:10.000Z"),
+    });
+
+    expect(result).toEqual({ durationMs: 10_000, ticking: true });
+  });
+
+  it("does not pause for approval requests", () => {
+    const result = deriveThreadWorkDurationMs({
+      totalWorkDurationMs: 4_000,
+      latestTurn: {
+        turnId: TurnId.make("turn-1"),
+        startedAt: "2026-02-27T21:10:00.000Z",
+        completedAt: null,
+      },
+      session: {
+        orchestrationStatus: "running",
+        activeTurnId: TurnId.make("turn-1"),
+      },
+      sendStartedAt: null,
+      activities: [
+        makeActivity({
+          id: "approval-open",
+          createdAt: "2026-02-27T21:10:03.000Z",
+          kind: "approval.requested",
+          payload: {
+            requestId: "req-approval-1",
+            requestKind: "command",
+          },
+        }),
+      ],
+      nowMs: Date.parse("2026-02-27T21:10:08.000Z"),
+    });
+
+    expect(result).toEqual({ durationMs: 12_000, ticking: true });
+  });
+
+  it("does not double-count settled latest turns", () => {
+    const result = deriveThreadWorkDurationMs({
+      totalWorkDurationMs: 4_000,
+      latestTurn: {
+        turnId: TurnId.make("turn-1"),
+        startedAt: "2026-02-27T21:10:00.000Z",
+        completedAt: "2026-02-27T21:10:03.000Z",
+      },
+      session: {
+        orchestrationStatus: "ready",
+        activeTurnId: undefined,
+      },
+      sendStartedAt: null,
+      nowMs: Date.parse("2026-02-27T21:10:10.000Z"),
+    });
+
+    expect(result).toEqual({ durationMs: 4_000, ticking: false });
+  });
+
+  it("uses sendStartedAt while a fresh turn is dispatching", () => {
+    const result = deriveThreadWorkDurationMs({
+      totalWorkDurationMs: 4_000,
+      latestTurn: null,
+      session: null,
+      sendStartedAt: "2026-02-27T21:10:00.000Z",
+      nowMs: Date.parse("2026-02-27T21:10:02.000Z"),
+    });
+
+    expect(result).toEqual({ durationMs: 6_000, ticking: true });
+  });
+
+  it("resumes when a done task is continued via a new send", () => {
+    const result = deriveThreadWorkDurationMs({
+      totalWorkDurationMs: 4_000,
+      latestTurn: {
+        turnId: TurnId.make("turn-1"),
+        startedAt: "2026-02-27T21:10:00.000Z",
+        completedAt: "2026-02-27T21:10:03.000Z",
+      },
+      session: {
+        orchestrationStatus: "ready",
+        activeTurnId: undefined,
+      },
+      sendStartedAt: "2026-02-27T21:11:00.000Z",
+      nowMs: Date.parse("2026-02-27T21:11:05.000Z"),
+    });
+
+    expect(result).toEqual({ durationMs: 9_000, ticking: true });
+  });
+
+  it("does not produce negative duration for invalid pause timestamps", () => {
+    const result = deriveThreadWorkDurationMs({
+      totalWorkDurationMs: 4_000,
+      latestTurn: {
+        turnId: TurnId.make("turn-1"),
+        startedAt: "2026-02-27T21:10:00.000Z",
+        completedAt: null,
+      },
+      session: {
+        orchestrationStatus: "running",
+        activeTurnId: TurnId.make("turn-1"),
+      },
+      sendStartedAt: null,
+      activities: [
+        makeActivity({
+          id: "user-input-open",
+          createdAt: "not-a-date",
+          kind: "user-input.requested",
+          payload: {
+            requestId: "req-user-input-1",
+            questions: userInputQuestions,
+          },
+        }),
+      ],
+      nowMs: Date.parse("2026-02-27T21:10:08.000Z"),
+    });
+
+    expect(result).toEqual({ durationMs: 12_000, ticking: false });
   });
 });

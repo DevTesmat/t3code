@@ -1,12 +1,19 @@
 import { QueryClient } from "@tanstack/react-query";
 import {
+  CommandId,
   EnvironmentId,
+  EventId,
+  type OrchestrationEvent,
   ProjectId,
+  ProviderItemId,
   ProviderInstanceId,
   ThreadId,
   TurnId,
   type OrchestrationShellSnapshot,
+  type OrchestrationThread,
+  type OrchestrationThreadStreamItem,
 } from "@t3tools/contracts";
+import { scopeThreadRef } from "@t3tools/client-runtime";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const mockSubscribeThread = vi.fn();
@@ -134,10 +141,90 @@ function makeThreadShellSnapshot(params: {
         latestUserMessageAt: null,
         hasPendingApprovals: params.hasPendingApprovals ?? false,
         hasPendingUserInput: params.hasPendingUserInput ?? false,
+        latestPendingUserInputAt: params.hasPendingUserInput ? "2026-04-13T00:00:00.000Z" : null,
         hasActionableProposedPlan: params.hasActionableProposedPlan ?? false,
       },
     ],
   };
+}
+
+function makeThreadDetail(params: {
+  readonly threadId: ThreadId;
+  readonly activities?: OrchestrationThread["activities"];
+}): OrchestrationThread {
+  const projectId = ProjectId.make("project-1");
+  return {
+    id: params.threadId,
+    projectId,
+    title: "Thread",
+    modelSelection: {
+      instanceId: ProviderInstanceId.make("codex"),
+      model: "gpt-5-codex",
+    },
+    runtimeMode: "full-access",
+    interactionMode: "default",
+    branch: null,
+    worktreePath: null,
+    latestTurn: null,
+    totalWorkDurationMs: 0,
+    createdAt: "2026-04-13T00:00:00.000Z",
+    updatedAt: "2026-04-13T00:00:00.000Z",
+    pinnedAt: null,
+    archivedAt: null,
+    deletedAt: null,
+    messages: [],
+    proposedPlans: [],
+    activities: params.activities ?? [],
+    checkpoints: [],
+    session: null,
+  };
+}
+
+function makeActivityEvent(params: {
+  readonly sequence: number;
+  readonly threadId: ThreadId;
+  readonly activityId: string;
+  readonly summary?: string;
+}): OrchestrationEvent {
+  const occurredAt = `2026-04-13T00:00:${String(params.sequence).padStart(2, "0")}.000Z`;
+  return {
+    sequence: params.sequence,
+    eventId: EventId.make(`event-${params.sequence}`),
+    aggregateKind: "thread",
+    aggregateId: params.threadId,
+    occurredAt,
+    commandId: CommandId.make(`command-${params.sequence}`),
+    causationEventId: null,
+    correlationId: null,
+    metadata: {},
+    type: "thread.activity-appended",
+    payload: {
+      threadId: params.threadId,
+      activity: {
+        id: EventId.make(params.activityId),
+        tone: "tool",
+        kind: "tool.started",
+        summary: params.summary ?? "Ran command started",
+        payload: {
+          itemType: "command_execution",
+          detail: "bun lint",
+          data: {
+            toolCallId: "tool-1",
+          },
+        },
+        turnId: null,
+        createdAt: occurredAt,
+      },
+    },
+  };
+}
+
+function emitThreadItem(item: OrchestrationThreadStreamItem): void {
+  const callback = mockSubscribeThread.mock.calls[0]?.[1] as
+    | ((next: OrchestrationThreadStreamItem) => void)
+    | undefined;
+  expect(callback).toBeDefined();
+  callback?.(item);
 }
 
 describe("retainThreadDetailSubscription", () => {
@@ -295,5 +382,289 @@ describe("retainThreadDetailSubscription", () => {
     expect(mockThreadUnsubscribe).toHaveBeenCalledTimes(1);
 
     stop();
+  });
+
+  it("hydrates an initially empty thread detail from the subscription snapshot", async () => {
+    const {
+      retainThreadDetailSubscription,
+      startEnvironmentConnectionService,
+      resetEnvironmentServiceForTests,
+    } = await import("./service");
+    const { selectThreadByRef, useStore } = await import("~/store");
+
+    const stop = startEnvironmentConnectionService(new QueryClient());
+    const environmentId = EnvironmentId.make("env-1");
+    const threadId = ThreadId.make("thread-snapshot-hydrate");
+
+    const release = retainThreadDetailSubscription(environmentId, threadId);
+    emitThreadItem({
+      kind: "snapshot",
+      snapshot: {
+        snapshotSequence: 10,
+        thread: makeThreadDetail({
+          threadId,
+          activities: [
+            {
+              id: EventId.make("activity-from-snapshot"),
+              tone: "tool",
+              kind: "tool.started",
+              summary: "Snapshot tool",
+              payload: {},
+              turnId: null,
+              createdAt: "2026-04-13T00:00:10.000Z",
+            },
+          ],
+        }),
+      },
+    });
+
+    const thread = selectThreadByRef(useStore.getState(), scopeThreadRef(environmentId, threadId));
+    expect(thread?.activities.map((activity) => activity.id)).toEqual(["activity-from-snapshot"]);
+
+    release();
+    stop();
+    await resetEnvironmentServiceForTests();
+  });
+
+  it("preserves live tool activities when an older detail snapshot arrives", async () => {
+    const {
+      retainThreadDetailSubscription,
+      startEnvironmentConnectionService,
+      resetEnvironmentServiceForTests,
+    } = await import("./service");
+    const { selectThreadByRef, useStore } = await import("~/store");
+
+    const stop = startEnvironmentConnectionService(new QueryClient());
+    const environmentId = EnvironmentId.make("env-1");
+    const threadId = ThreadId.make("thread-stale-snapshot");
+
+    const release = retainThreadDetailSubscription(environmentId, threadId);
+    emitThreadItem({
+      kind: "snapshot",
+      snapshot: {
+        snapshotSequence: 10,
+        thread: makeThreadDetail({ threadId }),
+      },
+    });
+    emitThreadItem({
+      kind: "event",
+      event: makeActivityEvent({
+        sequence: 11,
+        threadId,
+        activityId: "live-tool",
+      }),
+    });
+    emitThreadItem({
+      kind: "snapshot",
+      snapshot: {
+        snapshotSequence: 10,
+        thread: makeThreadDetail({ threadId }),
+      },
+    });
+
+    const thread = selectThreadByRef(useStore.getState(), scopeThreadRef(environmentId, threadId));
+    expect(thread?.activities.map((activity) => activity.id)).toEqual(["live-tool"]);
+
+    release();
+    stop();
+    await resetEnvironmentServiceForTests();
+  });
+
+  it("accepts a newer detail snapshot after live thread detail events", async () => {
+    const {
+      retainThreadDetailSubscription,
+      startEnvironmentConnectionService,
+      resetEnvironmentServiceForTests,
+    } = await import("./service");
+    const { selectThreadByRef, useStore } = await import("~/store");
+
+    const stop = startEnvironmentConnectionService(new QueryClient());
+    const environmentId = EnvironmentId.make("env-1");
+    const threadId = ThreadId.make("thread-newer-snapshot");
+
+    const release = retainThreadDetailSubscription(environmentId, threadId);
+    emitThreadItem({
+      kind: "snapshot",
+      snapshot: {
+        snapshotSequence: 10,
+        thread: makeThreadDetail({ threadId }),
+      },
+    });
+    emitThreadItem({
+      kind: "event",
+      event: makeActivityEvent({
+        sequence: 11,
+        threadId,
+        activityId: "live-tool",
+      }),
+    });
+    emitThreadItem({
+      kind: "snapshot",
+      snapshot: {
+        snapshotSequence: 12,
+        thread: makeThreadDetail({
+          threadId,
+          activities: [
+            {
+              id: EventId.make("snapshot-tool"),
+              tone: "tool",
+              kind: "tool.completed",
+              summary: "Snapshot completed tool",
+              payload: {},
+              turnId: null,
+              createdAt: "2026-04-13T00:00:12.000Z",
+            },
+          ],
+        }),
+      },
+    });
+
+    const thread = selectThreadByRef(useStore.getState(), scopeThreadRef(environmentId, threadId));
+    expect(thread?.activities.map((activity) => activity.id)).toEqual(["snapshot-tool"]);
+
+    release();
+    stop();
+    await resetEnvironmentServiceForTests();
+  });
+
+  it("routes command output stream items into the live output envelope", async () => {
+    const {
+      retainThreadDetailSubscription,
+      startEnvironmentConnectionService,
+      resetEnvironmentServiceForTests,
+    } = await import("./service");
+    const { readLiveCommandOutputSnapshot } = await import("~/liveCommandOutput");
+
+    const stop = startEnvironmentConnectionService(new QueryClient());
+    const environmentId = EnvironmentId.make("env-1");
+    const threadId = ThreadId.make("thread-output-delta");
+
+    const release = retainThreadDetailSubscription(environmentId, threadId);
+    emitThreadItem({
+      kind: "command-output-delta",
+      delta: {
+        threadId,
+        turnId: TurnId.make("turn-1"),
+        toolCallId: ProviderItemId.make("tool-1"),
+        chunkId: EventId.make("chunk-1"),
+        createdAt: "2026-04-13T00:00:11.000Z",
+        delta: "line 1\n",
+      },
+    });
+
+    expect(
+      readLiveCommandOutputSnapshot({
+        environmentId,
+        threadId,
+        toolCallId: "tool-1",
+      }).text,
+    ).toBe("line 1\n");
+
+    release();
+    stop();
+    await resetEnvironmentServiceForTests();
+  });
+
+  it("ignores duplicate and older live thread detail events", async () => {
+    const {
+      retainThreadDetailSubscription,
+      startEnvironmentConnectionService,
+      resetEnvironmentServiceForTests,
+    } = await import("./service");
+    const { selectThreadByRef, useStore } = await import("~/store");
+
+    const stop = startEnvironmentConnectionService(new QueryClient());
+    const environmentId = EnvironmentId.make("env-1");
+    const threadId = ThreadId.make("thread-live-monotonic");
+
+    const release = retainThreadDetailSubscription(environmentId, threadId);
+    emitThreadItem({
+      kind: "snapshot",
+      snapshot: {
+        snapshotSequence: 10,
+        thread: makeThreadDetail({ threadId }),
+      },
+    });
+    emitThreadItem({
+      kind: "event",
+      event: makeActivityEvent({
+        sequence: 12,
+        threadId,
+        activityId: "newer-tool",
+      }),
+    });
+    emitThreadItem({
+      kind: "event",
+      event: makeActivityEvent({
+        sequence: 12,
+        threadId,
+        activityId: "duplicate-sequence-tool",
+      }),
+    });
+    emitThreadItem({
+      kind: "event",
+      event: makeActivityEvent({
+        sequence: 11,
+        threadId,
+        activityId: "older-tool",
+      }),
+    });
+
+    const thread = selectThreadByRef(useStore.getState(), scopeThreadRef(environmentId, threadId));
+    expect(thread?.activities.map((activity) => activity.id)).toEqual(["newer-tool"]);
+
+    release();
+    stop();
+    await resetEnvironmentServiceForTests();
+  });
+
+  it("still applies a stale first snapshot when live events arrived before thread hydration", async () => {
+    const {
+      retainThreadDetailSubscription,
+      startEnvironmentConnectionService,
+      resetEnvironmentServiceForTests,
+    } = await import("./service");
+    const { selectThreadByRef, useStore } = await import("~/store");
+
+    const stop = startEnvironmentConnectionService(new QueryClient());
+    const environmentId = EnvironmentId.make("env-1");
+    const threadId = ThreadId.make("thread-event-before-snapshot");
+
+    const release = retainThreadDetailSubscription(environmentId, threadId);
+    emitThreadItem({
+      kind: "event",
+      event: makeActivityEvent({
+        sequence: 11,
+        threadId,
+        activityId: "event-before-snapshot",
+      }),
+    });
+    emitThreadItem({
+      kind: "snapshot",
+      snapshot: {
+        snapshotSequence: 10,
+        thread: makeThreadDetail({
+          threadId,
+          activities: [
+            {
+              id: EventId.make("snapshot-hydrates-thread"),
+              tone: "tool",
+              kind: "tool.started",
+              summary: "Snapshot hydrates thread",
+              payload: {},
+              turnId: null,
+              createdAt: "2026-04-13T00:00:10.000Z",
+            },
+          ],
+        }),
+      },
+    });
+
+    const thread = selectThreadByRef(useStore.getState(), scopeThreadRef(environmentId, threadId));
+    expect(thread?.activities.map((activity) => activity.id)).toEqual(["snapshot-hydrates-thread"]);
+
+    release();
+    stop();
+    await resetEnvironmentServiceForTests();
   });
 });

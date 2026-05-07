@@ -87,10 +87,12 @@ projectionRepositoriesLayer("Projection repositories", (it) => {
         latestTurnId: null,
         createdAt: "2026-03-24T00:00:00.000Z",
         updatedAt: "2026-03-24T00:00:00.000Z",
+        pinnedAt: null,
         archivedAt: null,
         latestUserMessageAt: null,
         pendingApprovalCount: 0,
         pendingUserInputCount: 0,
+        latestPendingUserInputAt: null,
         hasActionableProposedPlan: 0,
         deletedAt: null,
       });

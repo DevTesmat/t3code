@@ -2,6 +2,7 @@ import type {
   EnvironmentId,
   ModelSelection,
   OrchestrationLatestTurn,
+  OrchestrationMessageSource,
   OrchestrationProposedPlanId,
   RepositoryIdentity,
   OrchestrationSessionStatus,
@@ -46,6 +47,7 @@ export type ChatAttachment = ChatImageAttachment;
 export interface ChatMessage {
   id: MessageId;
   role: "user" | "assistant" | "system";
+  source?: OrchestrationMessageSource;
   text: string;
   attachments?: ChatAttachment[];
   turnId?: TurnId | null;
@@ -58,6 +60,7 @@ export interface ProposedPlan {
   id: OrchestrationProposedPlanId;
   turnId: TurnId | null;
   planMarkdown: string;
+  streaming?: boolean;
   implementedAt: string | null;
   implementationThreadId: ThreadId | null;
   createdAt: string;
@@ -107,9 +110,11 @@ export interface Thread {
   proposedPlans: ProposedPlan[];
   error: string | null;
   createdAt: string;
+  pinnedAt?: string | null;
   archivedAt: string | null;
   updatedAt?: string | undefined;
   latestTurn: OrchestrationLatestTurn | null;
+  totalWorkDurationMs?: number | undefined;
   pendingSourceProposedPlan?: OrchestrationLatestTurn["sourceProposedPlan"];
   branch: string | null;
   worktreePath: string | null;
@@ -128,10 +133,12 @@ export interface ThreadShell {
   interactionMode: ProviderInteractionMode;
   error: string | null;
   createdAt: string;
+  pinnedAt?: string | null;
   archivedAt: string | null;
   updatedAt?: string | undefined;
   branch: string | null;
   worktreePath: string | null;
+  totalWorkDurationMs?: number | undefined;
 }
 
 export interface ThreadTurnState {
@@ -147,6 +154,7 @@ export interface SidebarThreadSummary {
   interactionMode: ProviderInteractionMode;
   session: ThreadSession | null;
   createdAt: string;
+  pinnedAt?: string | null;
   archivedAt: string | null;
   updatedAt?: string | undefined;
   latestTurn: OrchestrationLatestTurn | null;
@@ -155,7 +163,9 @@ export interface SidebarThreadSummary {
   latestUserMessageAt: string | null;
   hasPendingApprovals: boolean;
   hasPendingUserInput: boolean;
+  latestPendingUserInputAt: string | null;
   hasActionableProposedPlan: boolean;
+  totalWorkDurationMs?: number | undefined;
 }
 
 export interface ThreadSession {

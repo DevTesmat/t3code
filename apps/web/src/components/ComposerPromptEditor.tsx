@@ -932,6 +932,20 @@ function ComposerCommandKeyPlugin(props: {
       return handled;
     };
 
+    const handleRootKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== "ArrowDown" && event.key !== "ArrowUp") {
+        return;
+      }
+      handleCommand(event.key, event);
+    };
+
+    let activeRootElement: HTMLElement | null = null;
+    const unregisterRootListener = editor.registerRootListener((rootElement, prevRootElement) => {
+      prevRootElement?.removeEventListener("keydown", handleRootKeyDown, true);
+      rootElement?.addEventListener("keydown", handleRootKeyDown, true);
+      activeRootElement = rootElement;
+    });
+
     const unregisterArrowDown = editor.registerCommand(
       KEY_ARROW_DOWN_COMMAND,
       (event) => handleCommand("ArrowDown", event),
@@ -954,6 +968,10 @@ function ComposerCommandKeyPlugin(props: {
     );
 
     return () => {
+      if (activeRootElement) {
+        activeRootElement.removeEventListener("keydown", handleRootKeyDown, true);
+      }
+      unregisterRootListener();
       unregisterArrowDown();
       unregisterArrowUp();
       unregisterEnter();

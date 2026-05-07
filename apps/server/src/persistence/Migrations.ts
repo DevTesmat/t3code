@@ -41,6 +41,13 @@ import Migration0025 from "./Migrations/025_CleanupInvalidProjectionPendingAppro
 import Migration0026 from "./Migrations/026_CanonicalizeModelSelectionOptions.ts";
 import Migration0027 from "./Migrations/027_ProviderSessionRuntimeInstanceId.ts";
 import Migration0028 from "./Migrations/028_ProjectionThreadSessionInstanceId.ts";
+import Migration0029 from "./Migrations/029_ProjectionThreadsLatestPendingUserInputAt.ts";
+import Migration0030 from "./Migrations/030_ProjectionThreadsPinnedAt.ts";
+import Migration0031 from "./Migrations/031_ProjectionThreadMessageSource.ts";
+import Migration0032 from "./Migrations/032_HistorySyncState.ts";
+import Migration0033 from "./Migrations/033_HistorySyncProjectMappings.ts";
+import Migration0034 from "./Migrations/034_HistorySyncPushedEvents.ts";
+import Migration0035 from "./Migrations/035_ProjectionTurnWorkDuration.ts";
 
 /**
  * Migration loader with all migrations defined inline.
@@ -81,6 +88,13 @@ export const migrationEntries = [
   [26, "CanonicalizeModelSelectionOptions", Migration0026],
   [27, "ProviderSessionRuntimeInstanceId", Migration0027],
   [28, "ProjectionThreadSessionInstanceId", Migration0028],
+  [29, "ProjectionThreadsLatestPendingUserInputAt", Migration0029],
+  [30, "ProjectionThreadsPinnedAt", Migration0030],
+  [31, "ProjectionThreadMessageSource", Migration0031],
+  [32, "HistorySyncState", Migration0032],
+  [33, "HistorySyncProjectMappings", Migration0033],
+  [34, "HistorySyncPushedEvents", Migration0034],
+  [35, "ProjectionTurnWorkDuration", Migration0035],
 ] as const;
 
 export const makeMigrationLoader = (throughId?: number) =>

@@ -9,7 +9,9 @@ import {
   type GitManagerServiceError,
   OrchestrationDispatchCommandError,
   type OrchestrationEvent,
+  type OrchestrationShellSnapshot,
   type OrchestrationShellStreamEvent,
+  type ServerConfigStreamEvent,
   OrchestrationGetFullThreadDiffError,
   OrchestrationGetSnapshotError,
   OrchestrationGetTurnDiffError,
@@ -36,6 +38,8 @@ import { Keybindings } from "./keybindings.ts";
 import { Open, resolveAvailableEditors } from "./open.ts";
 import { normalizeDispatchCommand } from "./orchestration/Normalizer.ts";
 import { OrchestrationEngineService } from "./orchestration/Services/OrchestrationEngine.ts";
+import { commandOutputDeltaStream as globalCommandOutputDeltaStream } from "./orchestration/Services/CommandOutputDeltaBus.ts";
+import { readCommandOutputSnapshotsForThread } from "./orchestration/Services/CommandOutputBuffer.ts";
 import { ProjectionSnapshotQuery } from "./orchestration/Services/ProjectionSnapshotQuery.ts";
 import {
   observeRpcEffect,
@@ -46,6 +50,18 @@ import { ProviderRegistry } from "./provider/Services/ProviderRegistry.ts";
 import { ServerLifecycleEvents } from "./serverLifecycleEvents.ts";
 import { ServerRuntimeStartup } from "./serverRuntimeStartup.ts";
 import { redactServerSettingsForClient, ServerSettingsService } from "./serverSettings.ts";
+import {
+  applyHistorySyncProjectMappings,
+  getHistorySyncConfig,
+  getHistorySyncProjectMappings,
+  readHistorySyncStatus,
+  restoreHistorySyncBackup,
+  runHistorySync,
+  startHistorySyncInitialImport,
+  subscribeHistorySyncStatus,
+  testHistorySyncConnection,
+  updateHistorySyncConfig,
+} from "./historySync.ts";
 import { TerminalManager } from "./terminal/Services/Manager.ts";
 import { WorkspaceEntries } from "./workspace/Services/WorkspaceEntries.ts";
 import { WorkspaceFileSystem } from "./workspace/Services/WorkspaceFileSystem.ts";
@@ -69,6 +85,7 @@ function isThreadDetailEvent(event: OrchestrationEvent): event is Extract<
   {
     type:
       | "thread.message-sent"
+      | "thread.proposed-plan-delta-received"
       | "thread.proposed-plan-upserted"
       | "thread.activity-appended"
       | "thread.turn-diff-completed"
@@ -78,6 +95,7 @@ function isThreadDetailEvent(event: OrchestrationEvent): event is Extract<
 > {
   return (
     event.type === "thread.message-sent" ||
+    event.type === "thread.proposed-plan-delta-received" ||
     event.type === "thread.proposed-plan-upserted" ||
     event.type === "thread.activity-appended" ||
     event.type === "thread.turn-diff-completed" ||
@@ -513,6 +531,7 @@ const makeWsRpcLayer = (currentSessionId: AuthSessionId) =>
         const keybindingsConfig = yield* keybindings.loadConfigState;
         const providers = yield* providerRegistry.getProviders;
         const settings = redactServerSettingsForClient(yield* serverSettings.getSettings);
+        const historySyncStatus = readHistorySyncStatus();
         const environment = yield* serverEnvironment.getDescriptor;
         const auth = yield* serverAuth.getDescriptor();
 
@@ -535,6 +554,7 @@ const makeWsRpcLayer = (currentSessionId: AuthSessionId) =>
               : {}),
             otlpMetricsEnabled: config.otlpMetricsUrl !== undefined,
           },
+          historySync: historySyncStatus,
           settings,
         };
       });
@@ -682,13 +702,39 @@ const makeWsRpcLayer = (currentSessionId: AuthSessionId) =>
                   Option.isSome(event) ? Stream.succeed(event.value) : Stream.empty,
                 ),
               );
+              const historySyncSnapshotStream = Stream.callback<{
+                readonly kind: "snapshot";
+                readonly snapshot: OrchestrationShellSnapshot;
+              }>((queue) =>
+                Effect.acquireRelease(
+                  subscribeHistorySyncStatus((historySync) => {
+                    if (historySync.state !== "idle") {
+                      return Effect.void;
+                    }
+                    return projectionSnapshotQuery.getShellSnapshot().pipe(
+                      Effect.flatMap((snapshot) =>
+                        Queue.offer(queue, {
+                          kind: "snapshot" as const,
+                          snapshot,
+                        }).pipe(Effect.asVoid),
+                      ),
+                      Effect.catch((cause) =>
+                        Effect.logWarning("failed to load shell snapshot after history sync", {
+                          cause,
+                        }),
+                      ),
+                    );
+                  }),
+                  (unsubscribe) => Effect.sync(unsubscribe),
+                ),
+              );
 
               return Stream.concat(
                 Stream.make({
                   kind: "snapshot" as const,
                   snapshot,
                 }),
-                liveStream,
+                Stream.merge(liveStream, historySyncSnapshotStream),
               );
             }),
             { "rpc.aggregate": "orchestration" },
@@ -731,16 +777,82 @@ const makeWsRpcLayer = (currentSessionId: AuthSessionId) =>
                   event,
                 })),
               );
+              const commandOutputDeltaStream = globalCommandOutputDeltaStream.pipe(
+                Stream.filter((delta) => delta.threadId === input.threadId),
+                Stream.map((delta) => ({
+                  kind: "command-output-delta" as const,
+                  delta,
+                })),
+              );
+              const commandOutputSnapshotStream = readCommandOutputSnapshotsForThread(
+                input.threadId,
+              ).pipe(
+                Effect.map((snapshots) =>
+                  Stream.fromIterable(
+                    snapshots.map((snapshot) => ({
+                      kind: "command-output-snapshot" as const,
+                      snapshot,
+                    })),
+                  ),
+                ),
+                Stream.unwrap,
+              );
+              const historySyncSnapshotStream = Stream.callback<{
+                readonly kind: "snapshot";
+                readonly snapshot: {
+                  readonly snapshotSequence: number;
+                  readonly thread: NonNullable<typeof threadDetail.value>;
+                };
+              }>((queue) =>
+                Effect.acquireRelease(
+                  subscribeHistorySyncStatus((historySync) => {
+                    if (historySync.state !== "idle") {
+                      return Effect.void;
+                    }
+                    return Effect.all([
+                      projectionSnapshotQuery.getThreadDetailById(input.threadId),
+                      orchestrationEngine
+                        .getReadModel()
+                        .pipe(Effect.map((readModel) => readModel.snapshotSequence)),
+                    ]).pipe(
+                      Effect.flatMap(([nextThreadDetail, nextSnapshotSequence]) =>
+                        Option.isSome(nextThreadDetail)
+                          ? Queue.offer(queue, {
+                              kind: "snapshot" as const,
+                              snapshot: {
+                                snapshotSequence: nextSnapshotSequence,
+                                thread: nextThreadDetail.value,
+                              },
+                            }).pipe(Effect.asVoid)
+                          : Effect.void,
+                      ),
+                      Effect.catch((cause) =>
+                        Effect.logWarning("failed to load thread snapshot after history sync", {
+                          threadId: input.threadId,
+                          cause,
+                        }),
+                      ),
+                    );
+                  }),
+                  (unsubscribe) => Effect.sync(unsubscribe),
+                ),
+              );
 
               return Stream.concat(
-                Stream.make({
-                  kind: "snapshot" as const,
-                  snapshot: {
-                    snapshotSequence,
-                    thread: threadDetail.value,
-                  },
-                }),
-                liveStream,
+                Stream.concat(
+                  Stream.make({
+                    kind: "snapshot" as const,
+                    snapshot: {
+                      snapshotSequence,
+                      thread: threadDetail.value,
+                    },
+                  }),
+                  commandOutputSnapshotStream,
+                ),
+                Stream.merge(
+                  Stream.merge(liveStream, commandOutputDeltaStream),
+                  historySyncSnapshotStream,
+                ),
               );
             }),
             { "rpc.aggregate": "orchestration" },
@@ -779,6 +891,58 @@ const makeWsRpcLayer = (currentSessionId: AuthSessionId) =>
           observeRpcEffect(
             WS_METHODS.serverUpdateSettings,
             serverSettings.updateSettings(patch).pipe(Effect.map(redactServerSettingsForClient)),
+            {
+              "rpc.aggregate": "server",
+            },
+          ),
+        [WS_METHODS.serverGetHistorySyncConfig]: (_input) =>
+          observeRpcEffect(WS_METHODS.serverGetHistorySyncConfig, getHistorySyncConfig, {
+            "rpc.aggregate": "server",
+          }),
+        [WS_METHODS.serverUpdateHistorySyncConfig]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.serverUpdateHistorySyncConfig,
+            updateHistorySyncConfig(input),
+            {
+              "rpc.aggregate": "server",
+            },
+          ),
+        [WS_METHODS.serverRunHistorySync]: (_input) =>
+          observeRpcEffect(WS_METHODS.serverRunHistorySync, runHistorySync, {
+            "rpc.aggregate": "server",
+          }),
+        [WS_METHODS.serverStartHistorySyncInitialImport]: (_input) =>
+          observeRpcEffect(
+            WS_METHODS.serverStartHistorySyncInitialImport,
+            startHistorySyncInitialImport,
+            {
+              "rpc.aggregate": "server",
+            },
+          ),
+        [WS_METHODS.serverRestoreHistorySyncBackup]: (_input) =>
+          observeRpcEffect(WS_METHODS.serverRestoreHistorySyncBackup, restoreHistorySyncBackup, {
+            "rpc.aggregate": "server",
+          }),
+        [WS_METHODS.serverTestHistorySyncConnection]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.serverTestHistorySyncConnection,
+            testHistorySyncConnection(input.mysql),
+            {
+              "rpc.aggregate": "server",
+            },
+          ),
+        [WS_METHODS.serverGetHistorySyncProjectMappings]: (_input) =>
+          observeRpcEffect(
+            WS_METHODS.serverGetHistorySyncProjectMappings,
+            getHistorySyncProjectMappings,
+            {
+              "rpc.aggregate": "server",
+            },
+          ),
+        [WS_METHODS.serverApplyHistorySyncProjectMappings]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.serverApplyHistorySyncProjectMappings,
+            applyHistorySyncProjectMappings(input),
             {
               "rpc.aggregate": "server",
             },
@@ -974,6 +1138,7 @@ const makeWsRpcLayer = (currentSessionId: AuthSessionId) =>
                   version: 1 as const,
                   type: "keybindingsUpdated" as const,
                   payload: {
+                    keybindings: event.keybindings,
                     issues: event.issues,
                   },
                 })),
@@ -994,14 +1159,30 @@ const makeWsRpcLayer = (currentSessionId: AuthSessionId) =>
                   payload: { settings },
                 })),
               );
-
+              const historySyncStatusUpdates = Stream.callback<
+                Extract<ServerConfigStreamEvent, { type: "historySyncStatus" }>
+              >((queue) =>
+                Effect.acquireRelease(
+                  subscribeHistorySyncStatus((historySync) =>
+                    Queue.offer(queue, {
+                      version: 1 as const,
+                      type: "historySyncStatus" as const,
+                      payload: { historySync },
+                    }).pipe(Effect.asVoid),
+                  ),
+                  (unsubscribe) => Effect.sync(unsubscribe),
+                ),
+              );
               yield* providerRegistry
                 .refresh()
                 .pipe(Effect.ignoreCause({ log: true }), Effect.forkScoped);
 
               const liveUpdates = Stream.merge(
                 keybindingsUpdates,
-                Stream.merge(providerStatuses, settingsUpdates),
+                Stream.merge(
+                  providerStatuses,
+                  Stream.merge(settingsUpdates, historySyncStatusUpdates),
+                ),
               );
 
               return Stream.concat(

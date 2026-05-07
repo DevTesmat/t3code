@@ -72,6 +72,7 @@ function makeSidebarThreadSummary(
     latestUserMessageAt: null,
     hasPendingApprovals: false,
     hasPendingUserInput: false,
+    latestPendingUserInputAt: null,
     hasActionableProposedPlan: false,
     ...overrides,
   };

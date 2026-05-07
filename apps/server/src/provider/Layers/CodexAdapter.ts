@@ -242,6 +242,8 @@ function itemTitle(itemType: CanonicalItemType): string | undefined {
       return "MCP tool call";
     case "dynamic_tool_call":
       return "Tool call";
+    case "collab_agent_tool_call":
+      return "Subagent task";
     case "web_search":
       return "Web search";
     case "image_view":
@@ -254,8 +256,20 @@ function itemTitle(itemType: CanonicalItemType): string | undefined {
 }
 
 function itemDetail(item: CodexLifecycleItem): string | undefined {
+  const itemRecord = item && typeof item === "object" ? (item as Record<string, unknown>) : {};
+  const input =
+    itemRecord.input && typeof itemRecord.input === "object"
+      ? (itemRecord.input as Record<string, unknown>)
+      : undefined;
+  const result =
+    itemRecord.result && typeof itemRecord.result === "object"
+      ? (itemRecord.result as Record<string, unknown>)
+      : undefined;
+  const command = formatLifecycleCommand(itemRecord.command ?? input?.command ?? result?.command);
+  if (command) {
+    return command;
+  }
   const candidates = [
-    "command" in item ? item.command : undefined,
     "title" in item ? item.title : undefined,
     "summary" in item ? item.summary : undefined,
     "text" in item ? item.text : undefined,
@@ -268,6 +282,19 @@ function itemDetail(item: CodexLifecycleItem): string | undefined {
     return trimmed;
   }
   return undefined;
+}
+
+function formatLifecycleCommand(value: unknown): string | undefined {
+  if (typeof value === "string") {
+    return trimText(value);
+  }
+  if (!Array.isArray(value)) {
+    return undefined;
+  }
+  const parts = value
+    .map((entry) => (typeof entry === "string" ? trimText(entry) : undefined))
+    .filter((entry): entry is string => entry !== undefined);
+  return parts.length > 0 ? parts.join(" ") : undefined;
 }
 
 function toRequestTypeFromMethod(method: string): CanonicalRequestType {
@@ -405,8 +432,27 @@ function providerRefsFromEvent(
   event: ProviderEvent,
 ): ProviderRuntimeEvent["providerRefs"] | undefined {
   const refs: Record<string, string> = {};
-  if (event.turnId) refs.providerTurnId = event.turnId;
-  if (event.itemId) refs.providerItemId = event.itemId;
+  const payloadRecord =
+    typeof event.payload === "object" && event.payload !== null
+      ? (event.payload as { itemId?: unknown; threadId?: unknown; turnId?: unknown })
+      : undefined;
+  const payloadThreadId =
+    typeof payloadRecord?.threadId === "string" ? payloadRecord.threadId : undefined;
+  const payloadTurnId =
+    typeof payloadRecord?.turnId === "string" ? payloadRecord.turnId : undefined;
+  const payloadItemId =
+    typeof payloadRecord?.itemId === "string" ? payloadRecord.itemId : undefined;
+  if (payloadThreadId) refs.providerThreadId = payloadThreadId;
+  if (payloadTurnId) {
+    refs.providerTurnId = payloadTurnId;
+  } else if (event.turnId) {
+    refs.providerTurnId = event.turnId;
+  }
+  if (payloadItemId) {
+    refs.providerItemId = payloadItemId;
+  } else if (event.itemId) {
+    refs.providerItemId = event.itemId;
+  }
   if (event.requestId) refs.providerRequestId = event.requestId;
 
   return Object.keys(refs).length > 0 ? (refs as ProviderRuntimeEvent["providerRefs"]) : undefined;

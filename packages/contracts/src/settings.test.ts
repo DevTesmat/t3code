@@ -2,10 +2,32 @@ import { describe, expect, it } from "vitest";
 import { Schema } from "effect";
 
 import { ProviderInstanceId } from "./providerInstance.ts";
-import { DEFAULT_SERVER_SETTINGS, ServerSettings, ServerSettingsPatch } from "./settings.ts";
+import {
+  ClientSettingsPatch,
+  ClientSettingsSchema,
+  DEFAULT_CLIENT_SETTINGS,
+  DEFAULT_SERVER_SETTINGS,
+  ServerSettings,
+  ServerSettingsPatch,
+} from "./settings.ts";
 
+const decodeClientSettings = Schema.decodeUnknownSync(ClientSettingsSchema);
+const decodeClientSettingsPatch = Schema.decodeUnknownSync(ClientSettingsPatch);
 const decodeServerSettings = Schema.decodeUnknownSync(ServerSettings);
 const decodeServerSettingsPatch = Schema.decodeUnknownSync(ServerSettingsPatch);
+
+describe("ClientSettings.notificationSoundsEnabled", () => {
+  it("defaults notification sounds on for legacy client settings", () => {
+    expect(DEFAULT_CLIENT_SETTINGS.notificationSoundsEnabled).toBe(true);
+    expect(decodeClientSettings({}).notificationSoundsEnabled).toBe(true);
+  });
+
+  it("allows notification sounds to be patched off", () => {
+    expect(decodeClientSettingsPatch({ notificationSoundsEnabled: false })).toEqual({
+      notificationSoundsEnabled: false,
+    });
+  });
+});
 
 describe("ServerSettings.providerInstances (slice-2 invariant)", () => {
   it("defaults to an empty record so legacy configs without the key still decode", () => {

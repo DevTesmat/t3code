@@ -5,6 +5,7 @@ import {
   OrchestrationSession,
   OrchestrationThread,
 } from "@t3tools/contracts";
+import { computeWorkDurationMs } from "@t3tools/shared/workDuration";
 import { Effect, Schema } from "effect";
 
 import { toProjectorDecodeError, type OrchestrationProjectorDecodeError } from "./Errors.ts";
@@ -19,8 +20,11 @@ import {
   ThreadDeletedPayload,
   ThreadInteractionModeSetPayload,
   ThreadMetaUpdatedPayload,
+  ThreadPinnedPayload,
+  ThreadProposedPlanDeltaReceivedPayload,
   ThreadProposedPlanUpsertedPayload,
   ThreadRuntimeModeSetPayload,
+  ThreadUnpinnedPayload,
   ThreadUnarchivedPayload,
   ThreadRevertedPayload,
   ThreadSessionSetPayload,
@@ -260,8 +264,10 @@ export function projectEvent(
             branch: payload.branch,
             worktreePath: payload.worktreePath,
             latestTurn: null,
+            totalWorkDurationMs: 0,
             createdAt: payload.createdAt,
             updatedAt: payload.updatedAt,
+            pinnedAt: payload.pinnedAt,
             archivedAt: null,
             deletedAt: null,
             messages: [],
@@ -310,6 +316,26 @@ export function projectEvent(
           threads: updateThread(nextBase.threads, payload.threadId, {
             archivedAt: null,
             updatedAt: payload.updatedAt,
+          }),
+        })),
+      );
+
+    case "thread.pinned":
+      return decodeForEvent(ThreadPinnedPayload, event.payload, event.type, "payload").pipe(
+        Effect.map((payload) => ({
+          ...nextBase,
+          threads: updateThread(nextBase.threads, payload.threadId, {
+            pinnedAt: payload.pinnedAt,
+          }),
+        })),
+      );
+
+    case "thread.unpinned":
+      return decodeForEvent(ThreadUnpinnedPayload, event.payload, event.type, "payload").pipe(
+        Effect.map((payload) => ({
+          ...nextBase,
+          threads: updateThread(nextBase.threads, payload.threadId, {
+            pinnedAt: null,
           }),
         })),
       );
@@ -375,6 +401,7 @@ export function projectEvent(
           {
             id: payload.messageId,
             role: payload.role,
+            source: payload.source ?? "user",
             text: payload.text,
             ...(payload.attachments !== undefined ? { attachments: payload.attachments } : {}),
             turnId: payload.turnId,
@@ -438,6 +465,22 @@ export function projectEvent(
           "session",
         );
 
+        const settlingTurnId =
+          thread.session?.status === "running" && session.status !== "running"
+            ? thread.session.activeTurnId
+            : null;
+        const shouldAddWorkDuration =
+          settlingTurnId !== null &&
+          thread.latestTurn?.turnId === settlingTurnId &&
+          thread.latestTurn.startedAt !== null;
+        const completedWorkDurationMs = shouldAddWorkDuration
+          ? computeWorkDurationMs({
+              startedAt: thread.latestTurn!.startedAt,
+              completedAt: session.updatedAt,
+              activities: thread.activities,
+            })
+          : 0;
+
         return {
           ...nextBase,
           threads: updateThread(nextBase.threads, payload.threadId, {
@@ -462,6 +505,7 @@ export function projectEvent(
                         : null,
                   }
                 : thread.latestTurn,
+            totalWorkDurationMs: (thread.totalWorkDurationMs ?? 0) + completedWorkDurationMs,
             updatedAt: event.occurredAt,
           }),
         };
@@ -494,6 +538,26 @@ export function projectEvent(
           ...nextBase,
           threads: updateThread(nextBase.threads, payload.threadId, {
             proposedPlans,
+            updatedAt: event.occurredAt,
+          }),
+        };
+      });
+
+    case "thread.proposed-plan-delta-received":
+      return Effect.gen(function* () {
+        const payload = yield* decodeForEvent(
+          ThreadProposedPlanDeltaReceivedPayload,
+          event.payload,
+          event.type,
+          "payload",
+        );
+        const thread = nextBase.threads.find((entry) => entry.id === payload.threadId);
+        if (!thread) {
+          return nextBase;
+        }
+        return {
+          ...nextBase,
+          threads: updateThread(nextBase.threads, payload.threadId, {
             updatedAt: event.occurredAt,
           }),
         };

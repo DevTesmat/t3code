@@ -25,8 +25,10 @@ function createDeferredPromise<T>() {
 const {
   activeRunStackedActionDeferredRef,
   activeDraftThreadRef,
+  gitQuickActionPreferenceRef,
   hasServerThreadRef,
   invalidateGitQueriesSpy,
+  pullMutateAsyncSpy,
   refreshGitStatusSpy,
   runStackedActionMutateAsyncSpy,
   setDraftThreadContextSpy,
@@ -36,10 +38,18 @@ const {
   toastPromiseSpy,
   toastUpdateSpy,
 } = vi.hoisted(() => ({
-  activeRunStackedActionDeferredRef: { current: createDeferredPromise<never>() },
+  activeRunStackedActionDeferredRef: { current: createDeferredPromise<unknown>() },
   activeDraftThreadRef: { current: null as unknown },
+  gitQuickActionPreferenceRef: { current: "commit_push_pr" as "commit_push" | "commit_push_pr" },
   hasServerThreadRef: { current: true },
   invalidateGitQueriesSpy: vi.fn(() => Promise.resolve()),
+  pullMutateAsyncSpy: vi.fn(() =>
+    Promise.resolve({
+      status: "skipped_up_to_date",
+      branch: BRANCH_NAME,
+      upstreamBranch: `origin/${BRANCH_NAME}`,
+    }),
+  ),
   refreshGitStatusSpy: vi.fn(() => Promise.resolve(null)),
   runStackedActionMutateAsyncSpy: vi.fn(() => activeRunStackedActionDeferredRef.current.promise),
   setDraftThreadContextSpy: vi.fn(),
@@ -67,7 +77,7 @@ vi.mock("@tanstack/react-query", async () => {
 
       if (options.__kind === "pull") {
         return {
-          mutateAsync: vi.fn(),
+          mutateAsync: pullMutateAsyncSpy,
           isPending: false,
         };
       }
@@ -244,12 +254,23 @@ vi.mock("~/terminal-links", () => ({
   resolvePathLinkTarget: vi.fn(),
 }));
 
+vi.mock("~/hooks/useSettings", () => ({
+  getClientSettings: () => ({ gitQuickActionPreference: gitQuickActionPreferenceRef.current }),
+  useSettings: (
+    selector: (settings: { gitQuickActionPreference: "commit_push" | "commit_push_pr" }) => unknown,
+  ) => selector({ gitQuickActionPreference: gitQuickActionPreferenceRef.current }),
+}));
+
 import GitActionsControl from "./GitActionsControl";
 
 function findButtonByText(text: string): HTMLButtonElement | null {
   return (Array.from(document.querySelectorAll("button")).find((button) =>
     button.textContent?.includes(text),
   ) ?? null) as HTMLButtonElement | null;
+}
+
+function findButtonByLabel(label: string): HTMLButtonElement | null {
+  return document.querySelector(`button[aria-label="${label}"]`);
 }
 
 function Harness() {
@@ -274,8 +295,9 @@ describe("GitActionsControl thread-scoped progress toast", () => {
   afterEach(() => {
     vi.useRealTimers();
     vi.clearAllMocks();
-    activeRunStackedActionDeferredRef.current = createDeferredPromise<never>();
+    activeRunStackedActionDeferredRef.current = createDeferredPromise<unknown>();
     activeDraftThreadRef.current = null;
+    gitQuickActionPreferenceRef.current = "commit_push_pr";
     hasServerThreadRef.current = true;
     document.body.innerHTML = "";
   });
@@ -385,6 +407,193 @@ describe("GitActionsControl thread-scoped progress toast", () => {
         Object.defineProperty(document, "visibilityState", originalVisibilityState);
       }
       vi.useRealTimers();
+      await screen.unmount();
+      host.remove();
+    }
+  });
+
+  it("runs pull from the dedicated pull button when the branch is not behind", async () => {
+    const host = document.createElement("div");
+    document.body.append(host);
+    const screen = await render(
+      <GitActionsControl
+        gitCwd={GIT_CWD}
+        activeThreadRef={scopeThreadRef(ENVIRONMENT_A, SHARED_THREAD_ID)}
+      />,
+      {
+        container: host,
+      },
+    );
+
+    try {
+      const pullButton = findButtonByLabel("Pull");
+      expect(pullButton, 'Unable to find button with label "Pull"').toBeTruthy();
+      if (!(pullButton instanceof HTMLButtonElement)) {
+        throw new Error('Unable to find button with label "Pull"');
+      }
+
+      pullButton.click();
+      await Promise.resolve();
+
+      expect(pullMutateAsyncSpy).toHaveBeenCalledTimes(1);
+      expect(toastPromiseSpy).toHaveBeenCalledWith(
+        expect.any(Promise),
+        expect.objectContaining({
+          loading: {
+            title: "Pulling...",
+            data: { threadRef: scopeThreadRef(ENVIRONMENT_A, SHARED_THREAD_ID) },
+          },
+          success: expect.any(Function),
+          error: expect.any(Function),
+        }),
+      );
+
+      const toastOptions = toastPromiseSpy.mock.lastCall?.[1];
+      expect(
+        toastOptions?.success?.({
+          status: "skipped_up_to_date",
+          branch: BRANCH_NAME,
+          upstreamBranch: `origin/${BRANCH_NAME}`,
+        }),
+      ).toEqual({
+        title: "Already up to date",
+        description: `${BRANCH_NAME} is already synchronized.`,
+        data: { threadRef: scopeThreadRef(ENVIRONMENT_A, SHARED_THREAD_ID) },
+      });
+      expect(toastOptions?.error?.(new Error("network unavailable"))).toEqual({
+        title: "Pull failed",
+        description: "network unavailable",
+        data: { threadRef: scopeThreadRef(ENVIRONMENT_A, SHARED_THREAD_ID) },
+      });
+    } finally {
+      await screen.unmount();
+      host.remove();
+    }
+  });
+
+  it("suppresses the post-push create-pr CTA when the persisted preference excludes PR creation", async () => {
+    gitQuickActionPreferenceRef.current = "commit_push";
+    activeRunStackedActionDeferredRef.current = createDeferredPromise<unknown>();
+    const resolvedPushResult = {
+      action: "push",
+      branch: { status: "skipped_not_requested" },
+      commit: { status: "skipped_not_requested" },
+      push: {
+        status: "pushed",
+        remoteName: "origin",
+        remoteBranch: BRANCH_NAME,
+        remoteRef: `origin/${BRANCH_NAME}`,
+      },
+      pr: { status: "skipped_not_requested" },
+      toast: {
+        title: "Pushed",
+        description: "Remote updated",
+        cta: {
+          kind: "run_action",
+          label: "Create PR",
+          action: { kind: "create_pr" },
+        },
+      },
+    } as const;
+
+    const host = document.createElement("div");
+    document.body.append(host);
+    const screen = await render(
+      <GitActionsControl
+        gitCwd={GIT_CWD}
+        activeThreadRef={scopeThreadRef(ENVIRONMENT_A, SHARED_THREAD_ID)}
+      />,
+      {
+        container: host,
+      },
+    );
+
+    try {
+      const quickActionButton = findButtonByText("Push");
+      expect(quickActionButton, 'Unable to find button containing "Push"').toBeTruthy();
+      if (!(quickActionButton instanceof HTMLButtonElement)) {
+        throw new Error('Unable to find button containing "Push"');
+      }
+
+      quickActionButton.click();
+      activeRunStackedActionDeferredRef.current.resolve(resolvedPushResult);
+      await Promise.resolve();
+
+      expect(toastUpdateSpy).toHaveBeenLastCalledWith(
+        "toast-1",
+        expect.objectContaining({
+          type: "success",
+          title: "Pushed",
+          description: "Remote updated",
+        }),
+      );
+      expect(toastUpdateSpy.mock.lastCall?.[1]).not.toHaveProperty("actionProps");
+    } finally {
+      await screen.unmount();
+      host.remove();
+    }
+  });
+
+  it("keeps the post-push create-pr CTA when the persisted preference includes PR creation", async () => {
+    gitQuickActionPreferenceRef.current = "commit_push_pr";
+    activeRunStackedActionDeferredRef.current = createDeferredPromise<unknown>();
+    const resolvedPushResult = {
+      action: "push",
+      branch: { status: "skipped_not_requested" },
+      commit: { status: "skipped_not_requested" },
+      push: {
+        status: "pushed",
+        remoteName: "origin",
+        remoteBranch: BRANCH_NAME,
+        remoteRef: `origin/${BRANCH_NAME}`,
+      },
+      pr: { status: "skipped_not_requested" },
+      toast: {
+        title: "Pushed",
+        description: "Remote updated",
+        cta: {
+          kind: "run_action",
+          label: "Create PR",
+          action: { kind: "create_pr" },
+        },
+      },
+    } as const;
+
+    const host = document.createElement("div");
+    document.body.append(host);
+    const screen = await render(
+      <GitActionsControl
+        gitCwd={GIT_CWD}
+        activeThreadRef={scopeThreadRef(ENVIRONMENT_A, SHARED_THREAD_ID)}
+      />,
+      {
+        container: host,
+      },
+    );
+
+    try {
+      const quickActionButton = findButtonByText("Push & create PR");
+      expect(quickActionButton, 'Unable to find button containing "Push & create PR"').toBeTruthy();
+      if (!(quickActionButton instanceof HTMLButtonElement)) {
+        throw new Error('Unable to find button containing "Push & create PR"');
+      }
+
+      quickActionButton.click();
+      activeRunStackedActionDeferredRef.current.resolve(resolvedPushResult);
+      await Promise.resolve();
+
+      expect(toastUpdateSpy).toHaveBeenLastCalledWith(
+        "toast-1",
+        expect.objectContaining({
+          type: "success",
+          title: "Pushed",
+          description: "Remote updated",
+          actionProps: expect.objectContaining({
+            children: "Create PR",
+          }),
+        }),
+      );
+    } finally {
       await screen.unmount();
       host.remove();
     }

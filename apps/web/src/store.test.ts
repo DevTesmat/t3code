@@ -1,15 +1,19 @@
 import { scopeThreadRef } from "@t3tools/client-runtime";
 import {
   CheckpointRef,
+  CommandId,
   DEFAULT_MODEL,
   EnvironmentId,
   EventId,
   MessageId,
   ProjectId,
+  ProviderDriverKind,
   ProviderInstanceId,
   ThreadId,
   TurnId,
   type OrchestrationEvent,
+  type OrchestrationShellSnapshot,
+  type OrchestrationThread,
 } from "@t3tools/contracts";
 import { describe, expect, it } from "vitest";
 
@@ -18,13 +22,17 @@ import {
   applyOrchestrationEvents,
   selectEnvironmentState,
   selectProjectsAcrossEnvironments,
+  selectSidebarThreadSummaryByRef,
   selectThreadByRef,
   selectThreadExistsByRef,
   setThreadBranch,
   selectThreadsAcrossEnvironments,
+  syncServerShellSnapshot,
+  syncServerThreadDetail,
   type AppState,
   type EnvironmentState,
 } from "./store";
+import { resolveThreadStatusPill } from "./components/Sidebar.logic";
 import { DEFAULT_INTERACTION_MODE, DEFAULT_RUNTIME_MODE, type Thread } from "./types";
 
 const localEnvironmentId = EnvironmentId.make("environment-local");
@@ -127,6 +135,7 @@ function makeState(thread: Thread): AppState {
         updatedAt: thread.updatedAt,
         branch: thread.branch,
         worktreePath: thread.worktreePath,
+        totalWorkDurationMs: thread.totalWorkDurationMs ?? 0,
       },
     },
     threadSessionById: {
@@ -244,6 +253,127 @@ function makeEvent<T extends OrchestrationEvent["type"]>(
     payload,
     ...overrides,
   } as Extract<OrchestrationEvent, { type: T }>;
+}
+
+function makeServerThread(overrides: Partial<OrchestrationThread> = {}): OrchestrationThread {
+  return {
+    id: ThreadId.make("thread-1"),
+    projectId: ProjectId.make("project-1"),
+    title: "Thread",
+    modelSelection: {
+      instanceId: ProviderInstanceId.make("codex"),
+      model: DEFAULT_MODEL,
+    },
+    runtimeMode: DEFAULT_RUNTIME_MODE,
+    interactionMode: "plan",
+    branch: null,
+    worktreePath: null,
+    latestTurn: {
+      turnId: TurnId.make("turn-1"),
+      state: "completed",
+      requestedAt: "2026-02-27T00:00:00.000Z",
+      startedAt: "2026-02-27T00:00:01.000Z",
+      completedAt: "2026-02-27T00:00:05.000Z",
+      assistantMessageId: MessageId.make("assistant-1"),
+    },
+    createdAt: "2026-02-27T00:00:00.000Z",
+    updatedAt: "2026-02-27T00:00:05.000Z",
+    pinnedAt: null,
+    archivedAt: null,
+    deletedAt: null,
+    messages: [
+      {
+        id: MessageId.make("user-1"),
+        role: "user",
+        text: "make a plan",
+        turnId: TurnId.make("turn-1"),
+        streaming: false,
+        createdAt: "2026-02-27T00:00:00.000Z",
+        updatedAt: "2026-02-27T00:00:00.000Z",
+      },
+      {
+        id: MessageId.make("assistant-1"),
+        role: "assistant",
+        text: "plan",
+        turnId: TurnId.make("turn-1"),
+        streaming: false,
+        createdAt: "2026-02-27T00:00:01.000Z",
+        updatedAt: "2026-02-27T00:00:05.000Z",
+      },
+    ],
+    proposedPlans: [
+      {
+        id: "plan-1",
+        turnId: TurnId.make("turn-1"),
+        planMarkdown: "Do the thing",
+        implementedAt: null,
+        implementationThreadId: null,
+        createdAt: "2026-02-27T00:00:05.000Z",
+        updatedAt: "2026-02-27T00:00:05.000Z",
+      },
+    ],
+    checkpoints: [],
+    activities: [],
+    session: {
+      threadId: ThreadId.make("thread-1"),
+      status: "ready",
+      providerName: "codex",
+      runtimeMode: "full-access",
+      activeTurnId: null,
+      lastError: null,
+      updatedAt: "2026-02-27T00:00:05.000Z",
+    },
+    ...overrides,
+  };
+}
+
+function makeShellSnapshot(
+  thread: OrchestrationThread,
+  overrides: Partial<OrchestrationShellSnapshot["threads"][number]> = {},
+): OrchestrationShellSnapshot {
+  return {
+    snapshotSequence: 1,
+    projects: [
+      {
+        id: thread.projectId,
+        title: "Project",
+        workspaceRoot: "/tmp/project",
+        repositoryIdentity: null,
+        defaultModelSelection: {
+          instanceId: ProviderInstanceId.make("codex"),
+          model: DEFAULT_MODEL,
+        },
+        scripts: [],
+        createdAt: "2026-02-27T00:00:00.000Z",
+        updatedAt: "2026-02-27T00:00:00.000Z",
+      },
+    ],
+    threads: [
+      {
+        id: thread.id,
+        projectId: thread.projectId,
+        title: thread.title,
+        modelSelection: thread.modelSelection,
+        runtimeMode: thread.runtimeMode,
+        interactionMode: thread.interactionMode,
+        branch: thread.branch,
+        worktreePath: thread.worktreePath,
+        latestTurn: thread.latestTurn,
+        createdAt: thread.createdAt,
+        updatedAt: thread.updatedAt,
+        pinnedAt: thread.pinnedAt,
+        archivedAt: thread.archivedAt,
+        session: thread.session,
+        latestUserMessageAt: "2026-02-27T00:00:00.000Z",
+        hasPendingApprovals: false,
+        hasPendingUserInput: false,
+        latestPendingUserInputAt: null,
+        hasActionableProposedPlan: true,
+        ...overrides,
+      },
+    ],
+    updatedAt: "2026-02-27T00:00:05.000Z",
+  };
 }
 
 describe("thread selection memoization", () => {
@@ -368,6 +498,80 @@ describe("thread selection memoization", () => {
   });
 });
 
+describe("shell and detail thread state", () => {
+  it("keeps plan-ready sidebar state when opening and closing thread detail", () => {
+    const thread = makeServerThread();
+    const threadRef = scopeThreadRef(localEnvironmentId, thread.id);
+    const shellState = syncServerShellSnapshot(
+      makeEmptyState({ activeEnvironmentId: localEnvironmentId, bootstrapComplete: false }),
+      makeShellSnapshot(thread),
+      localEnvironmentId,
+    );
+
+    const withDetail = syncServerThreadDetail(shellState, thread, localEnvironmentId);
+    const afterCloseLikeShellRefresh = syncServerShellSnapshot(
+      withDetail,
+      makeShellSnapshot(thread),
+      localEnvironmentId,
+    );
+    const summary = selectSidebarThreadSummaryByRef(afterCloseLikeShellRefresh, threadRef);
+
+    expect(summary?.hasActionableProposedPlan).toBe(true);
+    expect(summary?.latestTurn?.state).toBe("completed");
+    expect(
+      summary
+        ? resolveThreadStatusPill({
+            thread: {
+              ...summary,
+              lastVisitedAt: "2026-02-27T00:01:00.000Z",
+              nowMs: Date.parse("2026-02-27T00:01:00.000Z"),
+            },
+          })
+        : null,
+    ).toMatchObject({ label: "Plan Ready" });
+  });
+
+  it("falls back to persistent done when a completed plan has already been implemented", () => {
+    const thread = makeServerThread({
+      proposedPlans: [
+        {
+          id: "plan-1",
+          turnId: TurnId.make("turn-1"),
+          planMarkdown: "Do the thing",
+          implementedAt: "2026-02-27T00:00:10.000Z",
+          implementationThreadId: ThreadId.make("thread-implementation"),
+          createdAt: "2026-02-27T00:00:05.000Z",
+          updatedAt: "2026-02-27T00:00:10.000Z",
+        },
+      ],
+    });
+    const threadRef = scopeThreadRef(localEnvironmentId, thread.id);
+    const state = syncServerThreadDetail(
+      syncServerShellSnapshot(
+        makeEmptyState({ activeEnvironmentId: localEnvironmentId, bootstrapComplete: false }),
+        makeShellSnapshot(thread, { hasActionableProposedPlan: false }),
+        localEnvironmentId,
+      ),
+      thread,
+      localEnvironmentId,
+    );
+    const summary = selectSidebarThreadSummaryByRef(state, threadRef);
+
+    expect(summary?.hasActionableProposedPlan).toBe(false);
+    expect(
+      summary
+        ? resolveThreadStatusPill({
+            thread: {
+              ...summary,
+              lastVisitedAt: "2026-02-27T00:01:00.000Z",
+              nowMs: Date.parse("2026-02-27T00:01:00.000Z"),
+            },
+          })
+        : null,
+    ).toMatchObject({ label: "Done", showTextLabel: false });
+  });
+});
+
 describe("setThreadBranch", () => {
   it("updates only the scoped thread environment", () => {
     const sharedThreadId = ThreadId.make("thread-shared");
@@ -425,6 +629,195 @@ describe("incremental orchestration updates", () => {
     );
 
     expect(localEnvironmentStateOf(next).bootstrapComplete).toBe(false);
+  });
+
+  it("projects imported proposed plan upserts onto the thread", () => {
+    const thread = makeThread();
+    const state = makeState(thread);
+    const createdAt = "2026-02-27T00:00:01.000Z";
+
+    const next = applyOrchestrationEvent(
+      state,
+      makeEvent("thread.proposed-plan-upserted", {
+        threadId: thread.id,
+        proposedPlan: {
+          id: "plan-imported",
+          turnId: null,
+          planMarkdown: "# Imported plan\n\n- Step",
+          implementedAt: null,
+          implementationThreadId: null,
+          createdAt,
+          updatedAt: createdAt,
+        },
+      }),
+      localEnvironmentId,
+    );
+
+    const projectedThread = selectThreadByRef(
+      next,
+      scopeThreadRef(thread.environmentId, thread.id),
+    );
+    expect(projectedThread?.proposedPlans).toEqual([
+      {
+        id: "plan-imported",
+        turnId: null,
+        planMarkdown: "# Imported plan\n\n- Step",
+        implementedAt: null,
+        implementationThreadId: null,
+        createdAt,
+        updatedAt: createdAt,
+      },
+    ]);
+  });
+
+  it("streams proposed plan deltas and replaces them with the completed plan", () => {
+    const thread = makeThread();
+    const state = makeState(thread);
+    const createdAt = "2026-02-27T00:00:01.000Z";
+    const turnId = TurnId.make("turn-plan");
+
+    const withFirstDelta = applyOrchestrationEvent(
+      state,
+      makeEvent("thread.proposed-plan-delta-received", {
+        threadId: thread.id,
+        planId: "plan-live",
+        turnId,
+        delta: "# Pla",
+        createdAt,
+      }),
+      localEnvironmentId,
+    );
+    const withSecondDelta = applyOrchestrationEvent(
+      withFirstDelta,
+      makeEvent("thread.proposed-plan-delta-received", {
+        threadId: thread.id,
+        planId: "plan-live",
+        turnId,
+        delta: "n\n\n- Step",
+        createdAt: "2026-02-27T00:00:02.000Z",
+      }),
+      localEnvironmentId,
+    );
+
+    const streamingThread = selectThreadByRef(
+      withSecondDelta,
+      scopeThreadRef(thread.environmentId, thread.id),
+    );
+    expect(streamingThread?.proposedPlans).toEqual([
+      expect.objectContaining({
+        id: "plan-live",
+        turnId,
+        planMarkdown: "# Plan\n\n- Step",
+        streaming: true,
+      }),
+    ]);
+
+    const completed = applyOrchestrationEvent(
+      withSecondDelta,
+      makeEvent("thread.proposed-plan-upserted", {
+        threadId: thread.id,
+        proposedPlan: {
+          id: "plan-live",
+          turnId,
+          planMarkdown: "# Final plan\n\n- Step",
+          implementedAt: null,
+          implementationThreadId: null,
+          createdAt,
+          updatedAt: "2026-02-27T00:00:03.000Z",
+        },
+      }),
+      localEnvironmentId,
+    );
+    const completedThread = selectThreadByRef(
+      completed,
+      scopeThreadRef(thread.environmentId, thread.id),
+    );
+    expect(completedThread?.proposedPlans).toEqual([
+      expect.not.objectContaining({ streaming: true }),
+    ]);
+    expect(completedThread?.proposedPlans[0]?.planMarkdown).toBe("# Final plan\n\n- Step");
+
+    const withStaleDelta = applyOrchestrationEvent(
+      completed,
+      makeEvent("thread.proposed-plan-delta-received", {
+        threadId: thread.id,
+        planId: "plan-live",
+        turnId,
+        delta: "\n- stale",
+        createdAt: "2026-02-27T00:00:04.000Z",
+      }),
+      localEnvironmentId,
+    );
+    const staleThread = selectThreadByRef(
+      withStaleDelta,
+      scopeThreadRef(thread.environmentId, thread.id),
+    );
+    expect(staleThread?.proposedPlans[0]?.planMarkdown).toBe("# Final plan\n\n- Step");
+  });
+
+  it("applies replayed draft import events before any snapshot refresh", () => {
+    const state = makeState(makeThread({ id: ThreadId.make("existing-thread") }));
+    const threadId = ThreadId.make("thread-imported-draft");
+    const projectId = ProjectId.make("project-1");
+    const createdAt = "2026-02-27T00:00:01.000Z";
+
+    const next = applyOrchestrationEvents(
+      state,
+      [
+        makeEvent(
+          "thread.created",
+          {
+            threadId,
+            projectId,
+            title: "Imported plan",
+            modelSelection: {
+              instanceId: ProviderInstanceId.make("codex"),
+              model: "gpt-5-codex",
+            },
+            runtimeMode: DEFAULT_RUNTIME_MODE,
+            interactionMode: "default",
+            branch: null,
+            worktreePath: null,
+            pinnedAt: null,
+            createdAt,
+            updatedAt: createdAt,
+          },
+          {
+            sequence: 2,
+            commandId: CommandId.make("cmd-import-thread-create"),
+          },
+        ),
+        makeEvent(
+          "thread.proposed-plan-upserted",
+          {
+            threadId,
+            proposedPlan: {
+              id: "plan-imported-draft",
+              turnId: null,
+              planMarkdown: "# Imported draft plan",
+              implementedAt: null,
+              implementationThreadId: null,
+              createdAt,
+              updatedAt: createdAt,
+            },
+          },
+          {
+            sequence: 3,
+            commandId: CommandId.make("cmd-import-plan"),
+          },
+        ),
+      ],
+      localEnvironmentId,
+    );
+
+    const projectedThread = selectThreadByRef(next, scopeThreadRef(localEnvironmentId, threadId));
+    expect(projectedThread?.proposedPlans).toEqual([
+      expect.objectContaining({
+        id: "plan-imported-draft",
+        planMarkdown: "# Imported draft plan",
+        implementedAt: null,
+      }),
+    ]);
   });
 
   it("preserves state identity for no-op project and thread deletes", () => {
@@ -745,6 +1138,115 @@ describe("incremental orchestration updates", () => {
     expect(threadsOf(next)[0]?.session?.status).toBe("running");
     expect(threadsOf(next)[0]?.latestTurn?.state).toBe("completed");
     expect(threadsOf(next)[0]?.messages).toHaveLength(1);
+  });
+
+  it("adds work duration only when a running session settles", () => {
+    const thread = makeThread({
+      totalWorkDurationMs: 4_000,
+      session: {
+        status: "running",
+        orchestrationStatus: "running",
+        activeTurnId: TurnId.make("turn-1"),
+        provider: ProviderDriverKind.make("codex"),
+        createdAt: "2026-02-27T00:00:01.000Z",
+        updatedAt: "2026-02-27T00:00:01.000Z",
+      },
+      latestTurn: {
+        turnId: TurnId.make("turn-1"),
+        state: "completed",
+        requestedAt: "2026-02-27T00:00:00.000Z",
+        startedAt: "2026-02-27T00:00:00.000Z",
+        completedAt: "2026-02-27T00:00:03.000Z",
+        assistantMessageId: MessageId.make("assistant-1"),
+      },
+      activities: [
+        {
+          id: EventId.make("activity-user-input-open"),
+          tone: "info",
+          kind: "user-input.requested",
+          summary: "Waiting",
+          payload: { requestId: "request-1" },
+          turnId: TurnId.make("turn-1"),
+          createdAt: "2026-02-27T00:00:04.000Z",
+        },
+        {
+          id: EventId.make("activity-user-input-resolved"),
+          tone: "info",
+          kind: "user-input.resolved",
+          summary: "Resolved",
+          payload: { requestId: "request-1" },
+          turnId: TurnId.make("turn-1"),
+          createdAt: "2026-02-27T00:00:07.000Z",
+        },
+        {
+          id: EventId.make("activity-approval-open"),
+          tone: "approval",
+          kind: "approval.requested",
+          summary: "Approval",
+          payload: { requestId: "approval-1", requestKind: "command" },
+          turnId: TurnId.make("turn-1"),
+          createdAt: "2026-02-27T00:00:08.000Z",
+        },
+      ],
+    });
+
+    const next = applyOrchestrationEvent(
+      makeState(thread),
+      makeEvent("thread.session-set", {
+        threadId: thread.id,
+        session: {
+          threadId: thread.id,
+          status: "ready",
+          providerName: "codex",
+          runtimeMode: "full-access",
+          activeTurnId: null,
+          lastError: null,
+          updatedAt: "2026-02-27T00:00:11.000Z",
+        },
+      }),
+      localEnvironmentId,
+    );
+
+    expect(threadsOf(next)[0]?.totalWorkDurationMs).toBe(12_000);
+  });
+
+  it("does not add work duration when the turn diff completes before the session settles", () => {
+    const thread = makeThread({
+      totalWorkDurationMs: 4_000,
+      session: {
+        status: "running",
+        orchestrationStatus: "running",
+        activeTurnId: TurnId.make("turn-1"),
+        provider: ProviderDriverKind.make("codex"),
+        createdAt: "2026-02-27T00:00:01.000Z",
+        updatedAt: "2026-02-27T00:00:01.000Z",
+      },
+      latestTurn: {
+        turnId: TurnId.make("turn-1"),
+        state: "running",
+        requestedAt: "2026-02-27T00:00:00.000Z",
+        startedAt: "2026-02-27T00:00:00.000Z",
+        completedAt: null,
+        assistantMessageId: null,
+      },
+    });
+
+    const next = applyOrchestrationEvent(
+      makeState(thread),
+      makeEvent("thread.turn-diff-completed", {
+        threadId: thread.id,
+        turnId: TurnId.make("turn-1"),
+        checkpointTurnCount: 1,
+        checkpointRef: CheckpointRef.make("checkpoint-1"),
+        status: "ready",
+        files: [],
+        assistantMessageId: MessageId.make("assistant-1"),
+        completedAt: "2026-02-27T00:00:03.000Z",
+      }),
+      localEnvironmentId,
+    );
+
+    expect(threadsOf(next)[0]?.totalWorkDurationMs).toBe(4_000);
   });
 
   it("does not regress latestTurn when an older turn diff completes late", () => {

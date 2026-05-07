@@ -6,6 +6,9 @@ import {
   type GitStatusStreamEvent,
   type LocalApi,
   ORCHESTRATION_WS_METHODS,
+  type HistorySyncConnectionTestInput,
+  type HistorySyncProjectMappingsApplyInput,
+  type HistorySyncUpdateConfigInput,
   type ServerSettingsPatch,
   WS_METHODS,
 } from "@t3tools/contracts";
@@ -114,12 +117,35 @@ export interface WsRpcClient {
     readonly updateSettings: (
       patch: ServerSettingsPatch,
     ) => ReturnType<RpcUnaryMethod<typeof WS_METHODS.serverUpdateSettings>>;
+    readonly getHistorySyncConfig: RpcUnaryNoArgMethod<
+      typeof WS_METHODS.serverGetHistorySyncConfig
+    >;
+    readonly updateHistorySyncConfig: (
+      input: HistorySyncUpdateConfigInput,
+    ) => ReturnType<RpcUnaryMethod<typeof WS_METHODS.serverUpdateHistorySyncConfig>>;
+    readonly runHistorySync: RpcUnaryNoArgMethod<typeof WS_METHODS.serverRunHistorySync>;
+    readonly startHistorySyncInitialImport: RpcUnaryNoArgMethod<
+      typeof WS_METHODS.serverStartHistorySyncInitialImport
+    >;
+    readonly restoreHistorySyncBackup: RpcUnaryNoArgMethod<
+      typeof WS_METHODS.serverRestoreHistorySyncBackup
+    >;
+    readonly testHistorySyncConnection: (
+      input: HistorySyncConnectionTestInput,
+    ) => ReturnType<RpcUnaryMethod<typeof WS_METHODS.serverTestHistorySyncConnection>>;
+    readonly getHistorySyncProjectMappings: RpcUnaryNoArgMethod<
+      typeof WS_METHODS.serverGetHistorySyncProjectMappings
+    >;
+    readonly applyHistorySyncProjectMappings: (
+      input: HistorySyncProjectMappingsApplyInput,
+    ) => ReturnType<RpcUnaryMethod<typeof WS_METHODS.serverApplyHistorySyncProjectMappings>>;
     readonly subscribeConfig: RpcStreamMethod<typeof WS_METHODS.subscribeServerConfig>;
     readonly subscribeLifecycle: RpcStreamMethod<typeof WS_METHODS.subscribeServerLifecycle>;
     readonly subscribeAuthAccess: RpcStreamMethod<typeof WS_METHODS.subscribeAuthAccess>;
   };
   readonly orchestration: {
     readonly dispatchCommand: RpcUnaryMethod<typeof ORCHESTRATION_WS_METHODS.dispatchCommand>;
+    readonly replayEvents: RpcUnaryMethod<typeof ORCHESTRATION_WS_METHODS.replayEvents>;
     readonly getTurnDiff: RpcUnaryMethod<typeof ORCHESTRATION_WS_METHODS.getTurnDiff>;
     readonly getFullThreadDiff: RpcUnaryMethod<typeof ORCHESTRATION_WS_METHODS.getFullThreadDiff>;
     readonly subscribeShell: RpcStreamMethod<typeof ORCHESTRATION_WS_METHODS.subscribeShell>;
@@ -219,6 +245,24 @@ export function createWsRpcClient(transport: WsTransport): WsRpcClient {
       getSettings: () => transport.request((client) => client[WS_METHODS.serverGetSettings]({})),
       updateSettings: (patch) =>
         transport.request((client) => client[WS_METHODS.serverUpdateSettings]({ patch })),
+      getHistorySyncConfig: () =>
+        transport.request((client) => client[WS_METHODS.serverGetHistorySyncConfig]({})),
+      updateHistorySyncConfig: (input) =>
+        transport.request((client) => client[WS_METHODS.serverUpdateHistorySyncConfig](input)),
+      runHistorySync: () =>
+        transport.request((client) => client[WS_METHODS.serverRunHistorySync]({})),
+      startHistorySyncInitialImport: () =>
+        transport.request((client) => client[WS_METHODS.serverStartHistorySyncInitialImport]({})),
+      restoreHistorySyncBackup: () =>
+        transport.request((client) => client[WS_METHODS.serverRestoreHistorySyncBackup]({})),
+      testHistorySyncConnection: (input) =>
+        transport.request((client) => client[WS_METHODS.serverTestHistorySyncConnection](input)),
+      getHistorySyncProjectMappings: () =>
+        transport.request((client) => client[WS_METHODS.serverGetHistorySyncProjectMappings]({})),
+      applyHistorySyncProjectMappings: (input) =>
+        transport.request((client) =>
+          client[WS_METHODS.serverApplyHistorySyncProjectMappings](input),
+        ),
       subscribeConfig: (listener, options) =>
         transport.subscribe(
           (client) => client[WS_METHODS.subscribeServerConfig]({}),
@@ -241,6 +285,8 @@ export function createWsRpcClient(transport: WsTransport): WsRpcClient {
     orchestration: {
       dispatchCommand: (input) =>
         transport.request((client) => client[ORCHESTRATION_WS_METHODS.dispatchCommand](input)),
+      replayEvents: (input) =>
+        transport.request((client) => client[ORCHESTRATION_WS_METHODS.replayEvents](input)),
       getTurnDiff: (input) =>
         transport.request((client) => client[ORCHESTRATION_WS_METHODS.getTurnDiff](input)),
       getFullThreadDiff: (input) =>

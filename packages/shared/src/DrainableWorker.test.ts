@@ -31,6 +31,7 @@ describe("makeDrainableWorker", () => {
         );
 
         yield* worker.enqueue("first");
+        expect(yield* worker.backlog).toBe(1);
         yield* Deferred.await(firstStarted);
 
         const drained = yield* Deferred.make<void>();
@@ -50,6 +51,31 @@ describe("makeDrainableWorker", () => {
         yield* Deferred.await(drained);
 
         expect(processed).toEqual(["first", "second"]);
+        expect(yield* worker.backlog).toBe(0);
+      }),
+    ),
+  );
+
+  it.live("applies an explicit queue capacity", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const release = yield* Deferred.make<void>();
+        const worker = yield* makeDrainableWorker(() => Deferred.await(release), { capacity: 1 });
+
+        yield* worker.enqueue("first");
+        yield* worker.enqueue("second");
+
+        const thirdEnqueued = yield* Deferred.make<void>();
+        yield* Effect.forkChild(
+          worker
+            .enqueue("third")
+            .pipe(Effect.tap(() => Deferred.succeed(thirdEnqueued, undefined).pipe(Effect.orDie))),
+        );
+
+        expect(yield* Deferred.isDone(thirdEnqueued)).toBe(false);
+
+        yield* Deferred.succeed(release, undefined);
+        yield* Deferred.await(thirdEnqueued);
       }),
     ),
   );

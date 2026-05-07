@@ -27,6 +27,12 @@ import type {
 } from "./project.ts";
 import type { ProviderInstanceId } from "./providerInstance.ts";
 import type {
+  HistorySyncConfig,
+  HistorySyncConnectionTestInput,
+  HistorySyncConnectionTestResult,
+  HistorySyncProjectMappingPlan,
+  HistorySyncProjectMappingsApplyInput,
+  HistorySyncUpdateConfigInput,
   ServerConfig,
   ServerProviderUpdatedPayload,
   ServerUpsertKeybindingResult,
@@ -44,8 +50,10 @@ import type {
 import type { ServerUpsertKeybindingInput } from "./server.ts";
 import type {
   ClientOrchestrationCommand,
+  OrchestrationEvent,
   OrchestrationGetFullThreadDiffInput,
   OrchestrationGetFullThreadDiffResult,
+  OrchestrationReplayEventsInput,
   OrchestrationGetTurnDiffInput,
   OrchestrationGetTurnDiffResult,
   OrchestrationShellStreamItem,
@@ -77,7 +85,7 @@ export type DesktopUpdateStatus =
 export type DesktopRuntimeArch = "arm64" | "x64" | "other";
 export type DesktopTheme = "light" | "dark" | "system";
 export type DesktopUpdateChannel = "latest" | "nightly";
-export type DesktopAppStageLabel = "Alpha" | "Dev" | "Nightly";
+export type DesktopAppStageLabel = "Alpha" | "Dev" | "Local" | "Nightly";
 
 export interface DesktopAppBranding {
   baseName: string;
@@ -143,6 +151,15 @@ export interface DesktopServerExposureState {
   advertisedHost: string | null;
 }
 
+export interface DesktopRunningThreadsState {
+  count: number;
+  updatedAt: string;
+}
+
+export interface DesktopWindowState {
+  isFullScreen: boolean;
+}
+
 export interface PickFolderOptions {
   initialPath?: string | null;
 }
@@ -161,6 +178,9 @@ export interface DesktopBridge {
   removeSavedEnvironmentSecret: (environmentId: EnvironmentId) => Promise<void>;
   getServerExposureState: () => Promise<DesktopServerExposureState>;
   setServerExposureMode: (mode: DesktopServerExposureMode) => Promise<DesktopServerExposureState>;
+  setRunningThreadsState: (state: DesktopRunningThreadsState) => Promise<void>;
+  getWindowState: () => Promise<DesktopWindowState>;
+  onWindowState: (listener: (state: DesktopWindowState) => void) => () => void;
   pickFolder: (options?: PickFolderOptions) => Promise<string | null>;
   confirm: (message: string) => Promise<boolean>;
   setTheme: (theme: DesktopTheme) => Promise<void>;
@@ -169,6 +189,7 @@ export interface DesktopBridge {
     position?: { x: number; y: number },
   ) => Promise<T | null>;
   openExternal: (url: string) => Promise<boolean>;
+  playNotificationSound: () => Promise<void>;
   onMenuAction: (listener: (action: string) => void) => () => void;
   getUpdateState: () => Promise<DesktopUpdateState>;
   setUpdateChannel: (channel: DesktopUpdateChannel) => Promise<DesktopUpdateState>;
@@ -227,6 +248,18 @@ export interface LocalApi {
     upsertKeybinding: (input: ServerUpsertKeybindingInput) => Promise<ServerUpsertKeybindingResult>;
     getSettings: () => Promise<ServerSettings>;
     updateSettings: (patch: ServerSettingsPatch) => Promise<ServerSettings>;
+    getHistorySyncConfig: () => Promise<HistorySyncConfig>;
+    updateHistorySyncConfig: (input: HistorySyncUpdateConfigInput) => Promise<HistorySyncConfig>;
+    runHistorySync: () => Promise<HistorySyncConfig>;
+    startHistorySyncInitialImport: () => Promise<HistorySyncConfig>;
+    restoreHistorySyncBackup: () => Promise<HistorySyncConfig>;
+    testHistorySyncConnection: (
+      input: HistorySyncConnectionTestInput,
+    ) => Promise<HistorySyncConnectionTestResult>;
+    getHistorySyncProjectMappings: () => Promise<HistorySyncProjectMappingPlan>;
+    applyHistorySyncProjectMappings: (
+      input: HistorySyncProjectMappingsApplyInput,
+    ) => Promise<HistorySyncProjectMappingPlan>;
   };
 }
 
@@ -279,6 +312,9 @@ export interface EnvironmentApi {
   };
   orchestration: {
     dispatchCommand: (command: ClientOrchestrationCommand) => Promise<{ sequence: number }>;
+    replayEvents: (
+      input: OrchestrationReplayEventsInput,
+    ) => Promise<ReadonlyArray<OrchestrationEvent>>;
     getTurnDiff: (input: OrchestrationGetTurnDiffInput) => Promise<OrchestrationGetTurnDiffResult>;
     getFullThreadDiff: (
       input: OrchestrationGetFullThreadDiffInput,

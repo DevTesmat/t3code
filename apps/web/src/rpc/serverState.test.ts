@@ -275,6 +275,19 @@ describe("serverState", () => {
       version: 1,
       type: "keybindingsUpdated",
       payload: {
+        keybindings: [
+          {
+            command: "sidebar.toggle",
+            shortcut: {
+              key: "b",
+              metaKey: false,
+              ctrlKey: false,
+              shiftKey: false,
+              altKey: false,
+              modKey: true,
+            },
+          },
+        ],
         issues: [{ kind: "keybindings.malformed-config", message: "bad json" }],
       },
     });
@@ -299,6 +312,19 @@ describe("serverState", () => {
     await waitFor(() => {
       expect(getServerConfig()).toEqual({
         ...baseServerConfig,
+        keybindings: [
+          {
+            command: "sidebar.toggle",
+            shortcut: {
+              key: "b",
+              metaKey: false,
+              ctrlKey: false,
+              shiftKey: false,
+              altKey: false,
+              modKey: true,
+            },
+          },
+        ],
         issues: [{ kind: "keybindings.malformed-config", message: "bad json" }],
         providers: nextProviders,
         settings: {

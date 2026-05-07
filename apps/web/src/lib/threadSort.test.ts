@@ -27,6 +27,7 @@ function makeThread(overrides: Partial<Thread> = {}): Thread {
     proposedPlans: [],
     error: null,
     createdAt: "2026-03-09T10:00:00.000Z",
+    pinnedAt: null,
     archivedAt: null,
     updatedAt: "2026-03-09T10:00:00.000Z",
     latestTurn: null,
@@ -157,6 +158,35 @@ describe("sortThreads", () => {
     );
 
     expect(sorted.map((thread) => thread.id)).toEqual([
+      ThreadId.make("thread-1"),
+      ThreadId.make("thread-2"),
+    ]);
+  });
+
+  it("sorts pinned threads above unpinned threads while preserving recency within pinned threads", () => {
+    const sorted = sortThreads(
+      [
+        makeThread({
+          id: ThreadId.make("thread-1"),
+          pinnedAt: "2026-03-10T00:00:00.000Z",
+          updatedAt: "2026-03-09T10:01:00.000Z",
+        }),
+        makeThread({
+          id: ThreadId.make("thread-2"),
+          pinnedAt: null,
+          updatedAt: "2026-03-09T10:10:00.000Z",
+        }),
+        makeThread({
+          id: ThreadId.make("thread-3"),
+          pinnedAt: "2026-03-09T00:00:00.000Z",
+          updatedAt: "2026-03-09T10:05:00.000Z",
+        }),
+      ],
+      "updated_at",
+    );
+
+    expect(sorted.map((thread) => thread.id)).toEqual([
+      ThreadId.make("thread-3"),
       ThreadId.make("thread-1"),
       ThreadId.make("thread-2"),
     ]);

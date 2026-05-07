@@ -7,7 +7,13 @@ import type {
 } from "@t3tools/contracts";
 import { useIsMutating, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useCallback, useEffect, useEffectEvent, useMemo, useRef, useState } from "react";
-import { ChevronDownIcon, CloudUploadIcon, GitCommitIcon, InfoIcon } from "lucide-react";
+import {
+  ChevronDownIcon,
+  CloudDownloadIcon,
+  CloudUploadIcon,
+  GitCommitIcon,
+  InfoIcon,
+} from "lucide-react";
 import { GitHubIcon } from "./Icons";
 import {
   buildGitActionProgressStages,
@@ -54,6 +60,7 @@ import { readEnvironmentApi } from "~/environmentApi";
 import { readLocalApi } from "~/localApi";
 import { useStore } from "~/store";
 import { createThreadSelectorByRef } from "~/storeSelectors";
+import { useSettings } from "~/hooks/useSettings";
 
 interface GitActionsControlProps {
   gitCwd: string | null;
@@ -234,6 +241,7 @@ export default function GitActionsControl({
   );
   const setDraftThreadContext = useComposerDraftStore((store) => store.setDraftThreadContext);
   const setThreadBranch = useStore((store) => store.setThreadBranch);
+  const gitQuickActionPreference = useSettings((settings) => settings.gitQuickActionPreference);
   const queryClient = useQueryClient();
   const [isCommitDialogOpen, setIsCommitDialogOpen] = useState(false);
   const [dialogCommitMessage, setDialogCommitMessage] = useState("");
@@ -392,8 +400,20 @@ export default function GitActionsControl({
   );
   const quickAction = useMemo(
     () =>
-      resolveQuickAction(gitStatusForActions, isGitActionRunning, isDefaultBranch, hasOriginRemote),
-    [gitStatusForActions, hasOriginRemote, isDefaultBranch, isGitActionRunning],
+      resolveQuickAction(
+        gitStatusForActions,
+        isGitActionRunning,
+        isDefaultBranch,
+        hasOriginRemote,
+        gitQuickActionPreference,
+      ),
+    [
+      gitStatusForActions,
+      gitQuickActionPreference,
+      hasOriginRemote,
+      isDefaultBranch,
+      isGitActionRunning,
+    ],
   );
   const quickActionDisabledReason = quickAction.disabled
     ? (quickAction.hint ?? "This action is currently unavailable.")
@@ -646,11 +666,16 @@ export default function GitActionsControl({
         };
 
         const toastCta = result.toast.cta;
+        const shouldSuppressCreatePrCta =
+          toastCta.kind === "run_action" &&
+          toastCta.action.kind === "create_pr" &&
+          (result.action === "push" || result.action === "commit_push") &&
+          gitQuickActionPreference === "commit_push";
         let toastActionProps: {
           children: string;
           onClick: () => void;
         } | null = null;
-        if (toastCta.kind === "run_action") {
+        if (toastCta.kind === "run_action" && !shouldSuppressCreatePrCta) {
           toastActionProps = {
             children: toastCta.label,
             onClick: () => {
@@ -759,33 +784,37 @@ export default function GitActionsControl({
     });
   };
 
+  const runPullAction = useCallback(() => {
+    const promise = pullMutation.mutateAsync();
+    void toastManager.promise<
+      Awaited<ReturnType<typeof pullMutation.mutateAsync>>,
+      ThreadToastData
+    >(promise, {
+      loading: { title: "Pulling...", data: threadToastData },
+      success: (result) => ({
+        title: result.status === "pulled" ? "Pulled" : "Already up to date",
+        description:
+          result.status === "pulled"
+            ? `Updated ${result.branch} from ${result.upstreamBranch ?? "upstream"}`
+            : `${result.branch} is already synchronized.`,
+        data: threadToastData,
+      }),
+      error: (err) => ({
+        title: "Pull failed",
+        description: err instanceof Error ? err.message : "An error occurred.",
+        data: threadToastData,
+      }),
+    });
+    void promise.catch(() => undefined);
+  }, [pullMutation, threadToastData]);
+
   const runQuickAction = () => {
     if (quickAction.kind === "open_pr") {
       void openExistingPr();
       return;
     }
     if (quickAction.kind === "run_pull") {
-      const promise = pullMutation.mutateAsync();
-      void toastManager.promise<
-        Awaited<ReturnType<typeof pullMutation.mutateAsync>>,
-        ThreadToastData
-      >(promise, {
-        loading: { title: "Pulling...", data: threadToastData },
-        success: (result) => ({
-          title: result.status === "pulled" ? "Pulled" : "Already up to date",
-          description:
-            result.status === "pulled"
-              ? `Updated ${result.branch} from ${result.upstreamBranch ?? "upstream"}`
-              : `${result.branch} is already synchronized.`,
-          data: threadToastData,
-        }),
-        error: (err) => ({
-          title: "Pull failed",
-          description: err instanceof Error ? err.message : "An error occurred.",
-          data: threadToastData,
-        }),
-      });
-      void promise.catch(() => undefined);
+      runPullAction();
       return;
     }
     if (quickAction.kind === "show_hint") {
@@ -911,6 +940,16 @@ export default function GitActionsControl({
               </span>
             </Button>
           )}
+          <GroupSeparator className="hidden @3xl/header-actions:block" />
+          <Button
+            aria-label="Pull"
+            variant="outline"
+            size="icon-xs"
+            disabled={isGitActionRunning}
+            onClick={runPullAction}
+          >
+            <CloudDownloadIcon aria-hidden="true" className="size-4" />
+          </Button>
           <GroupSeparator className="hidden @3xl/header-actions:block" />
           <Menu
             onOpenChange={(open) => {

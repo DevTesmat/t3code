@@ -3,6 +3,8 @@ import type { DesktopAppBranding, DesktopAppStageLabel } from "@t3tools/contract
 import { isNightlyDesktopVersion } from "./updateChannels.ts";
 
 const APP_BASE_NAME = "T3 Code";
+const DESKTOP_APP_VARIANT =
+  process.env.T3CODE_DESKTOP_APP_VARIANT === "local" ? "local" : "official";
 
 export function resolveDesktopAppStageLabel(input: {
   readonly isDevelopment: boolean;
@@ -10,6 +12,10 @@ export function resolveDesktopAppStageLabel(input: {
 }): DesktopAppStageLabel {
   if (input.isDevelopment) {
     return "Dev";
+  }
+
+  if (DESKTOP_APP_VARIANT === "local") {
+    return "Local";
   }
 
   return isNightlyDesktopVersion(input.appVersion) ? "Nightly" : "Alpha";

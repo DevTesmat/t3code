@@ -14,6 +14,7 @@ import {
   Menu,
   nativeImage,
   nativeTheme,
+  powerSaveBlocker,
   protocol,
   safeStorage,
   shell,
@@ -26,6 +27,7 @@ import type {
   DesktopServerExposureMode,
   DesktopServerExposureState,
   DesktopUpdateChannel,
+  DesktopRunningThreadsState,
   PersistedSavedEnvironmentRecord,
   DesktopUpdateActionResult,
   DesktopUpdateCheckResult,
@@ -62,6 +64,12 @@ import { getAutoUpdateDisabledReason, shouldBroadcastDownloadProgress } from "./
 import { doesVersionMatchDesktopUpdateChannel } from "./updateChannels.ts";
 import { ServerListeningDetector } from "./serverListeningDetector.ts";
 import {
+  createRunningThreadsQuitDialogOptions,
+  normalizeRunningThreadsState,
+  shouldPromptBeforeQuitWithRunningThreads,
+} from "./runningThreadsQuitGuard.ts";
+import { createRunningThreadsPowerSaveBlocker } from "./runningThreadsPowerSaveBlocker.ts";
+import {
   createInitialDesktopUpdateState,
   reduceDesktopUpdateStateOnCheckFailure,
   reduceDesktopUpdateStateOnCheckStart,
@@ -79,11 +87,14 @@ import { bindFirstRevealTrigger, type RevealSubscription } from "./windowReveal.
 
 syncShellEnvironment();
 
+const DESKTOP_APP_VARIANT =
+  process.env.T3CODE_DESKTOP_APP_VARIANT === "local" ? "local" : "official";
 const PICK_FOLDER_CHANNEL = "desktop:pick-folder";
 const CONFIRM_CHANNEL = "desktop:confirm";
 const SET_THEME_CHANNEL = "desktop:set-theme";
 const CONTEXT_MENU_CHANNEL = "desktop:context-menu";
 const OPEN_EXTERNAL_CHANNEL = "desktop:open-external";
+const PLAY_NOTIFICATION_SOUND_CHANNEL = "desktop:play-notification-sound";
 const MENU_ACTION_CHANNEL = "desktop:menu-action";
 const UPDATE_STATE_CHANNEL = "desktop:update-state";
 const UPDATE_GET_STATE_CHANNEL = "desktop:update-get-state";
@@ -102,7 +113,12 @@ const SET_SAVED_ENVIRONMENT_SECRET_CHANNEL = "desktop:set-saved-environment-secr
 const REMOVE_SAVED_ENVIRONMENT_SECRET_CHANNEL = "desktop:remove-saved-environment-secret";
 const GET_SERVER_EXPOSURE_STATE_CHANNEL = "desktop:get-server-exposure-state";
 const SET_SERVER_EXPOSURE_MODE_CHANNEL = "desktop:set-server-exposure-mode";
-const BASE_DIR = process.env.T3CODE_HOME?.trim() || Path.join(OS.homedir(), ".t3");
+const SET_RUNNING_THREADS_STATE_CHANNEL = "desktop:set-running-threads-state";
+const GET_WINDOW_STATE_CHANNEL = "desktop:get-window-state";
+const WINDOW_STATE_CHANNEL = "desktop:window-state";
+const BASE_DIR =
+  process.env.T3CODE_HOME?.trim() ||
+  Path.join(OS.homedir(), DESKTOP_APP_VARIANT === "local" ? ".t3-local" : ".t3");
 const STATE_DIR = Path.join(BASE_DIR, "userdata");
 const DESKTOP_SETTINGS_PATH = Path.join(STATE_DIR, "desktop-settings.json");
 const CLIENT_SETTINGS_PATH = Path.join(STATE_DIR, "client-settings.json");
@@ -115,10 +131,26 @@ const desktopAppBranding: DesktopAppBranding = resolveDesktopAppBranding({
   appVersion: app.getVersion(),
 });
 const APP_DISPLAY_NAME = desktopAppBranding.displayName;
-const APP_USER_MODEL_ID = isDevelopment ? "com.t3tools.t3code.dev" : "com.t3tools.t3code";
-const LINUX_DESKTOP_ENTRY_NAME = isDevelopment ? "t3code-dev.desktop" : "t3code.desktop";
-const LINUX_WM_CLASS = isDevelopment ? "t3code-dev" : "t3code";
-const USER_DATA_DIR_NAME = isDevelopment ? "t3code-dev" : "t3code";
+const APP_USER_MODEL_ID = isDevelopment
+  ? "com.t3tools.t3code.dev"
+  : DESKTOP_APP_VARIANT === "local"
+    ? "com.t3tools.t3code.local"
+    : "com.t3tools.t3code";
+const LINUX_DESKTOP_ENTRY_NAME = isDevelopment
+  ? "t3code-dev.desktop"
+  : DESKTOP_APP_VARIANT === "local"
+    ? "t3code-local.desktop"
+    : "t3code.desktop";
+const LINUX_WM_CLASS = isDevelopment
+  ? "t3code-dev"
+  : DESKTOP_APP_VARIANT === "local"
+    ? "t3code-local"
+    : "t3code";
+const USER_DATA_DIR_NAME = isDevelopment
+  ? "t3code-dev"
+  : DESKTOP_APP_VARIANT === "local"
+    ? "t3code-local"
+    : "t3code";
 const LEGACY_USER_DATA_DIR_NAME = isDevelopment ? "T3 Code (Dev)" : "T3 Code (Alpha)";
 const COMMIT_HASH_PATTERN = /^[0-9a-f]{7,40}$/i;
 const COMMIT_HASH_DISPLAY_LENGTH = 12;
@@ -216,6 +248,9 @@ let backendListeningDetector: ServerListeningDetector | null = null;
 let restartAttempt = 0;
 let restartTimer: ReturnType<typeof setTimeout> | null = null;
 let isQuitting = false;
+let quitConfirmedWithRunningThreads = false;
+let runningThreadsQuitPromptInFlight = false;
+let runningThreadsState: DesktopRunningThreadsState = { count: 0, updatedAt: "" };
 let desktopProtocolRegistered = false;
 let aboutCommitHashCache: string | null | undefined;
 let desktopLogSink: RotatingFileSink | null = null;
@@ -224,6 +259,7 @@ let restoreStdIoCapture: (() => void) | null = null;
 let backendObservabilitySettings = readPersistedBackendObservabilitySettings();
 let desktopSettings = readDesktopSettings(DESKTOP_SETTINGS_PATH, app.getVersion());
 let desktopServerExposureMode: DesktopServerExposureMode = desktopSettings.serverExposureMode;
+const runningThreadsPowerSaveBlocker = createRunningThreadsPowerSaveBlocker(powerSaveBlocker);
 
 let destructiveMenuIconCache: Electron.NativeImage | null | undefined;
 const expectedBackendExitChildren = new WeakSet<ChildProcess.ChildProcess>();
@@ -365,6 +401,7 @@ function relaunchDesktopApp(reason: string): void {
   writeDesktopLogHeader(`desktop relaunch requested reason=${reason}`);
   setImmediate(() => {
     isQuitting = true;
+    runningThreadsPowerSaveBlocker.release();
     clearUpdatePollTimer();
     cancelBackendReadinessWait();
     void stopBackendAndWaitForExit()
@@ -794,6 +831,7 @@ function handleFatalStartupError(stage: string, error: unknown): void {
     isQuitting = true;
     dialog.showErrorBox("T3 Code failed to start", `Stage: ${stage}\n${message}${detail}`);
   }
+  runningThreadsPowerSaveBlocker.release();
   stopBackend();
   restoreStdIoCapture?.();
   app.quit();
@@ -1043,7 +1081,7 @@ function resolveUserDataPath(): string {
         : process.env.XDG_CONFIG_HOME || Path.join(OS.homedir(), ".config");
 
   const legacyPath = Path.join(appDataBase, LEGACY_USER_DATA_DIR_NAME);
-  if (FS.existsSync(legacyPath)) {
+  if (DESKTOP_APP_VARIANT === "official" && FS.existsSync(legacyPath)) {
     return legacyPath;
   }
 
@@ -1209,6 +1247,7 @@ async function installDownloadedUpdate(): Promise<{ accepted: boolean; completed
 
   isQuitting = true;
   updateInstallInFlight = true;
+  runningThreadsPowerSaveBlocker.release();
   clearUpdatePollTimer();
   try {
     await stopBackendAndWaitForExit();
@@ -1669,6 +1708,27 @@ function registerIpcHandlers(): void {
     return nextState;
   });
 
+  ipcMain.removeHandler(SET_RUNNING_THREADS_STATE_CHANNEL);
+  ipcMain.handle(SET_RUNNING_THREADS_STATE_CHANNEL, async (_event, rawState: unknown) => {
+    const nextState = normalizeRunningThreadsState(rawState);
+    if (!nextState) {
+      return;
+    }
+
+    runningThreadsState = nextState;
+    runningThreadsPowerSaveBlocker.syncRunningThreadCount(nextState.count);
+  });
+
+  ipcMain.removeHandler(GET_WINDOW_STATE_CHANNEL);
+  ipcMain.handle(GET_WINDOW_STATE_CHANNEL, async (event) => {
+    const owner = BrowserWindow.fromWebContents(event.sender) ?? mainWindow;
+    if (!owner) {
+      return { isFullScreen: false } as const;
+    }
+
+    return getDesktopWindowState(owner);
+  });
+
   ipcMain.removeHandler(PICK_FOLDER_CHANNEL);
   ipcMain.handle(PICK_FOLDER_CHANNEL, async (_event, rawOptions: unknown) => {
     const owner = BrowserWindow.getFocusedWindow() ?? mainWindow;
@@ -1702,6 +1762,11 @@ function registerIpcHandlers(): void {
     }
 
     nativeTheme.themeSource = theme;
+  });
+
+  ipcMain.removeHandler(PLAY_NOTIFICATION_SOUND_CHANNEL);
+  ipcMain.handle(PLAY_NOTIFICATION_SOUND_CHANNEL, async () => {
+    shell.beep();
   });
 
   ipcMain.removeHandler(CONTEXT_MENU_CHANNEL);
@@ -1918,6 +1983,45 @@ function syncAllWindowAppearance(): void {
 
 nativeTheme.on("updated", syncAllWindowAppearance);
 
+function getDesktopWindowState(window: BrowserWindow) {
+  return {
+    isFullScreen: window.isFullScreen(),
+  } as const;
+}
+
+function sendDesktopWindowState(window: BrowserWindow): void {
+  if (window.isDestroyed()) {
+    return;
+  }
+
+  window.webContents.send(WINDOW_STATE_CHANNEL, getDesktopWindowState(window));
+}
+
+async function confirmCloseWithRunningThreads(window: BrowserWindow): Promise<void> {
+  if (runningThreadsQuitPromptInFlight) {
+    revealWindow(window);
+    return;
+  }
+
+  runningThreadsQuitPromptInFlight = true;
+  try {
+    const result = await dialog.showMessageBox(
+      window,
+      createRunningThreadsQuitDialogOptions(runningThreadsState.count),
+    );
+    if (result.response === 1) {
+      quitConfirmedWithRunningThreads = true;
+      isQuitting = true;
+      app.quit();
+      return;
+    }
+
+    revealWindow(window);
+  } finally {
+    runningThreadsQuitPromptInFlight = false;
+  }
+}
+
 function createWindow(): BrowserWindow {
   const window = new BrowserWindow({
     width: 1100,
@@ -1994,9 +2098,26 @@ function createWindow(): BrowserWindow {
     event.preventDefault();
     window.setTitle(APP_DISPLAY_NAME);
   });
+  window.on("enter-full-screen", () => sendDesktopWindowState(window));
+  window.on("leave-full-screen", () => sendDesktopWindowState(window));
   window.webContents.on("did-finish-load", () => {
     window.setTitle(APP_DISPLAY_NAME);
     emitUpdateState();
+    sendDesktopWindowState(window);
+  });
+  window.on("close", (event) => {
+    if (
+      !shouldPromptBeforeQuitWithRunningThreads({
+        runningCount: runningThreadsState.count,
+        quitConfirmedWithRunningThreads,
+        updateInstallInFlight,
+      })
+    ) {
+      return;
+    }
+
+    event.preventDefault();
+    void confirmCloseWithRunningThreads(window);
   });
 
   // On Linux/Wayland with `show: false`, Electron's `ready-to-show` only
@@ -2104,8 +2225,20 @@ async function bootstrap(): Promise<void> {
 }
 
 app.on("before-quit", () => {
+  if (
+    shouldPromptBeforeQuitWithRunningThreads({
+      runningCount: runningThreadsState.count,
+      quitConfirmedWithRunningThreads,
+      updateInstallInFlight,
+    })
+  ) {
+    writeDesktopLogHeader("before-quit deferred for running threads confirmation");
+    return;
+  }
+
   isQuitting = true;
   updateInstallInFlight = false;
+  runningThreadsPowerSaveBlocker.release();
   writeDesktopLogHeader("before-quit received");
   clearUpdatePollTimer();
   cancelBackendReadinessWait();
@@ -2155,6 +2288,7 @@ if (process.platform !== "win32") {
   process.on("SIGINT", () => {
     if (isQuitting) return;
     isQuitting = true;
+    runningThreadsPowerSaveBlocker.release();
     writeDesktopLogHeader("SIGINT received");
     clearUpdatePollTimer();
     cancelBackendReadinessWait();
@@ -2166,6 +2300,7 @@ if (process.platform !== "win32") {
   process.on("SIGTERM", () => {
     if (isQuitting) return;
     isQuitting = true;
+    runningThreadsPowerSaveBlocker.release();
     writeDesktopLogHeader("SIGTERM received");
     clearUpdatePollTimer();
     stopBackend();
