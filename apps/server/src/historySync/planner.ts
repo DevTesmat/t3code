@@ -797,6 +797,48 @@ export function shouldImportRemoteIntoEmptyLocal(input: {
   );
 }
 
+export type HistorySyncLocalReplacementReason =
+  | "local-events-empty"
+  | "local-projections-empty"
+  | "missing-project-projections"
+  | "remote-has-more-active-threads";
+
+export interface HistorySyncLocalReplacementDecision {
+  readonly shouldReplace: boolean;
+  readonly reason: HistorySyncLocalReplacementReason | null;
+}
+
+export function planLocalReplacementFromRemote(input: {
+  readonly hasCompletedInitialSync: boolean;
+  readonly localEventCount: number;
+  readonly localProjectionCount?: number;
+  readonly localProjectProjectionCount?: number;
+  readonly localThreadProjectionCount?: number;
+  readonly remoteEventCount: number;
+  readonly remoteProjectCount?: number;
+  readonly remoteActiveThreadCount?: number;
+}): HistorySyncLocalReplacementDecision {
+  if (!input.hasCompletedInitialSync || input.remoteEventCount <= 0) {
+    return { shouldReplace: false, reason: null };
+  }
+  if (input.localEventCount === 0) {
+    return { shouldReplace: true, reason: "local-events-empty" };
+  }
+  if (input.localProjectionCount === 0) {
+    return { shouldReplace: true, reason: "local-projections-empty" };
+  }
+  if ((input.remoteProjectCount ?? 0) > 0 && (input.localProjectProjectionCount ?? 0) === 0) {
+    return { shouldReplace: true, reason: "missing-project-projections" };
+  }
+  if (
+    (input.remoteActiveThreadCount ?? 0) >
+    (input.localThreadProjectionCount ?? Number.MAX_SAFE_INTEGER)
+  ) {
+    return { shouldReplace: true, reason: "remote-has-more-active-threads" };
+  }
+  return { shouldReplace: false, reason: null };
+}
+
 export function buildFirstSyncRescueEvents(
   localEvents: readonly HistorySyncEventRow[],
   remoteEvents: readonly HistorySyncEventRow[],

@@ -42,6 +42,7 @@ export const createHistorySyncLifecycleController = (input: {
     readonly autosaveMaxSequence?: number;
     readonly markStopped: Effect.Effect<void>;
   }) => Effect.Effect<void>;
+  readonly recoverStuckSyncStatus: Effect.Effect<void>;
   readonly toConfig: Effect.Effect<HistorySyncConfig, ServerSettingsError>;
   readonly restoreBackupFromDisk: Effect.Effect<void, HistorySyncConfigError>;
   readonly streamDomainEvents: Stream.Stream<OrchestrationEvent>;
@@ -83,6 +84,7 @@ export const createHistorySyncLifecycleController = (input: {
           .pipe(
             Effect.ensuring(
               Effect.gen(function* () {
+                yield* input.recoverStuckSyncStatus;
                 yield* Ref.set(runningRef, false);
                 const shouldReschedule = yield* Ref.getAndSet(pendingAutosaveRef, false);
                 if (shouldReschedule) {
@@ -107,7 +109,12 @@ export const createHistorySyncLifecycleController = (input: {
         return Ref.set(stoppedRef, false).pipe(
           Effect.andThen(Ref.set(runningRef, true)),
           Effect.andThen(input.performSync({ mode: "initial", markStopped })),
-          Effect.ensuring(Ref.set(runningRef, false)),
+          Effect.ensuring(
+            Effect.gen(function* () {
+              yield* input.recoverStuckSyncStatus;
+              yield* Ref.set(runningRef, false);
+            }),
+          ),
           Effect.andThen(input.toConfig),
         );
       }),

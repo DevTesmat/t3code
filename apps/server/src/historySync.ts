@@ -223,6 +223,7 @@ export {
   nextSyncedRemoteSequenceAfterPush,
   normalizeRemoteEventForLocalImport,
   normalizeRemoteEventsForLocalImport,
+  planLocalReplacementFromRemote,
   rewriteLocalEventsForRemoteMappings,
   rewriteRemoteEventsForLocalMappings,
   selectAutosaveCandidateLocalEvents,
@@ -248,6 +249,7 @@ import {
   isRemoteBehindLocal,
   nextSyncedRemoteSequenceAfterPush,
   normalizeRemoteEventsForLocalImport,
+  planLocalReplacementFromRemote,
   rewriteLocalEventsForRemoteMappings,
   rewriteRemoteEventsForLocalMappings,
   selectAutosaveCandidateLocalEvents,
@@ -326,6 +328,24 @@ export const HistorySyncServiceLive = Layer.effect(
 
     const publishStatus = (status: HistorySyncStatus) =>
       publishHistorySyncStatus({ status, statusRef, statusPubSub });
+
+    const recoverStuckSyncStatus = Effect.gen(function* () {
+      const status = yield* Ref.get(statusRef);
+      if (status.state !== "syncing") {
+        return;
+      }
+      const activeStartedAt = status.startedAt;
+      const currentStatus = yield* Ref.get(statusRef);
+      if (currentStatus.state !== "syncing" || currentStatus.startedAt !== activeStartedAt) {
+        return;
+      }
+      yield* publishStatus({
+        state: "error",
+        configured: true,
+        message: "History sync stopped before completion.",
+        lastSyncedAt: currentStatus.lastSyncedAt,
+      });
+    });
 
     const publishSyncProgress = (input: {
       readonly startedAt: string;
@@ -1060,7 +1080,7 @@ export const HistorySyncServiceLive = Layer.effect(
           return;
         }
 
-        const shouldReplaceLocalFromRemote = shouldImportRemoteIntoEmptyLocal({
+        const localReplacementDecision = planLocalReplacementFromRemote({
           hasCompletedInitialSync,
           localEventCount: localEvents.length,
           localProjectionCount:
@@ -1071,6 +1091,7 @@ export const HistorySyncServiceLive = Layer.effect(
           remoteProjectCount,
           remoteActiveThreadCount,
         });
+        const shouldReplaceLocalFromRemote = localReplacementDecision.shouldReplace;
         if (shouldReplaceLocalFromRemote || remoteMaxSequence > lastSyncedRemoteSequence) {
           const remoteEventsToImport = shouldReplaceLocalFromRemote
             ? remoteEventsForLocal
@@ -1087,6 +1108,9 @@ export const HistorySyncServiceLive = Layer.effect(
             remoteProjectCount,
             remoteActiveThreadCount,
             mode: shouldReplaceLocalFromRemote ? "replace" : "delta",
+            ...(localReplacementDecision.reason
+              ? { replacementReason: localReplacementDecision.reason }
+              : {}),
           });
           if (remoteEventsToImport.length > 0) {
             yield* runImport(remoteEventsToImport, syncContext, {
@@ -1274,6 +1298,7 @@ export const HistorySyncServiceLive = Layer.effect(
       defaultTiming: defaultHistorySyncTiming,
       publishConfiguredStartupStatus,
       performSync,
+      recoverStuckSyncStatus,
       toConfig,
       restoreBackupFromDisk,
       streamDomainEvents: engine.streamDomainEvents,

@@ -6,7 +6,7 @@ import { Effect } from "effect";
 import type * as SqlClient from "effect/unstable/sql/SqlClient";
 
 const HISTORY_SYNC_BACKUP_FILE_NAME = "history-sync-pre-sync.sqlite";
-const RESTORE_BACKUP_TABLES = [
+export const RESTORE_BACKUP_TABLES = [
   "orchestration_command_receipts",
   "projection_pending_approvals",
   "projection_turns",

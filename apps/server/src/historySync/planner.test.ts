@@ -7,6 +7,7 @@ import {
   countActiveThreadCreates,
   filterAlreadyImportedRemoteDeltaEvents,
   isRemoteBehindLocal,
+  planLocalReplacementFromRemote,
   rewriteRemoteEventsForLocalMappings,
   selectAutosaveCandidateLocalEvents,
   selectAutosaveContiguousPushableEvents,
@@ -193,5 +194,108 @@ describe("history sync planner", () => {
       }),
     ).toEqual([]);
     expect(countActiveThreadCreates(local)).toBe(2);
+  });
+
+  test.each([
+    [
+      "local-events-empty",
+      {
+        hasCompletedInitialSync: true,
+        localEventCount: 0,
+        localProjectionCount: 2,
+        localProjectProjectionCount: 1,
+        localThreadProjectionCount: 1,
+        remoteEventCount: 1,
+      },
+    ],
+    [
+      "local-projections-empty",
+      {
+        hasCompletedInitialSync: true,
+        localEventCount: 1,
+        localProjectionCount: 0,
+        localProjectProjectionCount: 0,
+        localThreadProjectionCount: 0,
+        remoteEventCount: 1,
+      },
+    ],
+    [
+      "missing-project-projections",
+      {
+        hasCompletedInitialSync: true,
+        localEventCount: 1,
+        localProjectionCount: 1,
+        localProjectProjectionCount: 0,
+        localThreadProjectionCount: 1,
+        remoteEventCount: 1,
+        remoteProjectCount: 1,
+      },
+    ],
+    [
+      "remote-has-more-active-threads",
+      {
+        hasCompletedInitialSync: true,
+        localEventCount: 1,
+        localProjectionCount: 2,
+        localProjectProjectionCount: 1,
+        localThreadProjectionCount: 1,
+        remoteEventCount: 1,
+        remoteActiveThreadCount: 2,
+      },
+    ],
+  ] as const)("plans local replacement when reason is %s", (reason, input) => {
+    expect(planLocalReplacementFromRemote(input)).toEqual({
+      shouldReplace: true,
+      reason,
+    });
+  });
+
+  test.each([
+    [
+      "initial sync incomplete",
+      {
+        hasCompletedInitialSync: false,
+        localEventCount: 0,
+        remoteEventCount: 1,
+      },
+    ],
+    [
+      "remote has no events",
+      {
+        hasCompletedInitialSync: true,
+        localEventCount: 0,
+        remoteEventCount: 0,
+      },
+    ],
+    [
+      "local projections are healthy",
+      {
+        hasCompletedInitialSync: true,
+        localEventCount: 2,
+        localProjectionCount: 2,
+        localProjectProjectionCount: 1,
+        localThreadProjectionCount: 1,
+        remoteEventCount: 2,
+        remoteProjectCount: 1,
+        remoteActiveThreadCount: 1,
+      },
+    ],
+    [
+      "remote active thread count does not exceed local projections",
+      {
+        hasCompletedInitialSync: true,
+        localEventCount: 2,
+        localProjectionCount: 2,
+        localProjectProjectionCount: 1,
+        localThreadProjectionCount: 2,
+        remoteEventCount: 2,
+        remoteActiveThreadCount: 2,
+      },
+    ],
+  ] as const)("does not plan local replacement when %s", (_name, input) => {
+    expect(planLocalReplacementFromRemote(input)).toEqual({
+      shouldReplace: false,
+      reason: null,
+    });
   });
 });

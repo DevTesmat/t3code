@@ -151,10 +151,11 @@ RPC imports and tests can move gradually.
   projection progress fanout, and reload failure normalization.
 - Completed: backup restore schema preflight now validates attached backup table
   compatibility before destructive restore deletes run.
-- Active slice: mapping contract drift cleanup is removing unused
+- Completed: mapping contract drift cleanup removed unused
   `map-folder.createIfMissing` and `repo-identity` contract surface.
-- Remaining after the active slice: destructive recovery path review and any
-  remaining service facade simplification.
+- Active slice: destructive recovery guardrails are adding structured local
+  replacement decisions and table-list alignment checks.
+- Remaining after the active slice: any remaining service facade simplification.
 
 ## Reliability Risks
 
