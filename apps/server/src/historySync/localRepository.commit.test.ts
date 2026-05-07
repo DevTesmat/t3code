@@ -64,6 +64,8 @@ layer("history sync local repository commits", (it) => {
     Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient;
       yield* runMigrations({ toMigrationInclusive: 36 });
+      yield* sql`DELETE FROM history_sync_pushed_events`;
+      yield* sql`DELETE FROM history_sync_state`;
       yield* sql`
         CREATE TRIGGER fail_history_sync_state_insert
         BEFORE INSERT ON history_sync_state
@@ -87,6 +89,7 @@ layer("history sync local repository commits", (it) => {
       assert.strictEqual(Exit.isFailure(exit), true);
       assert.strictEqual(yield* readPushedEventReceiptCount(sql), 0);
       assert.strictEqual(yield* readState(sql), null);
+      yield* sql`DROP TRIGGER fail_history_sync_state_insert`;
     }),
   );
 
@@ -94,6 +97,7 @@ layer("history sync local repository commits", (it) => {
     Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient;
       yield* runMigrations({ toMigrationInclusive: 36 });
+      yield* sql`DROP TRIGGER IF EXISTS fail_history_sync_state_insert`;
       const clientId = yield* ensureClientId(sql);
 
       yield* commitHistorySyncState(sql, {
