@@ -209,7 +209,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       }
 
       const state = listRef.current?.getState?.();
-      if (state) {
+      if (state?.isAtEnd) {
         onIsAtEndChange(state.isAtEnd);
       }
     },
@@ -290,6 +290,28 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       window.cancelAnimationFrame(frameId);
     };
   }, [listRef, onIsAtEndChange, rows.length]);
+
+  const autoScrollContentKey = useMemo(() => buildTimelineAutoScrollContentKey(rows), [rows]);
+  const previousAutoScrollContentKeyRef = useRef(autoScrollContentKey);
+  useEffect(() => {
+    const previousAutoScrollContentKey = previousAutoScrollContentKeyRef.current;
+    previousAutoScrollContentKeyRef.current = autoScrollContentKey;
+
+    if (
+      previousAutoScrollContentKey === autoScrollContentKey ||
+      rows.length === 0 ||
+      suppressMaintainScrollAtEnd
+    ) {
+      return;
+    }
+
+    const frameId = window.requestAnimationFrame(() => {
+      void listRef.current?.scrollToEnd?.({ animated: false });
+    });
+    return () => {
+      window.cancelAnimationFrame(frameId);
+    };
+  }, [autoScrollContentKey, listRef, rows.length, suppressMaintainScrollAtEnd]);
 
   // Memoised context value — only changes on state transitions, NOT on
   // every streaming chunk. Callbacks from ChatView are useCallback-stable.
@@ -378,6 +400,55 @@ export const MessagesTimeline = memo(function MessagesTimeline({
 
 function keyExtractor(item: MessagesTimelineRow) {
   return item.id;
+}
+
+function buildTimelineAutoScrollContentKey(rows: ReadonlyArray<MessagesTimelineRow>): string {
+  return rows
+    .map((row) => {
+      switch (row.kind) {
+        case "message":
+          return [
+            row.id,
+            row.kind,
+            row.message.text.length,
+            row.message.streaming ? "streaming" : "settled",
+            row.message.completedAt ?? "",
+          ].join(":");
+        case "proposed-plan":
+          return [
+            row.id,
+            row.kind,
+            row.proposedPlan.planMarkdown.length,
+            row.proposedPlan.implementedAt ?? "",
+            row.proposedPlan.implementationThreadId ?? "",
+          ].join(":");
+        case "work":
+          return [
+            row.id,
+            row.kind,
+            row.groupedEntries.length,
+            ...row.groupedEntries.map((entry) =>
+              [
+                entry.id,
+                entry.status ?? "",
+                entry.label,
+                entry.detail ?? "",
+                entry.outputPreview?.lines.length ?? 0,
+                entry.outputPreview?.truncated ? "truncated" : "full",
+              ].join(":"),
+            ),
+          ].join("|");
+        case "working":
+          return [
+            row.id,
+            row.kind,
+            row.activityState.kind,
+            row.activityState.label,
+            row.activityState.detail ?? "",
+          ].join(":");
+      }
+    })
+    .join("\n");
 }
 
 // ---------------------------------------------------------------------------

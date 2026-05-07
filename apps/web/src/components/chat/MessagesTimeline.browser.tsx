@@ -311,7 +311,124 @@ describe("MessagesTimeline", () => {
     }
   });
 
+  it("pins to the bottom when assistant text streams while stickiness is enabled", async () => {
+    vi.spyOn(window, "requestAnimationFrame").mockImplementation(
+      (callback: FrameRequestCallback) => {
+        callback(0);
+        return 1;
+      },
+    );
+    vi.spyOn(window, "cancelAnimationFrame").mockImplementation(() => undefined);
+
+    const baseEntry = {
+      id: "assistant-1",
+      kind: "message" as const,
+      createdAt: "2026-04-13T12:00:00.000Z",
+      message: {
+        id: MessageId.make("assistant-1"),
+        role: "assistant" as const,
+        text: "Initial streaming text",
+        turnId: null,
+        streaming: true,
+        createdAt: "2026-04-13T12:00:00.000Z",
+        updatedAt: "2026-04-13T12:00:00.000Z",
+      },
+    };
+
+    const props = buildProps();
+    const screen = await render(<MessagesTimeline {...props} timelineEntries={[baseEntry]} />);
+
+    try {
+      scrollToEndSpy.mockClear();
+
+      await screen.rerender(
+        <MessagesTimeline
+          {...props}
+          timelineEntries={[
+            {
+              ...baseEntry,
+              message: {
+                ...baseEntry.message,
+                text: "Initial streaming text plus a streamed token",
+              },
+            },
+          ]}
+        />,
+      );
+
+      expect(scrollToEndSpy).toHaveBeenCalledWith({ animated: false });
+      expect(legendListPropsSpy).toHaveBeenLastCalledWith(
+        expect.objectContaining({ maintainScrollAtEnd: true }),
+      );
+    } finally {
+      await screen.unmount();
+    }
+  });
+
+  it("pins to the bottom when a proposed plan grows while stickiness is enabled", async () => {
+    vi.spyOn(window, "requestAnimationFrame").mockImplementation(
+      (callback: FrameRequestCallback) => {
+        callback(0);
+        return 1;
+      },
+    );
+    vi.spyOn(window, "cancelAnimationFrame").mockImplementation(() => undefined);
+
+    const baseEntry = {
+      id: "plan-entry-1",
+      kind: "proposed-plan" as const,
+      createdAt: "2026-04-13T12:00:00.000Z",
+      proposedPlan: {
+        id: "plan-1",
+        turnId: null,
+        planMarkdown: "# Plan\n\n- First step",
+        implementedAt: null,
+        implementationThreadId: null,
+        createdAt: "2026-04-13T12:00:00.000Z",
+        updatedAt: "2026-04-13T12:00:00.000Z",
+      },
+    };
+
+    const props = buildProps();
+    const screen = await render(<MessagesTimeline {...props} timelineEntries={[baseEntry]} />);
+
+    try {
+      scrollToEndSpy.mockClear();
+
+      await screen.rerender(
+        <MessagesTimeline
+          {...props}
+          timelineEntries={[
+            {
+              ...baseEntry,
+              proposedPlan: {
+                ...baseEntry.proposedPlan,
+                planMarkdown: "# Plan\n\n- First step\n- Second streamed step",
+                updatedAt: "2026-04-13T12:00:01.000Z",
+              },
+            },
+          ]}
+        />,
+      );
+
+      expect(scrollToEndSpy).toHaveBeenCalledWith({ animated: false });
+      expect(legendListPropsSpy).toHaveBeenLastCalledWith(
+        expect.objectContaining({ maintainScrollAtEnd: true }),
+      );
+    } finally {
+      await screen.unmount();
+    }
+  });
+
   it("suppresses bottom pinning when a streaming update arrives after the viewport is scrolled upward", async () => {
+    vi.spyOn(window, "requestAnimationFrame").mockImplementation(
+      (callback: FrameRequestCallback) => {
+        callback(0);
+        return 1;
+      },
+    );
+    vi.spyOn(window, "cancelAnimationFrame").mockImplementation(() => undefined);
+
     const baseEntry = {
       id: "assistant-1",
       kind: "message" as const,
@@ -333,9 +450,9 @@ describe("MessagesTimeline", () => {
         <MessagesTimeline
           {...buildProps()}
           onScrollViewportChange={(viewport) => {
-            setSuppressMaintainScrollAtEnd(
-              viewport.scrollHeight - viewport.clientHeight - viewport.scrollTop > 8,
-            );
+            if (viewport.scrollHeight - viewport.clientHeight - viewport.scrollTop <= 8) {
+              setSuppressMaintainScrollAtEnd(false);
+            }
           }}
           onUserScrollAwayFromEnd={() => setSuppressMaintainScrollAtEnd(true)}
           suppressMaintainScrollAtEnd={suppressMaintainScrollAtEnd}
@@ -365,6 +482,7 @@ describe("MessagesTimeline", () => {
         scrollTop: { configurable: true, writable: true, value: 600 },
       });
 
+      scrollViewport!.dispatchEvent(new WheelEvent("wheel", { bubbles: true, deltaY: -120 }));
       scrollViewport!.dispatchEvent(new Event("scroll", { bubbles: true }));
 
       await vi.waitFor(() => {

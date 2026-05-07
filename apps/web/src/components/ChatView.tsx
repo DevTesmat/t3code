@@ -2337,7 +2337,10 @@ export default function ChatView(props: ChatViewProps) {
 
   const syncTimelineScrollViewportStickiness = useCallback(
     (scrollViewport: HTMLElement) => {
-      return setTimelineBottomStickiness(isMessagesViewportAtBottom(scrollViewport));
+      if (!isMessagesViewportAtBottom(scrollViewport)) {
+        return isAtEndRef.current;
+      }
+      return setTimelineBottomStickiness(true);
     },
     [isMessagesViewportAtBottom, setTimelineBottomStickiness],
   );
