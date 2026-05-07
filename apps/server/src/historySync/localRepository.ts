@@ -50,6 +50,12 @@ export interface HistorySyncLocalProjectionCounts {
   readonly threadCount: number;
 }
 
+export interface WriteHistorySyncStateInput {
+  readonly hasCompletedInitialSync: boolean;
+  readonly lastSyncedRemoteSequence: number;
+  readonly lastSuccessfulSyncAt: string;
+}
+
 export function readLocalEvents(sql: SqlClient.SqlClient, sequenceExclusive = 0) {
   return sql<HistorySyncEventRow>`
     SELECT
@@ -252,14 +258,7 @@ export function ensureClientId(sql: SqlClient.SqlClient) {
   });
 }
 
-export function writeState(
-  sql: SqlClient.SqlClient,
-  input: {
-    readonly hasCompletedInitialSync: boolean;
-    readonly lastSyncedRemoteSequence: number;
-    readonly lastSuccessfulSyncAt: string;
-  },
-) {
+export function writeState(sql: SqlClient.SqlClient, input: WriteHistorySyncStateInput) {
   return Effect.gen(function* () {
     const clientId = yield* ensureClientId(sql);
     yield* sql`
@@ -290,6 +289,28 @@ export function writeState(
         last_successful_sync_at = excluded.last_successful_sync_at
     `;
   });
+}
+
+export function commitHistorySyncState(
+  sql: SqlClient.SqlClient,
+  input: WriteHistorySyncStateInput,
+) {
+  return sql.withTransaction(writeState(sql, input));
+}
+
+export function commitPushedEventReceiptsAndState(
+  sql: SqlClient.SqlClient,
+  input: {
+    readonly events: readonly HistorySyncEventRow[];
+    readonly pushedAt: string;
+    readonly state: WriteHistorySyncStateInput;
+  },
+) {
+  return sql.withTransaction(
+    writePushedEventReceipts(sql, input.events, input.pushedAt).pipe(
+      Effect.andThen(writeState(sql, input.state)),
+    ),
+  );
 }
 
 export function setInitialSyncPhase(

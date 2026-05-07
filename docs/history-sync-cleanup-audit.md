@@ -187,8 +187,10 @@ imports. New server-internal code should import from the direct owner modules.
   extraction tracking to hardening tracking.
 - Completed: first-sync recovery phase tracking added durable phase metadata so
   interrupted initial syncs are auditable before automatic resume is considered.
-- Active slice: first-sync recovery visibility is surfacing durable phase
-  metadata in settings without adding automatic resume.
+- Completed: first-sync recovery visibility surfaced durable phase metadata in
+  settings without adding automatic resume.
+- Active slice: local commit atomicity is making receipt and sync-state writes a
+  single SQLite commit after successful remote pushes/imports.
 - Remaining after the active slice: future work should focus on behavior
   hardening, not further mechanical extraction, unless a new owner boundary
   becomes clearly useful.
@@ -209,6 +211,8 @@ imports. New server-internal code should import from the direct owner modules.
   stale-status recovery, and should be used for future resumable first-sync work.
 - Initial sync recovery visibility is informational only; automatic resume
   remains future work and needs a separate recovery design.
+- Receipt and sync-state writes should commit atomically locally after remote
+  work succeeds; remote MySQL pushes are still outside the SQLite transaction.
 - Project mappings can go stale if local projects are deleted or remote changes
   after plan creation. `syncId` covers remote sequence, not local project drift.
 - Backup restore assumes the backup schema has all copied tables. A migration

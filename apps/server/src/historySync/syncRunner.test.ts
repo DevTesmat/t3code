@@ -52,7 +52,10 @@ function makeRunner(overrides: Partial<HistorySyncRunnerDependencies> = {}, call
       readProjectionThreadAutosyncRows: Effect.succeed([]),
       readLocalProjectionCounts: Effect.succeed({ projectCount: 0, threadCount: 0 }),
       readState: Effect.succeed(null),
-      writeState: () => Effect.sync(() => calls.push("writeState")).pipe(Effect.asVoid),
+      commitHistorySyncState: () =>
+        Effect.sync(() => calls.push("commitState")).pipe(Effect.asVoid),
+      commitPushedEventReceiptsAndState: () =>
+        Effect.sync(() => calls.push("commitReceiptsState")).pipe(Effect.asVoid),
       setInitialSyncPhase: (input) =>
         Effect.sync(() => calls.push(`phase:${input.phase}`)).pipe(Effect.asVoid),
       clearInitialSyncPhase: Effect.sync(() => calls.push("clearPhase")).pipe(Effect.asVoid),
@@ -138,8 +141,8 @@ describe("history sync runner", () => {
     expect(calls.indexOf("phase:backup")).toBeLessThan(calls.indexOf("backup"));
     expect(calls.indexOf("backup")).toBeLessThan(calls.indexOf("import"));
     expect(calls).toContain("reload");
-    expect(calls).toContain("writeState");
-    expect(calls.indexOf("writeState")).toBeLessThan(calls.indexOf("clearPhase"));
+    expect(calls).toContain("commitReceiptsState");
+    expect(calls.indexOf("commitReceiptsState")).toBeLessThan(calls.indexOf("clearPhase"));
   });
 
   test("initial sync records empty-remote local push phases in order", async () => {
@@ -165,14 +168,14 @@ describe("history sync runner", () => {
         "push",
         "writeReceipts",
         "phase:write-state",
-        "writeState",
+        "commitReceiptsState",
         "clearPhase",
       ]),
     );
     expect(calls.indexOf("phase:backup")).toBeLessThan(calls.indexOf("backup"));
     expect(calls.indexOf("phase:push-local")).toBeLessThan(calls.indexOf("push"));
-    expect(calls.indexOf("phase:write-state")).toBeLessThan(calls.indexOf("writeState"));
-    expect(calls.indexOf("writeState")).toBeLessThan(calls.indexOf("clearPhase"));
+    expect(calls.indexOf("phase:write-state")).toBeLessThan(calls.indexOf("commitReceiptsState"));
+    expect(calls.indexOf("commitReceiptsState")).toBeLessThan(calls.indexOf("clearPhase"));
   });
 
   test("initial sync records remote-import phases in order", async () => {
@@ -198,8 +201,8 @@ describe("history sync runner", () => {
     expect(calls.indexOf("phase:backup")).toBeLessThan(calls.indexOf("backup"));
     expect(calls.indexOf("phase:push-merge")).toBeLessThan(calls.indexOf("push"));
     expect(calls.indexOf("phase:import-remote")).toBeLessThan(calls.indexOf("import"));
-    expect(calls.indexOf("phase:write-state")).toBeLessThan(calls.indexOf("writeState"));
-    expect(calls.indexOf("writeState")).toBeLessThan(calls.indexOf("clearPhase"));
+    expect(calls.indexOf("phase:write-state")).toBeLessThan(calls.indexOf("commitReceiptsState"));
+    expect(calls.indexOf("commitReceiptsState")).toBeLessThan(calls.indexOf("clearPhase"));
   });
 
   test("initial sync failure records failed phase without completing state", async () => {
@@ -228,11 +231,64 @@ describe("history sync runner", () => {
 
     expect(calls).toContain("phase:import-remote");
     expect(calls.some((call) => call.startsWith("failPhase:"))).toBe(true);
-    expect(calls).not.toContain("writeState");
+    expect(calls).not.toContain("commitReceiptsState");
     expect(calls).not.toContain("clearPhase");
     expect(statuses.at(-1)).toMatchObject({
       state: "error",
       configured: true,
     });
+  });
+
+  test("completed no-op full sync commits state atomically", async () => {
+    const calls: string[] = [];
+    const { runner } = await Effect.runPromise(
+      makeRunner(
+        {
+          readState: Effect.succeed({
+            hasCompletedInitialSync: 1,
+            lastSyncedRemoteSequence: 0,
+            lastSuccessfulSyncAt: null,
+          }),
+        },
+        calls,
+      ),
+    );
+
+    await Effect.runPromise(runner.performSync({ mode: "full", markStopped: Effect.void }));
+
+    expect(calls).toContain("commitState");
+    expect(calls).not.toContain("writeState");
+  });
+
+  test("remote-behind-local repair uses atomic receipt and state commit after push", async () => {
+    const calls: string[] = [];
+    const { runner } = await Effect.runPromise(
+      makeRunner(
+        {
+          readState: Effect.succeed({
+            hasCompletedInitialSync: 1,
+            lastSyncedRemoteSequence: 2,
+            lastSuccessfulSyncAt: null,
+          }),
+          readLocalEvents: () =>
+            Effect.succeed([
+              remoteEvent,
+              {
+                ...remoteEvent,
+                sequence: 2,
+                eventId: "event-2",
+                streamVersion: 2,
+              },
+            ]),
+          readRemoteMaxSequence: () => Effect.succeed(1),
+        },
+        calls,
+      ),
+    );
+
+    await Effect.runPromise(runner.performSync({ mode: "full", markStopped: Effect.void }));
+
+    expect(calls.indexOf("push")).toBeLessThan(calls.indexOf("commitReceiptsState"));
+    expect(calls).not.toContain("writeState");
   });
 });

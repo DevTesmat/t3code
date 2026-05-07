@@ -92,10 +92,19 @@ export interface HistorySyncRunnerDependencies {
   >;
   readonly readLocalProjectionCounts: Effect.Effect<HistorySyncLocalProjectionCounts, object>;
   readonly readState: Effect.Effect<HistorySyncStateSnapshot | null, object>;
-  readonly writeState: (input: {
+  readonly commitHistorySyncState: (input: {
     readonly hasCompletedInitialSync: boolean;
     readonly lastSyncedRemoteSequence: number;
     readonly lastSuccessfulSyncAt: string;
+  }) => Effect.Effect<void, object>;
+  readonly commitPushedEventReceiptsAndState: (input: {
+    readonly events: readonly HistorySyncEventRow[];
+    readonly pushedAt: string;
+    readonly state: {
+      readonly hasCompletedInitialSync: boolean;
+      readonly lastSyncedRemoteSequence: number;
+      readonly lastSuccessfulSyncAt: string;
+    };
   }) => Effect.Effect<void, object>;
   readonly setInitialSyncPhase: (input: {
     readonly phase: HistorySyncInitialSyncPhase;
@@ -350,11 +359,14 @@ export function createHistorySyncRunner(input: HistorySyncRunnerDependencies) {
             remoteEvents: remoteDeltaEvents,
             localEvents,
           });
-          yield* input.writePushedEventReceipts(alreadyLocalRemoteDeltaEvents, now);
-          yield* input.writeState({
-            hasCompletedInitialSync: true,
-            lastSyncedRemoteSequence: remoteMaxSequence,
-            lastSuccessfulSyncAt: now,
+          yield* input.commitPushedEventReceiptsAndState({
+            events: alreadyLocalRemoteDeltaEvents,
+            pushedAt: now,
+            state: {
+              hasCompletedInitialSync: true,
+              lastSyncedRemoteSequence: remoteMaxSequence,
+              lastSuccessfulSyncAt: now,
+            },
           });
           autosaveLastSyncedAt = now;
           console.info("[history-sync] autosave accepted remote delta already present locally", {
@@ -405,15 +417,18 @@ export function createHistorySyncRunner(input: HistorySyncRunnerDependencies) {
             rewriteLocalEventsForRemoteMappings(pushableLocalEvents, projectMappings),
           );
           const now = new Date().toISOString();
-          yield* input.writePushedEventReceipts(pushableLocalEvents, now);
           const nextRemoteSequence = nextSyncedRemoteSequenceAfterPush(
             Math.max(lastSyncedRemoteSequence, remoteMaxSequence),
             pushableLocalEvents,
           );
-          yield* input.writeState({
-            hasCompletedInitialSync: true,
-            lastSyncedRemoteSequence: nextRemoteSequence,
-            lastSuccessfulSyncAt: now,
+          yield* input.commitPushedEventReceiptsAndState({
+            events: pushableLocalEvents,
+            pushedAt: now,
+            state: {
+              hasCompletedInitialSync: true,
+              lastSyncedRemoteSequence: nextRemoteSequence,
+              lastSuccessfulSyncAt: now,
+            },
           });
           yield* input.publishStatus({ state: "idle", configured: true, lastSyncedAt: now });
           return;
@@ -523,12 +538,15 @@ export function createHistorySyncRunner(input: HistorySyncRunnerDependencies) {
           yield* recordInitialSyncPhase("push-local", syncContext);
           yield* input.pushRemoteEventsBatched(connectionString, localEventsForRemote);
           const now = new Date().toISOString();
-          yield* input.writePushedEventReceipts(localEvents, now);
           yield* recordInitialSyncPhase("write-state", syncContext);
-          yield* input.writeState({
-            hasCompletedInitialSync: true,
-            lastSyncedRemoteSequence: localMaxSequence,
-            lastSuccessfulSyncAt: now,
+          yield* input.commitPushedEventReceiptsAndState({
+            events: localEvents,
+            pushedAt: now,
+            state: {
+              hasCompletedInitialSync: true,
+              lastSyncedRemoteSequence: localMaxSequence,
+              lastSuccessfulSyncAt: now,
+            },
           });
           yield* input.clearInitialSyncPhase;
           yield* input.publishStatus({ state: "idle", configured: true, lastSyncedAt: now });
@@ -552,12 +570,15 @@ export function createHistorySyncRunner(input: HistorySyncRunnerDependencies) {
         yield* runImport(importedEvents, syncContext);
         const nextRemoteSequence = maxHistoryEventSequence(mergeEvents, remoteMaxSequence);
         const now = new Date().toISOString();
-        yield* input.writePushedEventReceipts(importedEvents, now);
         yield* recordInitialSyncPhase("write-state", syncContext);
-        yield* input.writeState({
-          hasCompletedInitialSync: true,
-          lastSyncedRemoteSequence: nextRemoteSequence,
-          lastSuccessfulSyncAt: now,
+        yield* input.commitPushedEventReceiptsAndState({
+          events: importedEvents,
+          pushedAt: now,
+          state: {
+            hasCompletedInitialSync: true,
+            lastSyncedRemoteSequence: nextRemoteSequence,
+            lastSuccessfulSyncAt: now,
+          },
         });
         yield* input.clearInitialSyncPhase;
         yield* input.publishStatus({ state: "idle", configured: true, lastSyncedAt: now });
@@ -584,11 +605,14 @@ export function createHistorySyncRunner(input: HistorySyncRunnerDependencies) {
           rewriteLocalEventsForRemoteMappings(pending, projectMappings),
         );
         const now = new Date().toISOString();
-        yield* input.writePushedEventReceipts(pending, now);
-        yield* input.writeState({
-          hasCompletedInitialSync: true,
-          lastSyncedRemoteSequence: localMaxSequence,
-          lastSuccessfulSyncAt: now,
+        yield* input.commitPushedEventReceiptsAndState({
+          events: pending,
+          pushedAt: now,
+          state: {
+            hasCompletedInitialSync: true,
+            lastSyncedRemoteSequence: localMaxSequence,
+            lastSuccessfulSyncAt: now,
+          },
         });
         yield* input.publishStatus({ state: "idle", configured: true, lastSyncedAt: now });
         return;
@@ -632,11 +656,14 @@ export function createHistorySyncRunner(input: HistorySyncRunnerDependencies) {
           });
         }
         const now = new Date().toISOString();
-        yield* input.writePushedEventReceipts(remoteEventsForLocal, now);
-        yield* input.writeState({
-          hasCompletedInitialSync: true,
-          lastSyncedRemoteSequence: remoteMaxSequence,
-          lastSuccessfulSyncAt: now,
+        yield* input.commitPushedEventReceiptsAndState({
+          events: remoteEventsForLocal,
+          pushedAt: now,
+          state: {
+            hasCompletedInitialSync: true,
+            lastSyncedRemoteSequence: remoteMaxSequence,
+            lastSuccessfulSyncAt: now,
+          },
         });
         if (shouldReplaceLocalFromRemote) {
           yield* input.publishStatus({ state: "idle", configured: true, lastSyncedAt: now });
@@ -661,15 +688,18 @@ export function createHistorySyncRunner(input: HistorySyncRunnerDependencies) {
             rewriteLocalEventsForRemoteMappings(pushableLocalEvents, projectMappings),
           );
           const pushedAt = new Date().toISOString();
-          yield* input.writePushedEventReceipts(pushableLocalEvents, pushedAt);
           const nextRemoteSequence = nextSyncedRemoteSequenceAfterPush(
             remoteMaxSequence,
             pushableLocalEvents,
           );
-          yield* input.writeState({
-            hasCompletedInitialSync: true,
-            lastSyncedRemoteSequence: nextRemoteSequence,
-            lastSuccessfulSyncAt: pushedAt,
+          yield* input.commitPushedEventReceiptsAndState({
+            events: pushableLocalEvents,
+            pushedAt,
+            state: {
+              hasCompletedInitialSync: true,
+              lastSyncedRemoteSequence: nextRemoteSequence,
+              lastSuccessfulSyncAt: pushedAt,
+            },
           });
           yield* input.publishStatus({ state: "idle", configured: true, lastSyncedAt: pushedAt });
           return;
@@ -693,22 +723,25 @@ export function createHistorySyncRunner(input: HistorySyncRunnerDependencies) {
           rewriteLocalEventsForRemoteMappings(pushableLocalEvents, projectMappings),
         );
         const now = new Date().toISOString();
-        yield* input.writePushedEventReceipts(pushableLocalEvents, now);
         const nextRemoteSequence = nextSyncedRemoteSequenceAfterPush(
           lastSyncedRemoteSequence,
           pushableLocalEvents,
         );
-        yield* input.writeState({
-          hasCompletedInitialSync: true,
-          lastSyncedRemoteSequence: nextRemoteSequence,
-          lastSuccessfulSyncAt: now,
+        yield* input.commitPushedEventReceiptsAndState({
+          events: pushableLocalEvents,
+          pushedAt: now,
+          state: {
+            hasCompletedInitialSync: true,
+            lastSyncedRemoteSequence: nextRemoteSequence,
+            lastSuccessfulSyncAt: now,
+          },
         });
         yield* input.publishStatus({ state: "idle", configured: true, lastSyncedAt: now });
         return;
       }
 
       const now = new Date().toISOString();
-      yield* input.writeState({
+      yield* input.commitHistorySyncState({
         hasCompletedInitialSync: true,
         lastSyncedRemoteSequence,
         lastSuccessfulSyncAt: now,

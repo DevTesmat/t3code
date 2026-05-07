@@ -133,11 +133,14 @@ export const HistorySyncServiceLive = Layer.effect(
 
     const readState = LocalHistoryRepository.readState(sql);
 
-    const writeState = (input: {
-      readonly hasCompletedInitialSync: boolean;
-      readonly lastSyncedRemoteSequence: number;
-      readonly lastSuccessfulSyncAt: string;
-    }) => LocalHistoryRepository.writeState(sql, input);
+    const commitHistorySyncState = (input: LocalHistoryRepository.WriteHistorySyncStateInput) =>
+      LocalHistoryRepository.commitHistorySyncState(sql, input);
+
+    const commitPushedEventReceiptsAndState = (input: {
+      readonly events: readonly HistorySyncEventRow[];
+      readonly pushedAt: string;
+      readonly state: LocalHistoryRepository.WriteHistorySyncStateInput;
+    }) => LocalHistoryRepository.commitPushedEventReceiptsAndState(sql, input);
 
     const setInitialSyncPhase = (input: {
       readonly phase: LocalHistoryRepository.HistorySyncInitialSyncPhase;
@@ -212,7 +215,8 @@ export const HistorySyncServiceLive = Layer.effect(
       readProjectionThreadAutosyncRows,
       readLocalProjectionCounts,
       readState,
-      writeState,
+      commitHistorySyncState,
+      commitPushedEventReceiptsAndState,
       setInitialSyncPhase,
       clearInitialSyncPhase,
       failInitialSyncPhase,
