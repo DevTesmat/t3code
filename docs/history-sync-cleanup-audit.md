@@ -121,6 +121,30 @@ then harden the risky paths.
 Keep `apps/server/src/historySync.ts` initially as the compatibility facade so
 RPC imports and tests can move gradually.
 
+## Cleanup Progress
+
+- Completed: `historySync/planner.ts` now owns pure planning helpers for first
+  sync merge/rescue, event rewrite/normalization, delta selection, receipt
+  planning, autosave eligibility/selection, remote repair predicates, project
+  candidate collection, active thread counting, and local replacement
+  predicates.
+- Completed: `historySync/remoteStore.ts` now owns MySQL schema setup,
+  connection validation/summary/string building, pooled remote access, remote
+  event reads, remote max-sequence reads, batched `INSERT IGNORE` writes, and
+  retryable MySQL error classification.
+- Completed: `historySync/localRepository.ts` now owns core SQLite event,
+  receipt, state/client ID, projection-count, autosave thread-row, and
+  import/replace/delta repository operations.
+- Completed: `historySync/projectMappings.ts` now owns mapping
+  persistence, sync IDs, exact-path/basename suggestions, mapping plan creation,
+  exact-path auto-persist, and map/skip/map-folder action application.
+- Active slice: `historySync/backup.ts` is being split out for backup path
+  handling, backup summary reads, pre-sync backup creation, restore table copy,
+  attach/detach handling, and restore error normalization.
+- Remaining after the active slice: backup schema validation, status bus and
+  lifecycle/service split, projection reload failure handling, contract drift
+  cleanup, and destructive recovery path review.
+
 ## Reliability Risks
 
 - Interrupted first sync can leave remote merge events pushed while local import
