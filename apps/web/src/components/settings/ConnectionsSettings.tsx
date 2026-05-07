@@ -48,6 +48,7 @@ import { stackedThreadToast, toastManager } from "../ui/toast";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { Button } from "../ui/button";
 import { Textarea } from "../ui/textarea";
+import { isHistorySyncAutosaveRemoteConflictStatus } from "../HistorySyncTopbarStatus";
 import { setPairingTokenOnUrl } from "../../pairingUrl";
 import {
   createServerPairingCredential,
@@ -119,6 +120,29 @@ export function getHistorySyncInitialRecoveryActionCopy(
   return recovery.error
     ? "Review the error, then start history sync again when ready."
     : "Start history sync again to continue from the current safe recovery point.";
+}
+
+export function getHistorySyncStatusText(status: HistorySyncConfig["status"] | null): string {
+  if (status === null) return "Loading...";
+  if (isHistorySyncAutosaveRemoteConflictStatus(status)) {
+    return "Autosave paused; use Sync now to import remote changes.";
+  }
+  if (status.state === "error") return status.message;
+  if (status.state === "needs-project-mapping") {
+    return `${status.unresolvedProjectCount} project mapping${
+      status.unresolvedProjectCount === 1 ? "" : "s"
+    } needed`;
+  }
+  if (status.state === "needs-initial-sync") return "Ready to start";
+  return status.state;
+}
+
+export function getHistorySyncStatusTextClassName(
+  status: HistorySyncConfig["status"] | null,
+): string | undefined {
+  if (!status) return undefined;
+  if (isHistorySyncAutosaveRemoteConflictStatus(status)) return "text-amber-700";
+  return status.state === "error" ? "text-destructive" : undefined;
 }
 
 type ConnectionStatusDotProps = {
@@ -1065,16 +1089,7 @@ function HistorySyncSettingsSection() {
   }, [loadConfig, mappingDraftByProjectId, mappingPlan]);
 
   const effectiveHistorySyncStatus = liveHistorySyncStatus ?? config?.status ?? null;
-  const statusText =
-    effectiveHistorySyncStatus === null
-      ? "Loading..."
-      : effectiveHistorySyncStatus.state === "error"
-        ? effectiveHistorySyncStatus.message
-        : effectiveHistorySyncStatus.state === "needs-project-mapping"
-          ? `${effectiveHistorySyncStatus.unresolvedProjectCount} project mapping${effectiveHistorySyncStatus.unresolvedProjectCount === 1 ? "" : "s"} needed`
-          : effectiveHistorySyncStatus.state === "needs-initial-sync"
-            ? "Ready to start"
-            : effectiveHistorySyncStatus.state;
+  const statusText = getHistorySyncStatusText(effectiveHistorySyncStatus);
   const syncProgress =
     effectiveHistorySyncStatus?.state === "syncing" ? effectiveHistorySyncStatus.progress : null;
   const isHistorySyncing = effectiveHistorySyncStatus?.state === "syncing";
@@ -1096,11 +1111,7 @@ function HistorySyncSettingsSection() {
             : "Configure and save a MySQL connection first."
         }
         status={
-          <span
-            className={
-              effectiveHistorySyncStatus?.state === "error" ? "text-destructive" : undefined
-            }
-          >
+          <span className={getHistorySyncStatusTextClassName(effectiveHistorySyncStatus)}>
             {statusText}
           </span>
         }

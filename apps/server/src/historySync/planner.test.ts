@@ -7,11 +7,14 @@ import {
   countActiveThreadCreates,
   filterAlreadyImportedRemoteDeltaEvents,
   isRemoteBehindLocal,
+  planLocalCommitAfterRemoteWrite,
+  planFirstSyncRecovery,
   planLocalReplacementFromRemote,
   rewriteRemoteEventsForLocalMappings,
   selectAutosaveCandidateLocalEvents,
   selectAutosaveContiguousPushableEvents,
   selectPushedReceiptSeedEvents,
+  selectRemoteCoveredLocalEvents,
   selectRemoteBehindLocalEvents,
   selectRemoteDeltaEvents,
   type HistorySyncEventRow,
@@ -150,6 +153,202 @@ describe("history sync planner", () => {
     expect(merged.map((row) => row.streamId)).toEqual(["project-local", "thread-local"]);
   });
 
+  test("first sync recovery continues local push when remote is still empty", () => {
+    const local = [projectCreated(1, "project-a"), threadCreated(2, "thread-a")];
+
+    expect(
+      planFirstSyncRecovery({
+        phase: "push-local",
+        localEvents: local,
+        localEventsForRemote: local,
+        remoteEvents: [],
+        remoteEventsForLocal: [],
+        remoteMaxSequence: 0,
+        mergeEventsForLocal: [],
+        mergeEventsForRemote: [],
+      }),
+    ).toMatchObject({
+      action: "continue-local-push",
+      pushEvents: local,
+      receiptEvents: local,
+      nextRemoteSequence: 2,
+    });
+  });
+
+  test("first sync recovery restarts when interrupted during backup", () => {
+    const local = [projectCreated(1, "project-a")];
+    const remote = [projectCreated(1, "project-remote")];
+
+    expect(
+      planFirstSyncRecovery({
+        phase: "backup",
+        localEvents: local,
+        localEventsForRemote: local,
+        remoteEvents: remote,
+        remoteEventsForLocal: remote,
+        remoteMaxSequence: 1,
+        mergeEventsForLocal: [],
+        mergeEventsForRemote: [],
+      }),
+    ).toEqual({
+      action: "restart",
+      reason: "Initial sync stopped before remote or local history was changed.",
+    });
+  });
+
+  test("first sync recovery finishes state when local push is already remote-covered", () => {
+    const local = [projectCreated(1, "project-a"), threadCreated(2, "thread-a")];
+
+    expect(
+      planFirstSyncRecovery({
+        phase: "push-local",
+        localEvents: local,
+        localEventsForRemote: local,
+        remoteEvents: local,
+        remoteEventsForLocal: local,
+        remoteMaxSequence: 2,
+        mergeEventsForLocal: [],
+        mergeEventsForRemote: [],
+      }),
+    ).toMatchObject({
+      action: "finish-state",
+      receiptEvents: local,
+      nextRemoteSequence: 2,
+    });
+  });
+
+  test("first sync recovery imports when pushed merge events are already remote-covered", () => {
+    const remoteBase = [projectCreated(1, "project-remote")];
+    const mergeEvents = [projectCreated(2, "project-local"), threadCreated(3, "thread-local")];
+    const remoteEvents = [...remoteBase, ...mergeEvents];
+
+    expect(
+      planFirstSyncRecovery({
+        phase: "import-remote",
+        localEvents: mergeEvents,
+        localEventsForRemote: mergeEvents,
+        remoteEvents,
+        remoteEventsForLocal: remoteEvents,
+        remoteMaxSequence: 3,
+        mergeEventsForLocal: mergeEvents,
+        mergeEventsForRemote: mergeEvents,
+      }),
+    ).toMatchObject({
+      action: "continue-remote-import",
+      pushEvents: [],
+      importedEvents: remoteEvents,
+      nextRemoteSequence: 3,
+    });
+  });
+
+  test("first sync recovery uses mapped remote projects and filters skipped projects", () => {
+    const local = [projectCreated(1, "local-keep"), threadCreated(2, "thread-local", "local-keep")];
+    const remote = [
+      projectCreated(1, "remote-keep"),
+      threadCreated(2, "thread-keep", "remote-keep"),
+      projectCreated(3, "remote-skip"),
+      threadCreated(4, "thread-skip", "remote-skip"),
+    ];
+    const remoteForLocal = rewriteRemoteEventsForLocalMappings(remote, [
+      {
+        remoteProjectId: "remote-keep",
+        localProjectId: "local-keep",
+        localWorkspaceRoot: "/tmp/local-keep",
+        status: "mapped",
+      },
+      {
+        remoteProjectId: "remote-skip",
+        localProjectId: "local-skip",
+        localWorkspaceRoot: "/tmp/local-skip",
+        status: "skipped",
+      },
+    ]);
+    const mergeForLocal = [projectCreated(5, "local-merge")];
+    const mergeForRemote = [projectCreated(5, "remote-merge")];
+
+    expect(
+      planFirstSyncRecovery({
+        phase: "import-remote",
+        localEvents: local,
+        localEventsForRemote: local,
+        remoteEvents: [...remote, ...mergeForRemote],
+        remoteEventsForLocal: remoteForLocal,
+        remoteMaxSequence: 5,
+        mergeEventsForLocal: mergeForLocal,
+        mergeEventsForRemote: mergeForRemote,
+      }),
+    ).toMatchObject({
+      action: "continue-remote-import",
+      pushEvents: [],
+      importedEvents: remoteForLocal,
+      receiptEvents: remoteForLocal,
+      nextRemoteSequence: 5,
+    });
+    expect(remoteForLocal.map((row) => row.streamId)).toEqual(["local-keep", "thread-keep"]);
+    expect(remoteForLocal.map((row) => JSON.parse(row.payloadJson).projectId)).toEqual([
+      "local-keep",
+      "local-keep",
+    ]);
+  });
+
+  test("first sync recovery requires review for partial merge coverage", () => {
+    const remoteBase = [projectCreated(1, "project-remote")];
+    const mergeEvents = [projectCreated(2, "project-local"), threadCreated(3, "thread-local")];
+
+    expect(
+      planFirstSyncRecovery({
+        phase: "push-merge",
+        localEvents: mergeEvents,
+        localEventsForRemote: mergeEvents,
+        remoteEvents: [...remoteBase, mergeEvents[0]!],
+        remoteEventsForLocal: [...remoteBase, mergeEvents[0]!],
+        remoteMaxSequence: 2,
+        mergeEventsForLocal: mergeEvents,
+        mergeEventsForRemote: mergeEvents,
+      }),
+    ).toMatchObject({
+      action: "require-review",
+    });
+  });
+
+  test("first sync recovery requires review when merge involved thread collision rescue", () => {
+    const local = [
+      {
+        ...threadCreated(1, "thread-collision", "project-local"),
+        eventId: "local-thread-created",
+      },
+    ];
+    const remoteBase = [
+      {
+        ...threadCreated(1, "thread-collision", "project-remote"),
+        eventId: "remote-thread-created",
+      },
+    ];
+    const mergeEvents = [
+      {
+        ...threadCreated(2, "thread-collision-rescued", "project-local"),
+        eventId: "thread-collision:1:rescued:fixed",
+      },
+    ];
+
+    expect(
+      planFirstSyncRecovery({
+        phase: "push-merge",
+        localEvents: local,
+        localEventsForRemote: local,
+        remoteEvents: remoteBase,
+        remoteEventsForLocal: remoteBase,
+        remoteMaxSequence: 1,
+        mergeEventsForLocal: mergeEvents,
+        mergeEventsForRemote: mergeEvents,
+      }),
+    ).toMatchObject({
+      action: "require-review",
+      message:
+        "Initial sync cannot safely resume because the failed merge involved thread ID collision rescue.",
+    });
+  });
+
   test("receipts seed through the synced cursor and repair picks local rows beyond remote max", () => {
     const local = [projectCreated(1, "project-a"), threadCreated(2, "thread-a")];
 
@@ -171,6 +370,51 @@ describe("history sync planner", () => {
       }),
     ).toBe(true);
     expect(selectRemoteBehindLocalEvents(local, 1).map((row) => row.sequence)).toEqual([2]);
+  });
+
+  test("plans local commit from remote-covered event IDs and freshly pushed events", () => {
+    const local = [
+      projectCreated(1, "project-a"),
+      threadCreated(2, "thread-a"),
+      messageSent(3, "thread-a", "hello"),
+    ];
+    const remote = [{ ...local[1]!, sequence: 10 }];
+
+    expect(
+      selectRemoteCoveredLocalEvents({
+        localEvents: local,
+        remoteEvents: remote,
+      }),
+    ).toEqual([local[1]]);
+
+    expect(
+      planLocalCommitAfterRemoteWrite({
+        previousRemoteSequence: 1,
+        remoteCoveredEvents: [local[1]!],
+        pushedEvents: [local[2]!],
+      }),
+    ).toEqual({
+      receiptEvents: [local[1], local[2]],
+      lastSyncedRemoteSequence: 3,
+    });
+  });
+
+  test("local commit plan does not advance past partial proven coverage", () => {
+    const local = [
+      projectCreated(1, "project-a"),
+      threadCreated(2, "thread-a"),
+      messageSent(3, "thread-a", "hello"),
+    ];
+
+    expect(
+      planLocalCommitAfterRemoteWrite({
+        previousRemoteSequence: 1,
+        remoteCoveredEvents: [local[2]!],
+      }),
+    ).toEqual({
+      receiptEvents: [local[2]],
+      lastSyncedRemoteSequence: 1,
+    });
   });
 
   test("autosave stops at the first ineligible thread and does not leapfrog later events", () => {

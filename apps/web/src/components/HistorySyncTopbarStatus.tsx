@@ -16,6 +16,15 @@ import { ScrollArea } from "./ui/scroll-area";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "./ui/tooltip";
 import { cn } from "~/lib/utils";
 
+export const HISTORY_SYNC_AUTOSAVE_REMOTE_CONFLICT_MESSAGE =
+  "Autosave paused because another device synced newer history. Use Sync now to import remote changes before autosave resumes.";
+
+export function isHistorySyncAutosaveRemoteConflictStatus(status: HistorySyncStatus): boolean {
+  return (
+    status.state === "error" && status.message === HISTORY_SYNC_AUTOSAVE_REMOTE_CONFLICT_MESSAGE
+  );
+}
+
 function formatDateTime(value: string | null): string {
   if (!value) return "Never";
   const date = new Date(value);
@@ -72,6 +81,14 @@ export function getHistorySyncTopbarStatusSummary(status: HistorySyncStatus): {
         Icon: RefreshCwIcon,
       };
     case "error":
+      if (isHistorySyncAutosaveRemoteConflictStatus(status)) {
+        return {
+          label: "History sync paused",
+          detail: "Use Sync now to import remote changes before autosave resumes.",
+          tone: "warning",
+          Icon: AlertTriangleIcon,
+        };
+      }
       return {
         label: "History sync failed",
         detail: status.message,

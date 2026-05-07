@@ -1,9 +1,16 @@
+import * as Fs from "node:fs/promises";
+import * as Os from "node:os";
 import * as Path from "node:path";
 
-import { describe, expect, test } from "vitest";
 import { Effect, Exit } from "effect";
+import { describe, expect, test } from "vitest";
 
-import { historySyncBackupPath, validateBackupTableMetadata } from "./backup.ts";
+import {
+  historySyncBackupPath,
+  readBackupSummary,
+  restoreBackupTablesFromDisk,
+  validateBackupTableMetadata,
+} from "./backup.ts";
 
 describe("history sync backup", () => {
   test("uses the pre-sync sqlite backup file beside the server database", () => {
@@ -58,6 +65,34 @@ describe("history sync backup", () => {
     if (Exit.isFailure(exit)) {
       expect(exit.cause.toString()).toContain("Column count mismatch");
       expect(exit.cause.toString()).toContain("projection_threads (local 16, backup 15)");
+    }
+  });
+
+  test("readBackupSummary returns null when pre-sync backup is missing", async () => {
+    const dir = await Fs.mkdtemp(Path.join(Os.tmpdir(), "history-sync-backup-"));
+    try {
+      const dbPath = Path.join(dir, "local.sqlite");
+
+      await expect(Effect.runPromise(readBackupSummary(dbPath))).resolves.toBeNull();
+    } finally {
+      await Fs.rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("restore fails with missing-backup guidance when no pre-sync backup exists", async () => {
+    const dir = await Fs.mkdtemp(Path.join(Os.tmpdir(), "history-sync-backup-"));
+    try {
+      const dbPath = Path.join(dir, "local.sqlite");
+      const sql = (() => Effect.void) as never;
+
+      const exit = await Effect.runPromiseExit(restoreBackupTablesFromDisk(sql, dbPath));
+
+      expect(Exit.isFailure(exit)).toBe(true);
+      if (Exit.isFailure(exit)) {
+        expect(exit.cause.toString()).toContain("No history sync SQLite backup is available.");
+      }
+    } finally {
+      await Fs.rm(dir, { recursive: true, force: true });
     }
   });
 });

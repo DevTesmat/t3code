@@ -119,6 +119,28 @@ describe("history sync project mapping controller", () => {
     }
   });
 
+  test("rejects apply when local project drift changes the sync id", async () => {
+    const calls: string[] = [];
+    const controller = makeController(
+      {
+        getSyncId: (remoteMaxSequence) => Effect.succeed(`client:${remoteMaxSequence}:after`),
+      },
+      calls,
+    );
+
+    const exit = await Effect.runPromiseExit(
+      controller.applyProjectMappings({ syncId: "client:7:before", actions: [action] }),
+    );
+
+    expect(Exit.isFailure(exit)).toBe(true);
+    expect(calls).not.toContain("apply");
+    if (Exit.isFailure(exit)) {
+      expect(exit.cause.toString()).toContain(
+        "History sync mapping plan is stale. Reload the project mapping wizard.",
+      );
+    }
+  });
+
   test("completed sync apply clears stopped and triggers full sync", async () => {
     const calls: string[] = [];
     const controller = makeController({}, calls);

@@ -228,7 +228,7 @@ export const HistorySyncServiceLive = Layer.effect(
       readRemoteMaxSequence,
       pushRemoteEventsBatched,
       isRetryableConnectionFailure: isRetryableHistorySyncConnectionFailure,
-      readProjectMappings: ProjectMappings.readProjectMappings(sql),
+      readProjectMappings: ProjectMappings.readValidProjectMappings(sql),
       buildProjectMappingPlanFromEvents: (input) =>
         ProjectMappings.buildProjectMappingPlanFromEvents(sql, input),
       autoPersistExactProjectMappings: (plan) =>

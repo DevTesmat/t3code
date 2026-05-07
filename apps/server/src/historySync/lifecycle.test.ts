@@ -3,11 +3,13 @@ import {
   type HistorySyncStatus,
   type OrchestrationEvent,
 } from "@t3tools/contracts";
-import { Deferred, Effect, Exit, Fiber, PubSub, Ref, Stream } from "effect";
+import { Deferred, Duration, Effect, Exit, Fiber, PubSub, Ref, Stream } from "effect";
+import { TestClock } from "effect/testing";
 import { describe, expect, test } from "vitest";
 
 import {
   createHistorySyncLifecycleController,
+  HISTORY_SYNC_AUTOSAVE_DEBOUNCE_MS,
   type HistorySyncMode,
   type HistorySyncTiming,
 } from "./lifecycle.ts";
@@ -132,6 +134,47 @@ describe("history sync lifecycle", () => {
     );
 
     expect(calls).toEqual(["full", "full"]);
+  });
+
+  test("autosave conflict stops later autosaves until manual sync clears it", async () => {
+    const modes = await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const { statusPubSub, recoverStuckSyncStatus } = yield* makeStatusHarness();
+          const domainEvents = yield* PubSub.unbounded<OrchestrationEvent>();
+          const modes: HistorySyncMode[] = [];
+          const controller = yield* createHistorySyncLifecycleController({
+            statusPubSub,
+            loadTiming: Effect.succeed(timing),
+            defaultTiming: timing,
+            publishConfiguredStartupStatus: Effect.succeed(false),
+            performSync: (options) =>
+              Effect.sync(() => {
+                modes.push(options.mode);
+              }).pipe(
+                Effect.andThen(options.mode === "autosave" ? options.markStopped : Effect.void),
+              ),
+            recoverStuckSyncStatus,
+            toConfig: Effect.succeed(config),
+            restoreBackupFromDisk: Effect.void,
+            streamDomainEvents: Stream.fromPubSub(domainEvents),
+            shouldScheduleAutosaveForDomainEvent: () => true,
+          });
+
+          yield* controller.start;
+          yield* PubSub.publish(domainEvents, { sequence: 1 } as OrchestrationEvent);
+          yield* TestClock.adjust(Duration.millis(HISTORY_SYNC_AUTOSAVE_DEBOUNCE_MS + 1));
+          yield* PubSub.publish(domainEvents, { sequence: 2 } as OrchestrationEvent);
+          yield* TestClock.adjust(Duration.millis(HISTORY_SYNC_AUTOSAVE_DEBOUNCE_MS + 1));
+          yield* controller.runSync;
+          yield* PubSub.publish(domainEvents, { sequence: 3 } as OrchestrationEvent);
+          yield* TestClock.adjust(Duration.millis(HISTORY_SYNC_AUTOSAVE_DEBOUNCE_MS + 1));
+          return modes;
+        }),
+      ).pipe(Effect.provide(TestClock.layer())),
+    );
+
+    expect(modes).toEqual(["autosave", "full", "autosave"]);
   });
 
   test("recovers syncing status when performSync fails after publishing syncing", async () => {

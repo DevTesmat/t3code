@@ -3,6 +3,8 @@ import { describe, expect, it } from "vitest";
 import {
   getHistorySyncTopbarProgressPercent,
   getHistorySyncTopbarStatusSummary,
+  HISTORY_SYNC_AUTOSAVE_REMOTE_CONFLICT_MESSAGE,
+  isHistorySyncAutosaveRemoteConflictStatus,
   shouldShowHistorySyncTopbarStatus,
 } from "./HistorySyncTopbarStatus";
 
@@ -34,6 +36,34 @@ describe("HistorySyncTopbarStatus logic", () => {
     expect(summary.label).toBe("History sync retrying");
     expect(summary.detail).toBe("Retry 2/5 scheduled");
     expect(summary.tone).toBe("warning");
+  });
+
+  it("shows autosave remote conflicts as actionable warnings", () => {
+    const status = {
+      state: "error",
+      configured: true,
+      message: HISTORY_SYNC_AUTOSAVE_REMOTE_CONFLICT_MESSAGE,
+      lastSyncedAt: "2026-05-05T17:47:06.073Z",
+    } as const;
+    const summary = getHistorySyncTopbarStatusSummary(status);
+
+    expect(isHistorySyncAutosaveRemoteConflictStatus(status)).toBe(true);
+    expect(summary.label).toBe("History sync paused");
+    expect(summary.detail).toBe("Use Sync now to import remote changes before autosave resumes.");
+    expect(summary.tone).toBe("warning");
+  });
+
+  it("keeps generic errors in the error tone", () => {
+    const summary = getHistorySyncTopbarStatusSummary({
+      state: "error",
+      configured: true,
+      message: "connect ECONNREFUSED",
+      lastSyncedAt: null,
+    });
+
+    expect(summary.label).toBe("History sync failed");
+    expect(summary.detail).toBe("connect ECONNREFUSED");
+    expect(summary.tone).toBe("error");
   });
 
   it("calculates syncing progress percentage", () => {

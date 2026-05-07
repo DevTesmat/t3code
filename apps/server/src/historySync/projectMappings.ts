@@ -76,6 +76,36 @@ export function readLocalProjects(sql: SqlClient.SqlClient) {
   `;
 }
 
+export function isProjectMappingValidForLocalProjects(
+  mapping: HistorySyncProjectMappingRow,
+  localProjects: readonly LocalProjectRow[],
+): boolean {
+  if (mapping.status === "skipped") return true;
+  const localProject = localProjects.find(
+    (project) => project.projectId === mapping.localProjectId,
+  );
+  return localProject?.workspaceRoot === mapping.localWorkspaceRoot;
+}
+
+export function filterValidProjectMappings(
+  mappings: readonly HistorySyncProjectMappingRow[],
+  localProjects: readonly LocalProjectRow[],
+): readonly HistorySyncProjectMappingRow[] {
+  return mappings.filter((mapping) =>
+    isProjectMappingValidForLocalProjects(mapping, localProjects),
+  );
+}
+
+export function readValidProjectMappings(sql: SqlClient.SqlClient) {
+  return Effect.gen(function* () {
+    const [mappings, localProjects] = yield* Effect.all([
+      readProjectMappings(sql),
+      readLocalProjects(sql),
+    ]);
+    return filterValidProjectMappings(mappings, localProjects);
+  });
+}
+
 export function writeProjectMapping(
   sql: SqlClient.SqlClient,
   input: {
@@ -127,8 +157,24 @@ export function writeProjectMapping(
   );
 }
 
+export function buildLocalProjectsFingerprint(localProjects: readonly LocalProjectRow[]): string {
+  const payload = localProjects
+    .map((project) => ({
+      projectId: project.projectId,
+      workspaceRoot: project.workspaceRoot,
+    }))
+    .toSorted((left, right) => left.projectId.localeCompare(right.projectId));
+  return Crypto.createHash("sha256").update(JSON.stringify(payload)).digest("hex").slice(0, 16);
+}
+
 export function getSyncId(sql: SqlClient.SqlClient, remoteMaxSequence: number) {
-  return ensureClientId(sql).pipe(Effect.map((clientId) => `${clientId}:${remoteMaxSequence}`));
+  return Effect.gen(function* () {
+    const [clientId, localProjects] = yield* Effect.all([
+      ensureClientId(sql),
+      readLocalProjects(sql),
+    ]);
+    return `${clientId}:${remoteMaxSequence}:${buildLocalProjectsFingerprint(localProjects)}`;
+  });
 }
 
 export function findProjectMappingSuggestion(
@@ -168,7 +214,10 @@ export const buildProjectMappingPlanFromEvents = Effect.fn(
     readLocalProjects(sql),
     getSyncId(sql, input.remoteMaxSequence),
   ]);
-  const mappingByRemote = new Map(mappings.map((mapping) => [mapping.remoteProjectId, mapping]));
+  const validMappings = filterValidProjectMappings(mappings, localProjects);
+  const mappingByRemote = new Map(
+    validMappings.map((mapping) => [mapping.remoteProjectId, mapping]),
+  );
   const activeRemoteProjects = collectProjectCandidates(input.remoteEvents).filter(
     (project) => project.threadCount > 0,
   );

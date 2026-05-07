@@ -189,43 +189,84 @@ imports. New server-internal code should import from the direct owner modules.
   interrupted initial syncs are auditable before automatic resume is considered.
 - Completed: first-sync recovery visibility surfaced durable phase metadata in
   settings without adding automatic resume.
-- Active slice: local commit atomicity is making receipt and sync-state writes a
-  single SQLite commit after successful remote pushes/imports.
-- Remaining after the active slice: future work should focus on behavior
-  hardening, not further mechanical extraction, unless a new owner boundary
-  becomes clearly useful.
+- Completed: local commit atomicity now routes paired receipt and sync-state
+  writes through a single local commit path after successful remote
+  pushes/imports, with rollback-style receipt restoration on state-write
+  failure.
+- Completed: interrupted first-sync recovery now consults durable phase metadata
+  before retrying, skips already-covered remote writes when event IDs prove the
+  previous push succeeded, resumes safe local import/state-write steps, and
+  keeps the recovery marker visible when remote drift or collision rescue makes
+  automatic resume unsafe.
+- Completed: remote/local commit idempotency now uses pure planner helpers for
+  remote event-ID coverage and post-push/import local commit decisions. Autosave
+  receipt repair, remote-behind-local repair, post-import push, and normal
+  pending-local push now share the same receipt/state commit plan so receipts
+  can be recomputed while the synced cursor only advances through proven
+  contiguous coverage.
+- Completed: local project drift validation now filters saved mappings against
+  current local project projections before planning or sync rewrites, keeps
+  skipped mappings valid, and folds local project identity into the opaque
+  mapping `syncId` so apply fails through the existing stale-plan path when the
+  local project list changes after the wizard loads.
+- Completed: autosave remote conflict UX now keeps the conservative stopped
+  autosave behavior but publishes stable recovery copy, records structured
+  conflict metadata in logs, and renders the known conflict as a warning with
+  explicit Sync now guidance in topbar/settings UI while generic errors remain
+  destructive.
+- Completed: destructive history-sync table operations now use a single
+  manifest for local-history replacement, restore-only mapping/state tables, and
+  explicitly excluded non-history tables. Local import clearing and backup
+  restore delete/copy operations iterate the manifest, and migration-backed
+  guard tests fail when future history-derived tables are not classified.
+- Completed: first-sync recovery edge coverage now covers backup-phase restart,
+  mapped/skipped project rewrites during recovery, missing backup restore/config
+  visibility, and collision-rescue blocked recovery.
+- Next due item: no named remaining hardening backlog item.
+- Remaining work should focus on behavior hardening, not further mechanical
+  extraction, unless a new owner boundary becomes clearly useful.
+
+## Agent Handoff Expectations
+
+- After completing any item in this file, clearly tell the user what was
+  completed and what item is due next.
+- Do not say the history sync cleanup/hardening work is finished until every
+  task in this file's remaining backlog has been completed, verified, and
+  reflected in this audit.
+- If a task is intentionally deferred or blocked, state the blocker and name the
+  next actionable task instead of implying the backlog is complete.
 
 ## Reliability Risks
 
-- Interrupted first sync can leave remote merge events pushed while local import
-  or state write fails. Add explicit planner/run-step tests and consider a
-  resumable phase marker.
 - Import transactions protect SQLite writes, but remote pushes are not
   transactional with local state writes. Receipts/state must be idempotent and
   recomputable.
-- Autosave conflict handling stops further autosave on unknown remote events.
-  That is conservative, but the status should make manual sync recovery obvious.
+- Autosave conflict handling stops further autosave on unknown remote events and
+  now presents manual Sync now recovery copy while preserving the same blocking
+  safety behavior.
 - Failed or interrupted syncs now run lifecycle stale-sync recovery so a stuck
   `syncing` status is republished as `error` instead of lingering forever.
-- Initial sync phase tracking is durable local state, separate from lifecycle
-  stale-status recovery, and should be used for future resumable first-sync work.
-- Initial sync recovery visibility is informational only; automatic resume
-  remains future work and needs a separate recovery design.
-- Receipt and sync-state writes should commit atomically locally after remote
-  work succeeds; remote MySQL pushes are still outside the SQLite transaction.
-- Project mappings can go stale if local projects are deleted or remote changes
-  after plan creation. `syncId` covers remote sequence, not local project drift.
-- Backup restore assumes the backup schema has all copied tables. A migration
-  after backup creation can make restore fail halfway unless compatibility is
-  validated before deleting local tables.
+- Initial sync recovery is now automatic for provably safe phase retries, but
+  collision-rescue merges, partial remote coverage, and unexpected remote drift
+  still require manual review because regenerated or ambiguous events cannot be
+  proven idempotent from current metadata.
+- Receipt and sync-state writes now commit through one local path after remote
+  work succeeds; remote MySQL pushes are still outside the SQLite transaction,
+  so idempotency and recomputation remain required.
+- Project mappings are validated against current local project rows before use,
+  but mapping UX still relies on the existing stale-plan error when local drift
+  happens between wizard load and apply.
+- Backup restore validates all manifest restore tables before destructive
+  deletes, and the table manifest guard should be updated whenever new
+  history-derived tables are added.
 - Projection reload failure after import/restore can leave event storage updated
   but UI projections stale. Treat reload failure as a first-class sync failure.
 - Startup uses module-level readiness globals. RPCs before service init fail
   with "not ready" except config, which returns a disabled fallback; this
   mismatch should be made explicit.
-- `clearLocalHistory` and restore table lists must stay aligned with future
-  projection/checkpoint tables, or old data can leak into restored/imported
-  projections.
+- `clearLocalHistory` and restore table lists now share one manifest, but future
+  migrations adding history-derived tables must classify them in that manifest
+  or intentionally exclude them.
 
 ## Test Matrix
 
@@ -233,8 +274,8 @@ Prioritize package-local Vitest tests around fake repositories/stores after the
 split. Avoid brittle end-to-end MySQL/browser tests for core correctness.
 
 - Pure planner table tests:
-  - first-sync empty remote push, remote import, local merge, ID collision
-    rescue, project rewrite, skipped project filtering.
+  - first-sync empty remote push, remote import, local merge, recovery phase
+    decisions, ID collision rescue, project rewrite, skipped project filtering.
   - autosave candidate selection, contiguous gating, terminal/session states,
     remote-covered receipt seeding, unknown remote conflict.
   - remote-behind-local repair and last synced sequence advancement.
@@ -258,24 +299,4 @@ split. Avoid brittle end-to-end MySQL/browser tests for core correctness.
 
 ## Remaining Hardening Backlog
 
-1. Make interrupted first sync resumable or explicitly recoverable.
-   - Remote merge events can be pushed before local import/state writes finish,
-     so use the durable phase marker to design recovery before changing
-     behavior.
-
-2. Strengthen remote/local commit idempotency.
-   - Remote pushes and local state/receipt writes are not transactional together;
-     keep receipt seeding and duplicate-push prevention recomputable.
-
-3. Validate local project drift before applying saved mappings.
-   - `syncId` protects remote sequence drift, but deleted or changed local
-     projects can still make persisted mappings stale.
-
-4. Improve autosave conflict UX without weakening safety.
-   - Unknown newer remote events should continue blocking autosave, but the
-     status and manual recovery path can be made clearer.
-
-5. Keep destructive table operations aligned with schema growth.
-   - `clearLocalHistory`, restore table copies, projection tables, checkpoint
-     tables, and future history-derived tables need a single review point before
-     migrations add new local history state.
+No named remaining hardening backlog item.

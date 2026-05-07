@@ -10,23 +10,10 @@ import {
   type HistorySyncAutosyncProjectionThreadRow,
   type HistorySyncEventRow,
 } from "./planner.ts";
+import { HISTORY_SYNC_LOCAL_HISTORY_TABLES } from "./tableManifest.ts";
 
 const HISTORY_SYNC_SQLITE_BATCH_SIZE = 50;
-export const CLEAR_LOCAL_HISTORY_TABLES = [
-  "orchestration_command_receipts",
-  "projection_pending_approvals",
-  "projection_turns",
-  "projection_thread_sessions",
-  "projection_thread_activities",
-  "projection_thread_proposed_plans",
-  "projection_thread_messages",
-  "projection_threads",
-  "projection_projects",
-  "projection_state",
-  "checkpoint_diff_blobs",
-  "history_sync_pushed_events",
-  "orchestration_events",
-] as const;
+export const CLEAR_LOCAL_HISTORY_TABLES = HISTORY_SYNC_LOCAL_HISTORY_TABLES;
 
 export type HistorySyncInitialSyncPhase =
   | "backup"
@@ -484,21 +471,7 @@ export function insertLocalEvents(
 
 export function clearLocalHistory(sql: SqlClient.SqlClient) {
   return Effect.all(
-    [
-      sql`DELETE FROM orchestration_command_receipts`,
-      sql`DELETE FROM projection_pending_approvals`,
-      sql`DELETE FROM projection_turns`,
-      sql`DELETE FROM projection_thread_sessions`,
-      sql`DELETE FROM projection_thread_activities`,
-      sql`DELETE FROM projection_thread_proposed_plans`,
-      sql`DELETE FROM projection_thread_messages`,
-      sql`DELETE FROM projection_threads`,
-      sql`DELETE FROM projection_projects`,
-      sql`DELETE FROM projection_state`,
-      sql`DELETE FROM checkpoint_diff_blobs`,
-      sql`DELETE FROM history_sync_pushed_events`,
-      sql`DELETE FROM orchestration_events`,
-    ],
+    CLEAR_LOCAL_HISTORY_TABLES.map((tableName) => sql`DELETE FROM ${sql(tableName)}`),
     { concurrency: 1 },
   );
 }

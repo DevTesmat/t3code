@@ -1,5 +1,6 @@
 import {
   DEFAULT_SERVER_SETTINGS,
+  type HistorySyncBackupSummary,
   type HistorySyncStatus,
   type ServerSettings,
   type ServerSettingsPatch,
@@ -64,6 +65,7 @@ function makeController(input: {
   readonly settings?: ServerSettings;
   readonly status?: HistorySyncStatus;
   readonly state?: HistorySyncStateRow | null;
+  readonly backup?: HistorySyncBackupSummary | null;
 }) {
   return Effect.gen(function* () {
     const statusRef = yield* Ref.make<HistorySyncStatus>(
@@ -78,7 +80,7 @@ function makeController(input: {
       settingsService: makeSettingsService(input.settings ?? DEFAULT_SERVER_SETTINGS),
       statusRef,
       readState: Effect.succeed(input.state ?? null),
-      readBackupSummary: Effect.succeed(null),
+      readBackupSummary: Effect.succeed(input.backup ?? null),
       publishStatus: (status) =>
         Effect.sync(() => {
           published.push(status);
@@ -145,6 +147,7 @@ describe("history sync config controller", () => {
         error: "2026-05-01T00:01:00.000Z: import failed",
       },
     });
+    await expect(Effect.runPromise(controller.toConfig)).resolves.not.toHaveProperty("backup");
   });
 
   test("rejects clear and mysql update in the same request", async () => {

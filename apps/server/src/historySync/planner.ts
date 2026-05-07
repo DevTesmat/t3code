@@ -73,6 +73,41 @@ export interface HistorySyncProjectMappingRow {
   readonly updatedAt: string;
 }
 
+export type HistorySyncFirstSyncRecoveryPhase =
+  | "backup"
+  | "push-local"
+  | "push-merge"
+  | "import-remote"
+  | "write-state";
+
+export type HistorySyncFirstSyncRecoveryPlan =
+  | {
+      readonly action: "restart";
+      readonly reason: string;
+    }
+  | {
+      readonly action: "continue-local-push";
+      readonly pushEvents: readonly HistorySyncEventRow[];
+      readonly receiptEvents: readonly HistorySyncEventRow[];
+      readonly nextRemoteSequence: number;
+    }
+  | {
+      readonly action: "continue-remote-import";
+      readonly pushEvents: readonly HistorySyncEventRow[];
+      readonly importedEvents: readonly HistorySyncEventRow[];
+      readonly receiptEvents: readonly HistorySyncEventRow[];
+      readonly nextRemoteSequence: number;
+    }
+  | {
+      readonly action: "finish-state";
+      readonly receiptEvents: readonly HistorySyncEventRow[];
+      readonly nextRemoteSequence: number;
+    }
+  | {
+      readonly action: "require-review";
+      readonly message: string;
+    };
+
 export function maxHistoryEventSequence(
   events: readonly HistorySyncEventRow[],
   initial = 0,
@@ -493,6 +528,155 @@ export function shouldPushLocalHistoryOnFirstSync(input: {
   );
 }
 
+function eventIds(events: readonly HistorySyncEventRow[]): ReadonlySet<string> {
+  return new Set(events.map((event) => event.eventId));
+}
+
+function eventsCoveredById(input: {
+  readonly expectedEvents: readonly HistorySyncEventRow[];
+  readonly actualEvents: readonly HistorySyncEventRow[];
+}): boolean {
+  const actualIds = eventIds(input.actualEvents);
+  return input.expectedEvents.every((event) => actualIds.has(event.eventId));
+}
+
+function filterEventsMissingById(input: {
+  readonly expectedEvents: readonly HistorySyncEventRow[];
+  readonly actualEvents: readonly HistorySyncEventRow[];
+}): readonly HistorySyncEventRow[] {
+  const actualIds = eventIds(input.actualEvents);
+  return input.expectedEvents.filter((event) => !actualIds.has(event.eventId));
+}
+
+function hasPartialEventIdCoverage(input: {
+  readonly expectedEvents: readonly HistorySyncEventRow[];
+  readonly actualEvents: readonly HistorySyncEventRow[];
+}): boolean {
+  if (input.expectedEvents.length === 0) return false;
+  const missing = filterEventsMissingById(input);
+  return missing.length > 0 && missing.length < input.expectedEvents.length;
+}
+
+function hasThreadIdCollision(input: {
+  readonly localEvents: readonly HistorySyncEventRow[];
+  readonly remoteEvents: readonly HistorySyncEventRow[];
+}): boolean {
+  const remoteThreadIds = new Set(
+    groupThreadCandidates(input.remoteEvents).map((thread) => thread.threadId),
+  );
+  return groupThreadCandidates(input.localEvents).some((thread) =>
+    remoteThreadIds.has(thread.threadId),
+  );
+}
+
+export function planFirstSyncRecovery(input: {
+  readonly phase: HistorySyncFirstSyncRecoveryPhase;
+  readonly localEvents: readonly HistorySyncEventRow[];
+  readonly localEventsForRemote: readonly HistorySyncEventRow[];
+  readonly remoteEvents: readonly HistorySyncEventRow[];
+  readonly remoteEventsForLocal: readonly HistorySyncEventRow[];
+  readonly remoteMaxSequence: number;
+  readonly mergeEventsForRemote: readonly HistorySyncEventRow[];
+  readonly mergeEventsForLocal: readonly HistorySyncEventRow[];
+}): HistorySyncFirstSyncRecoveryPlan {
+  if (input.phase === "backup") {
+    return {
+      action: "restart",
+      reason: "Initial sync stopped before remote or local history was changed.",
+    };
+  }
+
+  if (input.phase === "push-local") {
+    if (input.remoteEvents.length === 0) {
+      return {
+        action: "continue-local-push",
+        pushEvents: input.localEventsForRemote,
+        receiptEvents: input.localEvents,
+        nextRemoteSequence: maxHistoryEventSequence(input.localEventsForRemote),
+      };
+    }
+    if (
+      input.remoteEvents.length === input.localEventsForRemote.length &&
+      eventsCoveredById({
+        expectedEvents: input.localEventsForRemote,
+        actualEvents: input.remoteEvents,
+      })
+    ) {
+      return {
+        action: "finish-state",
+        receiptEvents: input.localEvents,
+        nextRemoteSequence: maxHistoryEventSequence(
+          input.localEventsForRemote,
+          input.remoteMaxSequence,
+        ),
+      };
+    }
+    return {
+      action: "require-review",
+      message:
+        "Initial sync cannot safely resume because remote history changed during local-history push recovery.",
+    };
+  }
+
+  const localRemoteIds = eventIds(input.localEventsForRemote);
+  const remoteBaseEvents = input.remoteEvents.filter((event) => !localRemoteIds.has(event.eventId));
+  if (
+    hasThreadIdCollision({
+      localEvents: input.localEventsForRemote,
+      remoteEvents: remoteBaseEvents,
+    })
+  ) {
+    return {
+      action: "require-review",
+      message:
+        "Initial sync cannot safely resume because the failed merge involved thread ID collision rescue.",
+    };
+  }
+
+  if (
+    hasPartialEventIdCoverage({
+      expectedEvents: input.mergeEventsForRemote,
+      actualEvents: input.remoteEvents,
+    })
+  ) {
+    return {
+      action: "require-review",
+      message:
+        "Initial sync cannot safely resume because only part of the local merge is present remotely.",
+    };
+  }
+
+  const missingMergeEvents = filterEventsMissingById({
+    expectedEvents: input.mergeEventsForRemote,
+    actualEvents: input.remoteEvents,
+  });
+  const importedEvents =
+    missingMergeEvents.length === 0 && input.mergeEventsForLocal.length > 0
+      ? input.remoteEventsForLocal
+      : [...input.remoteEventsForLocal, ...input.mergeEventsForLocal];
+  const receiptEvents = importedEvents;
+  const nextRemoteSequence =
+    missingMergeEvents.length === 0
+      ? maxHistoryEventSequence(input.remoteEvents, input.remoteMaxSequence)
+      : maxHistoryEventSequence(input.mergeEventsForRemote, input.remoteMaxSequence);
+
+  if (input.phase === "write-state") {
+    return {
+      action: "finish-state",
+      receiptEvents,
+      nextRemoteSequence,
+    };
+  }
+
+  return {
+    action: "continue-remote-import",
+    pushEvents: missingMergeEvents,
+    importedEvents,
+    receiptEvents,
+    nextRemoteSequence,
+  };
+}
+
 export function isRemoteBehindLocal(input: {
   readonly hasCompletedInitialSync: boolean;
   readonly localMaxSequence: number;
@@ -556,6 +740,43 @@ export function selectKnownRemoteDeltaLocalEvents(input: {
     const localEvent = localEventById.get(event.eventId);
     return localEvent ? [localEvent] : [];
   });
+}
+
+export function selectRemoteCoveredLocalEvents(input: {
+  readonly localEvents: readonly HistorySyncEventRow[];
+  readonly remoteEvents: readonly HistorySyncEventRow[];
+}): readonly HistorySyncEventRow[] {
+  const remoteEventIds = eventIds(input.remoteEvents);
+  return input.localEvents.filter((event) => remoteEventIds.has(event.eventId));
+}
+
+export function planLocalCommitAfterRemoteWrite(input: {
+  readonly previousRemoteSequence: number;
+  readonly remoteCoveredEvents?: readonly HistorySyncEventRow[];
+  readonly pushedEvents?: readonly HistorySyncEventRow[];
+}): {
+  readonly receiptEvents: readonly HistorySyncEventRow[];
+  readonly lastSyncedRemoteSequence: number;
+} {
+  const receiptEventsBySequence = new Map<number, HistorySyncEventRow>();
+  for (const event of input.remoteCoveredEvents ?? []) {
+    receiptEventsBySequence.set(event.sequence, event);
+  }
+  for (const event of input.pushedEvents ?? []) {
+    receiptEventsBySequence.set(event.sequence, event);
+  }
+  const receiptEvents = [...receiptEventsBySequence.values()].toSorted(
+    (left, right) => left.sequence - right.sequence,
+  );
+  const receiptSequences = new Set(receiptEvents.map((event) => event.sequence));
+  let lastSyncedRemoteSequence = Math.max(0, input.previousRemoteSequence);
+  while (receiptSequences.has(lastSyncedRemoteSequence + 1)) {
+    lastSyncedRemoteSequence += 1;
+  }
+  return {
+    receiptEvents,
+    lastSyncedRemoteSequence,
+  };
 }
 
 export function selectUnknownRemoteDeltaEvents(input: {

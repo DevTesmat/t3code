@@ -18,8 +18,9 @@ import {
   filterPushableLocalEvents,
   isRemoteBehindLocal,
   maxHistoryEventSequence,
-  nextSyncedRemoteSequenceAfterPush,
+  planLocalCommitAfterRemoteWrite,
   normalizeRemoteEventsForLocalImport,
+  planFirstSyncRecovery,
   planLocalReplacementFromRemote,
   rewriteLocalEventsForRemoteMappings,
   rewriteRemoteEventsForLocalMappings,
@@ -27,6 +28,7 @@ import {
   selectAutosaveContiguousPushableEvents,
   selectAutosaveRemoteCoveredReceiptEvents,
   selectKnownRemoteDeltaLocalEvents,
+  selectRemoteCoveredLocalEvents,
   selectRemoteBehindLocalEvents,
   selectUnknownRemoteDeltaEvents,
   shouldPushLocalHistoryOnFirstSync,
@@ -36,6 +38,8 @@ import type { HistorySyncProgress } from "./projectionReload.ts";
 const HISTORY_SYNC_OPERATION_TIMEOUT_MS = 10 * 60_000;
 const HISTORY_SYNC_RETRY_DELAYS_MS = [10_000, 3 * 60_000, 10 * 60_000, 10 * 60_000, 10 * 60_000];
 const HISTORY_SYNC_RECENT_FAILURE_LIMIT = 5;
+export const HISTORY_SYNC_AUTOSAVE_REMOTE_CONFLICT_MESSAGE =
+  "Autosave paused because another device synced newer history. Use Sync now to import remote changes before autosave resumes.";
 
 interface HistorySyncSettingsSnapshot {
   readonly historySync: {
@@ -47,6 +51,7 @@ interface HistorySyncStateSnapshot {
   readonly hasCompletedInitialSync: number;
   readonly lastSyncedRemoteSequence: number;
   readonly lastSuccessfulSyncAt: string | null;
+  readonly initialSyncPhase?: HistorySyncInitialSyncPhase | null;
 }
 
 interface HistorySyncLocalProjectionCounts {
@@ -63,6 +68,14 @@ interface HistorySyncRetryFailure {
 interface HistorySyncRetryContext {
   readonly firstFailedAt: string;
   readonly recentFailures: readonly HistorySyncRetryFailure[];
+}
+
+export interface HistorySyncAutosaveRemoteConflict {
+  readonly message: string;
+  readonly remoteMaxSequence: number;
+  readonly lastSyncedRemoteSequence: number;
+  readonly remoteDeltaEventCount: number;
+  readonly unknownRemoteEventCount: number;
 }
 
 export interface HistorySyncRunnerDependencies {
@@ -183,6 +196,21 @@ function clampHistorySyncProgress(progress: HistorySyncProgress): HistorySyncPro
   };
 }
 
+export function describeAutosaveRemoteConflict(input: {
+  readonly remoteMaxSequence: number;
+  readonly lastSyncedRemoteSequence: number;
+  readonly remoteDeltaEventCount: number;
+  readonly unknownRemoteEventCount: number;
+}): HistorySyncAutosaveRemoteConflict {
+  return {
+    message: HISTORY_SYNC_AUTOSAVE_REMOTE_CONFLICT_MESSAGE,
+    remoteMaxSequence: input.remoteMaxSequence,
+    lastSyncedRemoteSequence: input.lastSyncedRemoteSequence,
+    remoteDeltaEventCount: input.remoteDeltaEventCount,
+    unknownRemoteEventCount: input.unknownRemoteEventCount,
+  };
+}
+
 export function createHistorySyncRunner(input: HistorySyncRunnerDependencies) {
   const publishSyncProgress = (progressInput: {
     readonly startedAt: string;
@@ -239,6 +267,31 @@ export function createHistorySyncRunner(input: HistorySyncRunnerDependencies) {
       phase,
       startedAt: inputContext.startedAt,
     });
+
+  const commitAfterRemoteWrite = (inputEvents: {
+    readonly remoteCoveredEvents?: readonly HistorySyncEventRow[];
+    readonly pushedEvents?: readonly HistorySyncEventRow[];
+    readonly previousRemoteSequence: number;
+    readonly pushedAt: string;
+    readonly hasCompletedInitialSync?: boolean;
+  }) => {
+    const commitPlan = planLocalCommitAfterRemoteWrite({
+      previousRemoteSequence: inputEvents.previousRemoteSequence,
+      ...(inputEvents.remoteCoveredEvents !== undefined
+        ? { remoteCoveredEvents: inputEvents.remoteCoveredEvents }
+        : {}),
+      ...(inputEvents.pushedEvents !== undefined ? { pushedEvents: inputEvents.pushedEvents } : {}),
+    });
+    return input.commitPushedEventReceiptsAndState({
+      events: commitPlan.receiptEvents,
+      pushedAt: inputEvents.pushedAt,
+      state: {
+        hasCompletedInitialSync: inputEvents.hasCompletedInitialSync ?? true,
+        lastSyncedRemoteSequence: commitPlan.lastSyncedRemoteSequence,
+        lastSuccessfulSyncAt: inputEvents.pushedAt,
+      },
+    });
+  };
 
   const performSync = (options: HistorySyncRunnerOptions): Effect.Effect<void> =>
     Effect.gen(function* () {
@@ -336,19 +389,23 @@ export function createHistorySyncRunner(input: HistorySyncRunnerDependencies) {
             localEvents,
           });
           if (unknownRemoteDeltaEvents.length > 0) {
-            const message =
-              "Remote history has newer events from another device. Run Sync now to import them before autosave.";
-            console.warn("[history-sync] autosave skipped because remote has unknown events", {
+            const conflict = describeAutosaveRemoteConflict({
               remoteMaxSequence,
               lastSyncedRemoteSequence,
-              remoteDeltaEvents: remoteDeltaEvents.length,
-              unknownRemoteDeltaEvents: unknownRemoteDeltaEvents.length,
+              remoteDeltaEventCount: remoteDeltaEvents.length,
+              unknownRemoteEventCount: unknownRemoteDeltaEvents.length,
+            });
+            console.warn("[history-sync] autosave paused because remote has unknown events", {
+              remoteMaxSequence: conflict.remoteMaxSequence,
+              lastSyncedRemoteSequence: conflict.lastSyncedRemoteSequence,
+              remoteDeltaEvents: conflict.remoteDeltaEventCount,
+              unknownRemoteDeltaEvents: conflict.unknownRemoteEventCount,
             });
             yield* options.markStopped;
             yield* input.publishStatus({
               state: "error",
               configured: true,
-              message,
+              message: conflict.message,
               lastSyncedAt,
             });
             return;
@@ -359,14 +416,10 @@ export function createHistorySyncRunner(input: HistorySyncRunnerDependencies) {
             remoteEvents: remoteDeltaEvents,
             localEvents,
           });
-          yield* input.commitPushedEventReceiptsAndState({
-            events: alreadyLocalRemoteDeltaEvents,
+          yield* commitAfterRemoteWrite({
+            remoteCoveredEvents: alreadyLocalRemoteDeltaEvents,
+            previousRemoteSequence: lastSyncedRemoteSequence,
             pushedAt: now,
-            state: {
-              hasCompletedInitialSync: true,
-              lastSyncedRemoteSequence: remoteMaxSequence,
-              lastSuccessfulSyncAt: now,
-            },
           });
           autosaveLastSyncedAt = now;
           console.info("[history-sync] autosave accepted remote delta already present locally", {
@@ -385,7 +438,11 @@ export function createHistorySyncRunner(input: HistorySyncRunnerDependencies) {
         });
         if (remoteCoveredReceiptEvents.length > 0) {
           const now = new Date().toISOString();
-          yield* input.writePushedEventReceipts(remoteCoveredReceiptEvents, now);
+          yield* commitAfterRemoteWrite({
+            remoteCoveredEvents: remoteCoveredReceiptEvents,
+            previousRemoteSequence: Math.max(lastSyncedRemoteSequence, remoteMaxSequence),
+            pushedAt: now,
+          });
           autosaveLastSyncedAt = now;
           console.info("[history-sync] autosave seeded receipts for remote-covered events", {
             events: remoteCoveredReceiptEvents.length,
@@ -417,18 +474,10 @@ export function createHistorySyncRunner(input: HistorySyncRunnerDependencies) {
             rewriteLocalEventsForRemoteMappings(pushableLocalEvents, projectMappings),
           );
           const now = new Date().toISOString();
-          const nextRemoteSequence = nextSyncedRemoteSequenceAfterPush(
-            Math.max(lastSyncedRemoteSequence, remoteMaxSequence),
-            pushableLocalEvents,
-          );
-          yield* input.commitPushedEventReceiptsAndState({
-            events: pushableLocalEvents,
+          yield* commitAfterRemoteWrite({
+            pushedEvents: pushableLocalEvents,
+            previousRemoteSequence: Math.max(lastSyncedRemoteSequence, remoteMaxSequence),
             pushedAt: now,
-            state: {
-              hasCompletedInitialSync: true,
-              lastSyncedRemoteSequence: nextRemoteSequence,
-              lastSuccessfulSyncAt: now,
-            },
           });
           yield* input.publishStatus({ state: "idle", configured: true, lastSyncedAt: now });
           return;
@@ -523,7 +572,112 @@ export function createHistorySyncRunner(input: HistorySyncRunnerDependencies) {
           localEvents: localEvents.length,
           remoteEvents: remoteEvents.length,
           remoteMaxSequence,
+          recoveryPhase: state?.initialSyncPhase ?? null,
         });
+        const runFirstSyncLocalPush = (inputEvents: {
+          readonly pushEvents: readonly HistorySyncEventRow[];
+          readonly receiptEvents: readonly HistorySyncEventRow[];
+          readonly nextRemoteSequence: number;
+        }) =>
+          Effect.gen(function* () {
+            yield* recordInitialSyncPhase("push-local", syncContext);
+            yield* input.pushRemoteEventsBatched(connectionString, inputEvents.pushEvents);
+            const now = new Date().toISOString();
+            yield* recordInitialSyncPhase("write-state", syncContext);
+            yield* input.commitPushedEventReceiptsAndState({
+              events: inputEvents.receiptEvents,
+              pushedAt: now,
+              state: {
+                hasCompletedInitialSync: true,
+                lastSyncedRemoteSequence: inputEvents.nextRemoteSequence,
+                lastSuccessfulSyncAt: now,
+              },
+            });
+            yield* input.clearInitialSyncPhase;
+            yield* input.publishStatus({ state: "idle", configured: true, lastSyncedAt: now });
+          });
+        const finishFirstSyncState = (inputEvents: {
+          readonly receiptEvents: readonly HistorySyncEventRow[];
+          readonly nextRemoteSequence: number;
+        }) =>
+          Effect.gen(function* () {
+            const now = new Date().toISOString();
+            yield* recordInitialSyncPhase("write-state", syncContext);
+            yield* input.commitPushedEventReceiptsAndState({
+              events: inputEvents.receiptEvents,
+              pushedAt: now,
+              state: {
+                hasCompletedInitialSync: true,
+                lastSyncedRemoteSequence: inputEvents.nextRemoteSequence,
+                lastSuccessfulSyncAt: now,
+              },
+            });
+            yield* input.clearInitialSyncPhase;
+            yield* input.publishStatus({ state: "idle", configured: true, lastSyncedAt: now });
+          });
+        const runFirstSyncRemoteImport = (inputEvents: {
+          readonly pushEvents: readonly HistorySyncEventRow[];
+          readonly importedEvents: readonly HistorySyncEventRow[];
+          readonly receiptEvents: readonly HistorySyncEventRow[];
+          readonly nextRemoteSequence: number;
+          readonly skipPushWhenEmpty?: boolean;
+        }) =>
+          Effect.gen(function* () {
+            if (inputEvents.pushEvents.length > 0 || !inputEvents.skipPushWhenEmpty) {
+              yield* recordInitialSyncPhase("push-merge", syncContext);
+              yield* input.pushRemoteEventsBatched(connectionString, inputEvents.pushEvents);
+            }
+            yield* recordInitialSyncPhase("import-remote", syncContext);
+            yield* runImport(inputEvents.importedEvents, syncContext);
+            yield* finishFirstSyncState({
+              receiptEvents: inputEvents.receiptEvents,
+              nextRemoteSequence: inputEvents.nextRemoteSequence,
+            });
+          });
+
+        if (state?.initialSyncPhase) {
+          const mergeEventsForLocal =
+            localEvents.length === 0
+              ? []
+              : buildFirstSyncClientMergeEvents(localEvents, remoteEventsForLocal);
+          const mergeEventsForRemote =
+            localEvents.length === 0
+              ? []
+              : buildFirstSyncClientMergeEvents(localEvents, remoteEvents, projectMappings);
+          const recoveryPlan = planFirstSyncRecovery({
+            phase: state.initialSyncPhase,
+            localEvents,
+            localEventsForRemote,
+            remoteEvents,
+            remoteEventsForLocal,
+            remoteMaxSequence,
+            mergeEventsForLocal,
+            mergeEventsForRemote,
+          });
+          console.info("[history-sync] first sync recovery planned", {
+            phase: state.initialSyncPhase,
+            action: recoveryPlan.action,
+          });
+          if (recoveryPlan.action === "continue-local-push") {
+            yield* runFirstSyncLocalPush(recoveryPlan);
+            return;
+          }
+          if (recoveryPlan.action === "continue-remote-import") {
+            yield* runFirstSyncRemoteImport({
+              ...recoveryPlan,
+              skipPushWhenEmpty: true,
+            });
+            return;
+          }
+          if (recoveryPlan.action === "finish-state") {
+            yield* finishFirstSyncState(recoveryPlan);
+            return;
+          }
+          if (recoveryPlan.action === "require-review") {
+            return yield* Effect.fail(new Error(recoveryPlan.message));
+          }
+        }
+
         if (
           shouldPushLocalHistoryOnFirstSync({
             hasCompletedInitialSync,
@@ -535,21 +689,11 @@ export function createHistorySyncRunner(input: HistorySyncRunnerDependencies) {
             localEvents: localEvents.length,
             localMaxSequence,
           });
-          yield* recordInitialSyncPhase("push-local", syncContext);
-          yield* input.pushRemoteEventsBatched(connectionString, localEventsForRemote);
-          const now = new Date().toISOString();
-          yield* recordInitialSyncPhase("write-state", syncContext);
-          yield* input.commitPushedEventReceiptsAndState({
-            events: localEvents,
-            pushedAt: now,
-            state: {
-              hasCompletedInitialSync: true,
-              lastSyncedRemoteSequence: localMaxSequence,
-              lastSuccessfulSyncAt: now,
-            },
+          yield* runFirstSyncLocalPush({
+            pushEvents: localEventsForRemote,
+            receiptEvents: localEvents,
+            nextRemoteSequence: localMaxSequence,
           });
-          yield* input.clearInitialSyncPhase;
-          yield* input.publishStatus({ state: "idle", configured: true, lastSyncedAt: now });
           return;
         }
 
@@ -557,31 +701,20 @@ export function createHistorySyncRunner(input: HistorySyncRunnerDependencies) {
           localEvents.length === 0
             ? []
             : buildFirstSyncClientMergeEvents(localEvents, remoteEventsForLocal);
+        const mergeEventsForRemote =
+          localEvents.length === 0
+            ? []
+            : buildFirstSyncClientMergeEvents(localEvents, remoteEvents, projectMappings);
         console.info("[history-sync] first sync client merge computed", {
           mergedEvents: mergeEvents.length,
         });
         const importedEvents = [...remoteEventsForLocal, ...mergeEvents];
-        yield* recordInitialSyncPhase("push-merge", syncContext);
-        yield* input.pushRemoteEventsBatched(
-          connectionString,
-          rewriteLocalEventsForRemoteMappings(mergeEvents, projectMappings),
-        );
-        yield* recordInitialSyncPhase("import-remote", syncContext);
-        yield* runImport(importedEvents, syncContext);
-        const nextRemoteSequence = maxHistoryEventSequence(mergeEvents, remoteMaxSequence);
-        const now = new Date().toISOString();
-        yield* recordInitialSyncPhase("write-state", syncContext);
-        yield* input.commitPushedEventReceiptsAndState({
-          events: importedEvents,
-          pushedAt: now,
-          state: {
-            hasCompletedInitialSync: true,
-            lastSyncedRemoteSequence: nextRemoteSequence,
-            lastSuccessfulSyncAt: now,
-          },
+        yield* runFirstSyncRemoteImport({
+          pushEvents: mergeEventsForRemote,
+          importedEvents,
+          receiptEvents: importedEvents,
+          nextRemoteSequence: maxHistoryEventSequence(mergeEventsForRemote, remoteMaxSequence),
         });
-        yield* input.clearInitialSyncPhase;
-        yield* input.publishStatus({ state: "idle", configured: true, lastSyncedAt: now });
         return;
       }
 
@@ -605,14 +738,14 @@ export function createHistorySyncRunner(input: HistorySyncRunnerDependencies) {
           rewriteLocalEventsForRemoteMappings(pending, projectMappings),
         );
         const now = new Date().toISOString();
-        yield* input.commitPushedEventReceiptsAndState({
-          events: pending,
+        yield* commitAfterRemoteWrite({
+          remoteCoveredEvents: selectRemoteCoveredLocalEvents({
+            localEvents,
+            remoteEvents,
+          }),
+          pushedEvents: pending,
+          previousRemoteSequence: remoteMaxSequence,
           pushedAt: now,
-          state: {
-            hasCompletedInitialSync: true,
-            lastSyncedRemoteSequence: localMaxSequence,
-            lastSuccessfulSyncAt: now,
-          },
         });
         yield* input.publishStatus({ state: "idle", configured: true, lastSyncedAt: now });
         return;
@@ -656,14 +789,13 @@ export function createHistorySyncRunner(input: HistorySyncRunnerDependencies) {
           });
         }
         const now = new Date().toISOString();
-        yield* input.commitPushedEventReceiptsAndState({
-          events: remoteEventsForLocal,
+        yield* commitAfterRemoteWrite({
+          remoteCoveredEvents: selectRemoteCoveredLocalEvents({
+            localEvents: shouldReplaceLocalFromRemote ? remoteEventsForLocal : localEvents,
+            remoteEvents: remoteEventsForLocal,
+          }),
+          previousRemoteSequence: lastSyncedRemoteSequence,
           pushedAt: now,
-          state: {
-            hasCompletedInitialSync: true,
-            lastSyncedRemoteSequence: remoteMaxSequence,
-            lastSuccessfulSyncAt: now,
-          },
         });
         if (shouldReplaceLocalFromRemote) {
           yield* input.publishStatus({ state: "idle", configured: true, lastSyncedAt: now });
@@ -688,18 +820,10 @@ export function createHistorySyncRunner(input: HistorySyncRunnerDependencies) {
             rewriteLocalEventsForRemoteMappings(pushableLocalEvents, projectMappings),
           );
           const pushedAt = new Date().toISOString();
-          const nextRemoteSequence = nextSyncedRemoteSequenceAfterPush(
-            remoteMaxSequence,
-            pushableLocalEvents,
-          );
-          yield* input.commitPushedEventReceiptsAndState({
-            events: pushableLocalEvents,
+          yield* commitAfterRemoteWrite({
+            pushedEvents: pushableLocalEvents,
+            previousRemoteSequence: remoteMaxSequence,
             pushedAt,
-            state: {
-              hasCompletedInitialSync: true,
-              lastSyncedRemoteSequence: nextRemoteSequence,
-              lastSuccessfulSyncAt: pushedAt,
-            },
           });
           yield* input.publishStatus({ state: "idle", configured: true, lastSyncedAt: pushedAt });
           return;
@@ -723,18 +847,10 @@ export function createHistorySyncRunner(input: HistorySyncRunnerDependencies) {
           rewriteLocalEventsForRemoteMappings(pushableLocalEvents, projectMappings),
         );
         const now = new Date().toISOString();
-        const nextRemoteSequence = nextSyncedRemoteSequenceAfterPush(
-          lastSyncedRemoteSequence,
-          pushableLocalEvents,
-        );
-        yield* input.commitPushedEventReceiptsAndState({
-          events: pushableLocalEvents,
+        yield* commitAfterRemoteWrite({
+          pushedEvents: pushableLocalEvents,
+          previousRemoteSequence: lastSyncedRemoteSequence,
           pushedAt: now,
-          state: {
-            hasCompletedInitialSync: true,
-            lastSyncedRemoteSequence: nextRemoteSequence,
-            lastSuccessfulSyncAt: now,
-          },
         });
         yield* input.publishStatus({ state: "idle", configured: true, lastSyncedAt: now });
         return;

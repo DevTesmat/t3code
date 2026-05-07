@@ -1,7 +1,24 @@
+import { assert, it } from "@effect/vitest";
+import { Effect, Layer } from "effect";
+import * as SqlClient from "effect/unstable/sql/SqlClient";
 import { describe, expect, test } from "vitest";
 
-import type { ProjectCandidate } from "./planner.ts";
-import { findProjectMappingSuggestion, type LocalProjectRow } from "./projectMappings.ts";
+import { runMigrations } from "../persistence/Migrations.ts";
+import * as NodeSqliteClient from "../persistence/NodeSqliteClient.ts";
+import type {
+  HistorySyncEventRow,
+  HistorySyncProjectMappingRow,
+  ProjectCandidate,
+} from "./planner.ts";
+import {
+  buildProjectMappingPlanFromEvents,
+  filterValidProjectMappings,
+  findProjectMappingSuggestion,
+  getSyncId,
+  readValidProjectMappings,
+  writeProjectMapping,
+  type LocalProjectRow,
+} from "./projectMappings.ts";
 
 function remoteProject(workspaceRoot: string): ProjectCandidate {
   return {
@@ -25,6 +42,63 @@ const localProjects: readonly LocalProjectRow[] = [
     workspaceRoot: "/Users/me/other/api",
   },
 ];
+
+const baseEvent = {
+  occurredAt: "2026-05-01T00:00:00.000Z",
+  commandId: null,
+  causationEventId: null,
+  correlationId: null,
+  actorKind: "system",
+  metadataJson: "{}",
+} as const;
+
+function event(
+  sequence: number,
+  streamId: string,
+  eventType: HistorySyncEventRow["eventType"],
+  payload: Record<string, unknown>,
+): HistorySyncEventRow {
+  return {
+    ...baseEvent,
+    sequence,
+    eventId: `${streamId}:${sequence}`,
+    aggregateKind: eventType.startsWith("project.") ? "project" : "thread",
+    streamId,
+    streamVersion: sequence,
+    eventType,
+    payloadJson: JSON.stringify(payload),
+  };
+}
+
+function projectCreated(sequence: number, projectId: string, workspaceRoot: string) {
+  return event(sequence, projectId, "project.created", {
+    projectId,
+    title: projectId,
+    workspaceRoot,
+  });
+}
+
+function threadCreated(sequence: number, threadId: string, projectId: string) {
+  return event(sequence, threadId, "thread.created", {
+    threadId,
+    projectId,
+    title: threadId,
+  });
+}
+
+function mapping(input: Partial<HistorySyncProjectMappingRow> = {}): HistorySyncProjectMappingRow {
+  return {
+    remoteProjectId: "remote-project",
+    localProjectId: "local-exact",
+    localWorkspaceRoot: "/Users/me/work/app",
+    remoteWorkspaceRoot: "/remote/app",
+    remoteTitle: "Remote",
+    status: "mapped",
+    createdAt: baseEvent.occurredAt,
+    updatedAt: baseEvent.occurredAt,
+    ...input,
+  };
+}
 
 describe("history sync project mappings", () => {
   test("prefers exact workspace-root suggestions", () => {
@@ -57,4 +131,157 @@ describe("history sync project mappings", () => {
       ]),
     ).toBeNull();
   });
+
+  test("keeps skipped mappings and filters mapped rows with missing or changed local projects", () => {
+    expect(
+      filterValidProjectMappings(
+        [
+          mapping(),
+          mapping({ remoteProjectId: "missing", localProjectId: "missing-local" }),
+          mapping({ remoteProjectId: "changed", localWorkspaceRoot: "/old/root" }),
+          mapping({
+            remoteProjectId: "skipped",
+            status: "skipped",
+            localProjectId: "remote-skipped",
+            localWorkspaceRoot: "/remote/skipped",
+          }),
+        ],
+        localProjects,
+      ).map((row) => row.remoteProjectId),
+    ).toEqual(["remote-project", "skipped"]);
+  });
+});
+
+const layer = it.layer(Layer.mergeAll(NodeSqliteClient.layerMemory()));
+
+function insertLocalProject(
+  sql: SqlClient.SqlClient,
+  input: {
+    readonly projectId: string;
+    readonly workspaceRoot: string;
+    readonly deletedAt?: string | null;
+  },
+) {
+  return sql`
+    INSERT INTO projection_projects (
+      project_id,
+      title,
+      workspace_root,
+      scripts_json,
+      created_at,
+      updated_at,
+      deleted_at
+    )
+    VALUES (
+      ${input.projectId},
+      ${input.projectId},
+      ${input.workspaceRoot},
+      '{}',
+      ${baseEvent.occurredAt},
+      ${baseEvent.occurredAt},
+      ${input.deletedAt ?? null}
+    )
+  `;
+}
+
+layer("history sync project mapping repository", (it) => {
+  it.effect("reads only drift-valid mappings", () =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      yield* runMigrations({ toMigrationInclusive: 36 });
+      yield* insertLocalProject(sql, {
+        projectId: "local-valid",
+        workspaceRoot: "/local/valid",
+      });
+      yield* insertLocalProject(sql, {
+        projectId: "local-deleted",
+        workspaceRoot: "/local/deleted",
+        deletedAt: baseEvent.occurredAt,
+      });
+      yield* writeProjectMapping(sql, {
+        remoteProjectId: "remote-valid",
+        localProjectId: "local-valid",
+        localWorkspaceRoot: "/local/valid",
+        remoteWorkspaceRoot: "/remote/valid",
+        remoteTitle: "Remote valid",
+        status: "mapped",
+        now: baseEvent.occurredAt,
+      });
+      yield* writeProjectMapping(sql, {
+        remoteProjectId: "remote-deleted",
+        localProjectId: "local-deleted",
+        localWorkspaceRoot: "/local/deleted",
+        remoteWorkspaceRoot: "/remote/deleted",
+        remoteTitle: "Remote deleted",
+        status: "mapped",
+        now: baseEvent.occurredAt,
+      });
+      yield* writeProjectMapping(sql, {
+        remoteProjectId: "remote-skipped",
+        localProjectId: "remote-skipped",
+        localWorkspaceRoot: "/remote/skipped",
+        remoteWorkspaceRoot: "/remote/skipped",
+        remoteTitle: "Remote skipped",
+        status: "skipped",
+        now: baseEvent.occurredAt,
+      });
+
+      assert.deepStrictEqual(
+        (yield* readValidProjectMappings(sql)).map((row) => row.remoteProjectId),
+        ["remote-skipped", "remote-valid"],
+      );
+    }),
+  );
+
+  it.effect("ignores stale saved mappings and re-suggests exact path matches", () =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      yield* runMigrations({ toMigrationInclusive: 36 });
+      yield* insertLocalProject(sql, {
+        projectId: "local-new",
+        workspaceRoot: "/remote/app",
+      });
+      yield* writeProjectMapping(sql, {
+        remoteProjectId: "remote-project",
+        localProjectId: "local-old",
+        localWorkspaceRoot: "/old/app",
+        remoteWorkspaceRoot: "/remote/app",
+        remoteTitle: "Remote project",
+        status: "mapped",
+        now: baseEvent.occurredAt,
+      });
+
+      const plan = yield* buildProjectMappingPlanFromEvents(sql, {
+        remoteEvents: [
+          projectCreated(1, "remote-project", "/remote/app"),
+          threadCreated(2, "thread-a", "remote-project"),
+        ],
+        remoteMaxSequence: 2,
+      });
+
+      assert.strictEqual(plan.candidates[0]?.suggestedLocalProjectId, "local-new");
+      assert.strictEqual(plan.candidates[0]?.suggestionReason, "exact-path");
+      assert.strictEqual(plan.candidates[0]?.status, "mapped");
+    }),
+  );
+
+  it.effect("invalidates mapping apply sync id when local projects drift", () =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      yield* runMigrations({ toMigrationInclusive: 36 });
+      yield* insertLocalProject(sql, {
+        projectId: "local-a",
+        workspaceRoot: "/local/a",
+      });
+      const before = yield* getSyncId(sql, 7);
+      yield* sql`
+        UPDATE projection_projects
+        SET workspace_root = '/local/renamed'
+        WHERE project_id = 'local-a'
+      `;
+      const after = yield* getSyncId(sql, 7);
+
+      assert.notStrictEqual(after, before);
+    }),
+  );
 });

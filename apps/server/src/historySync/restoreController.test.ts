@@ -104,6 +104,28 @@ describe("history sync restore controller", () => {
     }
   });
 
+  test("surfaces missing backup guidance without reloading projections", async () => {
+    const calls: string[] = [];
+    const { controller } = makeController(
+      {
+        restoreBackupTablesFromDisk: Effect.fail(
+          new HistorySyncConfigError({
+            message: "No history sync SQLite backup is available.",
+          }),
+        ),
+      },
+      calls,
+    );
+
+    const exit = await Effect.runPromiseExit(controller.restoreBackupFromDisk);
+
+    expect(calls).toEqual([]);
+    expect(Exit.isFailure(exit)).toBe(true);
+    if (Exit.isFailure(exit)) {
+      expect(exit.cause.toString()).toContain("No history sync SQLite backup is available.");
+    }
+  });
+
   test("preserves projection reload config errors", async () => {
     const { controller } = makeController({
       reloadProjections: Effect.fail(

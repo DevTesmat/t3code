@@ -4,6 +4,8 @@ import { describe, expect, test } from "vitest";
 
 import {
   createHistorySyncRunner,
+  describeAutosaveRemoteConflict,
+  HISTORY_SYNC_AUTOSAVE_REMOTE_CONFLICT_MESSAGE,
   nextHistorySyncRetryDelayMs,
   type HistorySyncRunnerDependencies,
 } from "./syncRunner.ts";
@@ -28,6 +30,65 @@ const remoteEvent: HistorySyncEventRow = {
   }),
   metadataJson: "{}",
 };
+
+const localEvent: HistorySyncEventRow = {
+  ...remoteEvent,
+  sequence: 2,
+  eventId: "event-2",
+  streamId: "project-2",
+  payloadJson: JSON.stringify({
+    projectId: "project-2",
+    title: "Local project",
+    workspaceRoot: "/local-repo",
+  }),
+};
+
+function projectEvent(input: {
+  readonly sequence: number;
+  readonly projectId: string;
+  readonly title?: string;
+  readonly workspaceRoot?: string;
+}): HistorySyncEventRow {
+  return {
+    ...remoteEvent,
+    sequence: input.sequence,
+    eventId: `${input.projectId}:${input.sequence}`,
+    streamId: input.projectId,
+    streamVersion: input.sequence,
+    eventType: "project.created",
+    aggregateKind: "project",
+    payloadJson: JSON.stringify({
+      projectId: input.projectId,
+      title: input.title ?? input.projectId,
+      workspaceRoot: input.workspaceRoot ?? `/${input.projectId}`,
+    }),
+  };
+}
+
+function threadCreatedEvent(input: {
+  readonly sequence: number;
+  readonly threadId: string;
+  readonly projectId: string;
+  readonly eventId?: string;
+}): HistorySyncEventRow {
+  return {
+    ...remoteEvent,
+    sequence: input.sequence,
+    eventId: input.eventId ?? `${input.threadId}:${input.sequence}`,
+    aggregateKind: "thread",
+    streamId: input.threadId,
+    streamVersion: input.sequence,
+    eventType: "thread.created",
+    payloadJson: JSON.stringify({
+      threadId: input.threadId,
+      projectId: input.projectId,
+      title: input.threadId,
+      modelSelection: null,
+      createdAt: "2026-05-01T00:00:00.000Z",
+      updatedAt: "2026-05-01T00:00:00.000Z",
+    }),
+  };
+}
 
 function makeRunner(overrides: Partial<HistorySyncRunnerDependencies> = {}, calls: string[] = []) {
   return Effect.gen(function* () {
@@ -104,6 +165,67 @@ describe("history sync runner", () => {
     await Effect.runPromise(runner.performSync({ mode: "full", markStopped: Effect.void }));
 
     expect(statuses).toEqual([{ state: "disabled", configured: false }]);
+  });
+
+  test("describes autosave remote conflicts with stable copy and log metadata", () => {
+    expect(
+      describeAutosaveRemoteConflict({
+        remoteMaxSequence: 12,
+        lastSyncedRemoteSequence: 7,
+        remoteDeltaEventCount: 5,
+        unknownRemoteEventCount: 2,
+      }),
+    ).toEqual({
+      message: HISTORY_SYNC_AUTOSAVE_REMOTE_CONFLICT_MESSAGE,
+      remoteMaxSequence: 12,
+      lastSyncedRemoteSequence: 7,
+      remoteDeltaEventCount: 5,
+      unknownRemoteEventCount: 2,
+    });
+  });
+
+  test("autosave pauses on unknown remote events without pushing local history", async () => {
+    const calls: string[] = [];
+    const markStoppedCalls: string[] = [];
+    const { runner, statuses } = await Effect.runPromise(
+      makeRunner(
+        {
+          readState: Effect.succeed({
+            hasCompletedInitialSync: 1,
+            lastSyncedRemoteSequence: 1,
+            lastSuccessfulSyncAt: "2026-05-01T00:00:00.000Z",
+          }),
+          readLocalEvents: () => Effect.succeed([remoteEvent]),
+          readRemoteMaxSequence: () => Effect.succeed(2),
+          readRemoteEvents: () =>
+            Effect.succeed([
+              {
+                ...remoteEvent,
+                sequence: 2,
+                eventId: "remote-only-event",
+                streamVersion: 2,
+              },
+            ]),
+        },
+        calls,
+      ),
+    );
+
+    await Effect.runPromise(
+      runner.performSync({
+        mode: "autosave",
+        markStopped: Effect.sync(() => markStoppedCalls.push("stopped")).pipe(Effect.asVoid),
+      }),
+    );
+
+    expect(markStoppedCalls).toEqual(["stopped"]);
+    expect(calls).not.toContain("push");
+    expect(statuses.at(-1)).toEqual({
+      state: "error",
+      configured: true,
+      message: HISTORY_SYNC_AUTOSAVE_REMOTE_CONFLICT_MESSAGE,
+      lastSyncedAt: null,
+    });
   });
 
   test("full sync waits for explicit initial sync before initialization", async () => {
@@ -289,5 +411,425 @@ describe("history sync runner", () => {
 
     expect(calls.indexOf("push")).toBeLessThan(calls.indexOf("commitReceiptsState"));
     expect(calls).not.toContain("writeState");
+  });
+
+  test("full sync replay commits remote-covered receipts after a previous post-push local failure", async () => {
+    const calls: string[] = [];
+    let remoteEvents: readonly HistorySyncEventRow[] = [];
+    let commitAttempts = 0;
+    const { runner } = await Effect.runPromise(
+      makeRunner(
+        {
+          readState: Effect.succeed({
+            hasCompletedInitialSync: 1,
+            lastSyncedRemoteSequence: 0,
+            lastSuccessfulSyncAt: null,
+          }),
+          readLocalEvents: () => Effect.succeed([remoteEvent]),
+          readUnpushedLocalEvents: Effect.succeed([remoteEvent]),
+          readRemoteEvents: () => Effect.succeed(remoteEvents),
+          readRemoteMaxSequence: () => Effect.succeed(remoteEvents.length === 0 ? 0 : 1),
+          pushRemoteEventsBatched: (_connectionString, events) =>
+            Effect.sync(() => {
+              calls.push("push");
+              remoteEvents = events;
+            }).pipe(Effect.asVoid),
+          commitPushedEventReceiptsAndState: (input) =>
+            Effect.gen(function* () {
+              calls.push(`commit:${input.state.lastSyncedRemoteSequence}`);
+              commitAttempts += 1;
+              if (commitAttempts === 1) {
+                return yield* Effect.fail(new Error("local commit failed"));
+              }
+            }),
+        },
+        calls,
+      ),
+    );
+
+    await Effect.runPromise(runner.performSync({ mode: "full", markStopped: Effect.void }));
+    await Effect.runPromise(runner.performSync({ mode: "full", markStopped: Effect.void }));
+
+    expect(calls.filter((call) => call === "push")).toHaveLength(1);
+    expect(calls).toContain("commit:1");
+  });
+
+  test("full sync replay with partial remote coverage does not advance past the proven cursor", async () => {
+    const calls: string[] = [];
+    const local = [
+      remoteEvent,
+      {
+        ...remoteEvent,
+        sequence: 2,
+        eventId: "event-2",
+        streamVersion: 2,
+      },
+    ];
+    const commits: number[] = [];
+    const { runner } = await Effect.runPromise(
+      makeRunner(
+        {
+          readState: Effect.succeed({
+            hasCompletedInitialSync: 1,
+            lastSyncedRemoteSequence: 0,
+            lastSuccessfulSyncAt: null,
+          }),
+          readLocalEvents: () => Effect.succeed(local),
+          readUnpushedLocalEvents: Effect.succeed(local),
+          readRemoteEvents: () => Effect.succeed([local[1]!]),
+          readRemoteMaxSequence: () => Effect.succeed(2),
+          commitPushedEventReceiptsAndState: (input) =>
+            Effect.sync(() => {
+              calls.push("commitReceiptsState");
+              commits.push(input.state.lastSyncedRemoteSequence);
+            }).pipe(Effect.asVoid),
+        },
+        calls,
+      ),
+    );
+
+    await Effect.runPromise(runner.performSync({ mode: "full", markStopped: Effect.void }));
+
+    expect(calls).not.toContain("push");
+    expect(commits).toContain(0);
+  });
+
+  test("full sync pending push uses validated mappings and does not rewrite through stale rows", async () => {
+    const calls: string[] = [];
+    const local = [
+      {
+        ...remoteEvent,
+        streamId: "local-project",
+        eventId: "local-event-1",
+        payloadJson: JSON.stringify({
+          projectId: "local-project",
+          title: "Local project",
+          workspaceRoot: "/local/project",
+        }),
+      },
+    ];
+    let pushedEvents: readonly HistorySyncEventRow[] = [];
+    const { runner } = await Effect.runPromise(
+      makeRunner(
+        {
+          readState: Effect.succeed({
+            hasCompletedInitialSync: 1,
+            lastSyncedRemoteSequence: 0,
+            lastSuccessfulSyncAt: null,
+          }),
+          readLocalEvents: () => Effect.succeed(local),
+          readUnpushedLocalEvents: Effect.succeed(local),
+          readProjectMappings: Effect.succeed([]),
+          pushRemoteEventsBatched: (_connectionString, events) =>
+            Effect.sync(() => {
+              calls.push("push");
+              pushedEvents = events;
+            }).pipe(Effect.asVoid),
+        },
+        calls,
+      ),
+    );
+
+    await Effect.runPromise(runner.performSync({ mode: "full", markStopped: Effect.void }));
+
+    expect(pushedEvents[0]?.streamId).toBe("local-project");
+    expect(JSON.parse(pushedEvents[0]?.payloadJson ?? "{}").projectId).toBe("local-project");
+  });
+
+  test("initial sync recovery finishes state when local push is already remote-covered", async () => {
+    const calls: string[] = [];
+    const { runner } = await Effect.runPromise(
+      makeRunner(
+        {
+          readState: Effect.succeed({
+            hasCompletedInitialSync: 0,
+            lastSyncedRemoteSequence: 0,
+            lastSuccessfulSyncAt: null,
+            initialSyncPhase: "push-local",
+          }),
+          readLocalEvents: () => Effect.succeed([remoteEvent]),
+          readRemoteEvents: () => Effect.succeed([remoteEvent]),
+        },
+        calls,
+      ),
+    );
+
+    await Effect.runPromise(runner.performSync({ mode: "initial", markStopped: Effect.void }));
+
+    expect(calls).not.toContain("push");
+    expect(calls).not.toContain("import");
+    expect(calls).toContain("phase:write-state");
+    expect(calls).toContain("commitReceiptsState");
+    expect(calls).toContain("clearPhase");
+  });
+
+  test("initial sync recovery from backup phase recreates backup before push or import", async () => {
+    const calls: string[] = [];
+    const { runner } = await Effect.runPromise(
+      makeRunner(
+        {
+          readState: Effect.succeed({
+            hasCompletedInitialSync: 0,
+            lastSyncedRemoteSequence: 0,
+            lastSuccessfulSyncAt: null,
+            initialSyncPhase: "backup",
+          }),
+          readLocalEvents: () => Effect.succeed([localEvent]),
+          readRemoteEvents: () => Effect.succeed([remoteEvent]),
+          buildProjectMappingPlanFromEvents: () =>
+            Effect.succeed({
+              syncId: "client:2",
+              remoteMaxSequence: 1,
+              candidates: [],
+              localProjects: [],
+            }),
+        },
+        calls,
+      ),
+    );
+
+    await Effect.runPromise(runner.performSync({ mode: "initial", markStopped: Effect.void }));
+
+    expect(calls.indexOf("phase:backup")).toBeLessThan(calls.indexOf("backup"));
+    expect(calls.indexOf("backup")).toBeLessThan(calls.indexOf("phase:push-merge"));
+    expect(calls.indexOf("backup")).toBeLessThan(calls.indexOf("push"));
+    expect(calls.indexOf("backup")).toBeLessThan(calls.indexOf("import"));
+    expect(calls).toContain("clearPhase");
+  });
+
+  test("initial sync recovery imports when merge push is already remote-covered", async () => {
+    const calls: string[] = [];
+    const { runner } = await Effect.runPromise(
+      makeRunner(
+        {
+          readState: Effect.succeed({
+            hasCompletedInitialSync: 0,
+            lastSyncedRemoteSequence: 0,
+            lastSuccessfulSyncAt: null,
+            initialSyncPhase: "import-remote",
+          }),
+          readLocalEvents: () => Effect.succeed([localEvent]),
+          readRemoteEvents: () => Effect.succeed([remoteEvent, localEvent]),
+          buildProjectMappingPlanFromEvents: () =>
+            Effect.succeed({
+              syncId: "client:2",
+              remoteMaxSequence: 2,
+              candidates: [],
+              localProjects: [],
+            }),
+        },
+        calls,
+      ),
+    );
+
+    await Effect.runPromise(runner.performSync({ mode: "initial", markStopped: Effect.void }));
+
+    expect(calls).not.toContain("push");
+    expect(calls.indexOf("phase:import-remote")).toBeLessThan(calls.indexOf("import"));
+    expect(calls.indexOf("import")).toBeLessThan(calls.indexOf("phase:write-state"));
+    expect(calls).toContain("commitReceiptsState");
+    expect(calls).toContain("clearPhase");
+  });
+
+  test("initial sync recovery applies persisted project mappings to push/import/receipts", async () => {
+    const calls: string[] = [];
+    const local = [
+      projectEvent({ sequence: 1, projectId: "local-keep", workspaceRoot: "/local/keep" }),
+      threadCreatedEvent({ sequence: 2, threadId: "thread-local", projectId: "local-keep" }),
+    ];
+    const remote = [
+      projectEvent({ sequence: 1, projectId: "remote-keep", workspaceRoot: "/remote/keep" }),
+      threadCreatedEvent({ sequence: 2, threadId: "thread-keep", projectId: "remote-keep" }),
+      projectEvent({ sequence: 3, projectId: "remote-skip", workspaceRoot: "/remote/skip" }),
+      threadCreatedEvent({ sequence: 4, threadId: "thread-skip", projectId: "remote-skip" }),
+    ];
+    let pushedEvents: readonly HistorySyncEventRow[] = [];
+    let importedEvents: readonly HistorySyncEventRow[] = [];
+    let receiptEvents: readonly HistorySyncEventRow[] = [];
+    const { runner } = await Effect.runPromise(
+      makeRunner(
+        {
+          readState: Effect.succeed({
+            hasCompletedInitialSync: 0,
+            lastSyncedRemoteSequence: 0,
+            lastSuccessfulSyncAt: null,
+            initialSyncPhase: "push-merge",
+          }),
+          readLocalEvents: () => Effect.succeed(local),
+          readRemoteEvents: () => Effect.succeed(remote),
+          readRemoteMaxSequence: () => Effect.succeed(4),
+          readProjectMappings: Effect.succeed([
+            {
+              remoteProjectId: "remote-keep",
+              localProjectId: "local-keep",
+              localWorkspaceRoot: "/local/keep",
+              remoteWorkspaceRoot: "/remote/keep",
+              remoteTitle: "remote-keep",
+              status: "mapped",
+              createdAt: "2026-05-01T00:00:00.000Z",
+              updatedAt: "2026-05-01T00:00:00.000Z",
+            },
+            {
+              remoteProjectId: "remote-skip",
+              localProjectId: "local-skip",
+              localWorkspaceRoot: "/local/skip",
+              remoteWorkspaceRoot: "/remote/skip",
+              remoteTitle: "remote-skip",
+              status: "skipped",
+              createdAt: "2026-05-01T00:00:00.000Z",
+              updatedAt: "2026-05-01T00:00:00.000Z",
+            },
+          ]),
+          pushRemoteEventsBatched: (_connectionString, events) =>
+            Effect.sync(() => {
+              calls.push("push");
+              pushedEvents = events;
+            }).pipe(Effect.asVoid),
+          importRemoteEvents: (events) =>
+            Effect.sync(() => {
+              calls.push("import");
+              importedEvents = events;
+            }).pipe(Effect.asVoid),
+          commitPushedEventReceiptsAndState: (input) =>
+            Effect.sync(() => {
+              calls.push("commitReceiptsState");
+              receiptEvents = input.events;
+            }).pipe(Effect.asVoid),
+        },
+        calls,
+      ),
+    );
+
+    await Effect.runPromise(runner.performSync({ mode: "initial", markStopped: Effect.void }));
+
+    expect(pushedEvents.map((row) => row.streamId)).toEqual(["thread-local"]);
+    expect(pushedEvents.map((row) => JSON.parse(row.payloadJson).projectId)).toEqual([
+      "remote-keep",
+    ]);
+    expect(importedEvents.map((row) => row.streamId)).toEqual([
+      "local-keep",
+      "thread-keep",
+      "thread-local",
+    ]);
+    expect(importedEvents.map((row) => JSON.parse(row.payloadJson).projectId)).toEqual([
+      "local-keep",
+      "local-keep",
+      "local-keep",
+    ]);
+    expect(receiptEvents).toEqual(importedEvents);
+  });
+
+  test("initial sync recovery finishes write-state without reimporting", async () => {
+    const calls: string[] = [];
+    const { runner } = await Effect.runPromise(
+      makeRunner(
+        {
+          readState: Effect.succeed({
+            hasCompletedInitialSync: 0,
+            lastSyncedRemoteSequence: 0,
+            lastSuccessfulSyncAt: null,
+            initialSyncPhase: "write-state",
+          }),
+          readLocalEvents: () => Effect.succeed([localEvent]),
+          readRemoteEvents: () => Effect.succeed([remoteEvent, localEvent]),
+          buildProjectMappingPlanFromEvents: () =>
+            Effect.succeed({
+              syncId: "client:2",
+              remoteMaxSequence: 2,
+              candidates: [],
+              localProjects: [],
+            }),
+        },
+        calls,
+      ),
+    );
+
+    await Effect.runPromise(runner.performSync({ mode: "initial", markStopped: Effect.void }));
+
+    expect(calls).not.toContain("push");
+    expect(calls).not.toContain("import");
+    expect(calls).toContain("phase:write-state");
+    expect(calls).toContain("commitReceiptsState");
+    expect(calls).toContain("clearPhase");
+  });
+
+  test("initial sync recovery keeps marker visible when remote drift is unsafe", async () => {
+    const calls: string[] = [];
+    const { runner, statuses } = await Effect.runPromise(
+      makeRunner(
+        {
+          readState: Effect.succeed({
+            hasCompletedInitialSync: 0,
+            lastSyncedRemoteSequence: 0,
+            lastSuccessfulSyncAt: null,
+            initialSyncPhase: "push-local",
+          }),
+          readLocalEvents: () => Effect.succeed([localEvent]),
+          readRemoteEvents: () => Effect.succeed([remoteEvent]),
+        },
+        calls,
+      ),
+    );
+
+    await Effect.runPromise(runner.performSync({ mode: "initial", markStopped: Effect.void }));
+
+    expect(calls).toContainEqual(
+      expect.stringContaining("failPhase:Initial sync cannot safely resume"),
+    );
+    expect(calls).not.toContain("clearPhase");
+    expect(statuses.at(-1)).toMatchObject({
+      state: "error",
+      configured: true,
+    });
+  });
+
+  test("initial sync recovery keeps marker visible when collision rescue blocks replay", async () => {
+    const calls: string[] = [];
+    const { runner, statuses } = await Effect.runPromise(
+      makeRunner(
+        {
+          readState: Effect.succeed({
+            hasCompletedInitialSync: 0,
+            lastSyncedRemoteSequence: 0,
+            lastSuccessfulSyncAt: null,
+            initialSyncPhase: "push-merge",
+          }),
+          readLocalEvents: () =>
+            Effect.succeed([
+              threadCreatedEvent({
+                sequence: 1,
+                threadId: "thread-collision",
+                projectId: "project-local",
+                eventId: "local-thread-created",
+              }),
+            ]),
+          readRemoteEvents: () =>
+            Effect.succeed([
+              threadCreatedEvent({
+                sequence: 1,
+                threadId: "thread-collision",
+                projectId: "project-remote",
+                eventId: "remote-thread-created",
+              }),
+            ]),
+        },
+        calls,
+      ),
+    );
+
+    await Effect.runPromise(runner.performSync({ mode: "initial", markStopped: Effect.void }));
+
+    expect(calls).toContainEqual(
+      expect.stringContaining("failPhase:Initial sync cannot safely resume"),
+    );
+    expect(calls).not.toContain("push");
+    expect(calls).not.toContain("import");
+    expect(calls).not.toContain("clearPhase");
+    expect(statuses.at(-1)).toMatchObject({
+      state: "error",
+      configured: true,
+      message:
+        "Initial sync cannot safely resume because the failed merge involved thread ID collision rescue.",
+    });
   });
 });
