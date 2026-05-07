@@ -504,7 +504,15 @@ export function projectEvent(
                         ? thread.latestTurn.assistantMessageId
                         : null,
                   }
-                : thread.latestTurn,
+                : settlingTurnId !== null &&
+                    thread.latestTurn?.turnId === settlingTurnId &&
+                    thread.latestTurn.state === "running"
+                  ? {
+                      ...thread.latestTurn,
+                      state: session.status === "error" ? "error" : "interrupted",
+                      completedAt: thread.latestTurn.completedAt ?? session.updatedAt,
+                    }
+                  : thread.latestTurn,
             totalWorkDurationMs: (thread.totalWorkDurationMs ?? 0) + completedWorkDurationMs,
             updatedAt: event.occurredAt,
           }),

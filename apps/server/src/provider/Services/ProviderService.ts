@@ -79,6 +79,14 @@ export interface ProviderServiceShape {
   ) => Effect.Effect<void, ProviderServiceError>;
 
   /**
+   * Recover the provider session bound to a thread from the persisted runtime
+   * directory without sending a turn.
+   */
+  readonly recoverSession: (
+    threadId: ThreadId,
+  ) => Effect.Effect<ProviderSession, ProviderServiceError>;
+
+  /**
    * List active provider sessions.
    *
    * Aggregates runtime session lists from all registered adapters.

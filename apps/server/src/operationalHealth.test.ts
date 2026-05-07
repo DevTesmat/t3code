@@ -50,6 +50,7 @@ it.effect("collects projection lag, active provider sessions, and startup readin
         respondToRequest: () => Effect.die("unused"),
         respondToUserInput: () => Effect.die("unused"),
         stopSession: () => Effect.die("unused"),
+        recoverSession: () => Effect.die("unused"),
         listSessions: () =>
           Effect.succeed([
             {

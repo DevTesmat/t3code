@@ -20,6 +20,7 @@ import {
   Scope,
   Context,
   Console,
+  Cause,
 } from "effect";
 
 import { ServerConfig } from "./config.ts";
@@ -34,6 +35,7 @@ import { ServerEnvironment } from "./environment/Services/ServerEnvironment.ts";
 import { AnalyticsService } from "./telemetry/Services/AnalyticsService.ts";
 import { ServerAuth } from "./auth/Services/ServerAuth.ts";
 import { ProviderSessionReaper } from "./provider/Services/ProviderSessionReaper.ts";
+import { ProviderSessionRecovery } from "./provider/Services/ProviderSessionRecovery.ts";
 import {
   formatHeadlessServeOutput,
   formatHostForUrl,
@@ -284,6 +286,7 @@ export const makeServerRuntimeStartup = Effect.gen(function* () {
   const keybindings = yield* Keybindings;
   const orchestrationReactor = yield* OrchestrationReactor;
   const providerSessionReaper = yield* ProviderSessionReaper;
+  const providerSessionRecovery = yield* ProviderSessionRecovery;
   const lifecycleEvents = yield* ServerLifecycleEvents;
   const serverSettings = yield* ServerSettingsService;
   const serverEnvironment = yield* ServerEnvironment;
@@ -332,6 +335,18 @@ export const makeServerRuntimeStartup = Effect.gen(function* () {
         yield* orchestrationReactor.start().pipe(Scope.provide(reactorScope));
         yield* providerSessionReaper.start().pipe(Scope.provide(reactorScope));
       }),
+    );
+
+    yield* Effect.logDebug("startup phase: recovering stale provider sessions");
+    yield* runStartupPhase(
+      "provider-session-recovery.start",
+      providerSessionRecovery.recoverStaleRunningThreads().pipe(
+        Effect.catchCause((cause) =>
+          Effect.logWarning("provider session startup recovery failed", {
+            cause: Cause.pretty(cause),
+          }),
+        ),
+      ),
     );
 
     const welcomeBase = yield* resolveWelcomeBase;

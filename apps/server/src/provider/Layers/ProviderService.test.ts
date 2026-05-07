@@ -771,6 +771,62 @@ it.effect(
     }).pipe(Effect.provide(NodeServices.layer)),
 );
 
+it.effect("ProviderServiceLive explicitly recovers a persisted resumable session", () =>
+  Effect.gen(function* () {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "t3-provider-service-recover-"));
+    const dbPath = path.join(tempDir, "orchestration.sqlite");
+    const persistenceLayer = makeSqlitePersistenceLive(dbPath);
+    const runtimeRepositoryLayer = ProviderSessionRuntimeRepositoryLive.pipe(
+      Layer.provide(persistenceLayer),
+    );
+    const directoryLayer = ProviderSessionDirectoryLive.pipe(Layer.provide(runtimeRepositoryLayer));
+    const resumeCursor = { threadId: "provider-thread-1" };
+
+    yield* Effect.gen(function* () {
+      const directory = yield* ProviderSessionDirectory;
+      yield* directory.upsert({
+        provider: CODEX_DRIVER,
+        providerInstanceId: codexInstanceId,
+        threadId: asThreadId("thread-recover"),
+        runtimeMode: "full-access",
+        status: "running",
+        resumeCursor,
+        runtimePayload: {
+          cwd: "/tmp/recover-project",
+          modelSelection: createModelSelection(codexInstanceId, "gpt-5-codex"),
+        },
+      });
+    }).pipe(Effect.provide(directoryLayer));
+
+    const codex = makeFakeCodexAdapter();
+    const registry = makeAdapterRegistryMock({
+      [CODEX_DRIVER]: codex.adapter,
+    });
+    const providerLayer = makeProviderServiceLive().pipe(
+      Layer.provide(Layer.succeed(ProviderAdapterRegistry, registry)),
+      Layer.provide(directoryLayer),
+      Layer.provide(defaultServerSettingsLayer),
+      Layer.provide(AnalyticsService.layerTest),
+      Layer.provide(Layer.succeed(ProviderEventLoggers, NoOpProviderEventLoggers)),
+    );
+
+    const recovered = yield* Effect.gen(function* () {
+      const provider = yield* ProviderService;
+      return yield* provider.recoverSession(asThreadId("thread-recover"));
+    }).pipe(Effect.provide(providerLayer));
+
+    assert.equal(recovered.threadId, "thread-recover");
+    assert.equal(recovered.providerInstanceId, "codex");
+    assert.equal(codex.startSession.mock.calls.length, 1);
+    const input = codex.startSession.mock.calls[0]?.[0];
+    assert.equal(input?.threadId, "thread-recover");
+    assert.equal(input?.cwd, "/tmp/recover-project");
+    assert.deepEqual(input?.resumeCursor, resumeCursor);
+
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  }).pipe(Effect.provide(NodeServices.layer)),
+);
+
 routing.layer("ProviderServiceLive routing", (it) => {
   it.effect("routes provider operations and rollback conversation", () =>
     Effect.gen(function* () {

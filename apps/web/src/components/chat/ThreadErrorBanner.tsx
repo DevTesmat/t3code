@@ -1,6 +1,8 @@
 import { memo } from "react";
 import { Alert, AlertAction, AlertDescription } from "../ui/alert";
-import { CircleAlertIcon, XIcon } from "lucide-react";
+import { CircleAlertIcon, InfoIcon, XIcon } from "lucide-react";
+
+const RECOVERY_RESTART_ERROR_PREFIX = "The app closed while this thread was working";
 
 export const ThreadErrorBanner = memo(function ThreadErrorBanner({
   error,
@@ -10,10 +12,12 @@ export const ThreadErrorBanner = memo(function ThreadErrorBanner({
   onDismiss?: () => void;
 }) {
   if (!error) return null;
+  const isRecoveryNotice = error.startsWith(RECOVERY_RESTART_ERROR_PREFIX);
+  const Icon = isRecoveryNotice ? InfoIcon : CircleAlertIcon;
   return (
     <div className="pt-3 mx-auto max-w-3xl">
-      <Alert variant="error">
-        <CircleAlertIcon />
+      <Alert variant={isRecoveryNotice ? "warning" : "error"}>
+        <Icon />
         <AlertDescription className="line-clamp-3" title={error}>
           {error}
         </AlertDescription>
