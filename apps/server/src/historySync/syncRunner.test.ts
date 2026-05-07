@@ -7,6 +7,7 @@ import {
   describeAutosaveRemoteConflict,
   HISTORY_SYNC_AUTOSAVE_REMOTE_CONFLICT_MESSAGE,
   nextHistorySyncRetryDelayMs,
+  shouldRetryHistorySyncFailure,
   type HistorySyncRunnerDependencies,
 } from "./syncRunner.ts";
 import type { HistorySyncEventRow } from "./planner.ts";
@@ -155,6 +156,41 @@ describe("history sync runner", () => {
     expect(nextHistorySyncRetryDelayMs(1)).toBe(10_000);
     expect(nextHistorySyncRetryDelayMs(2)).toBe(180_000);
     expect(nextHistorySyncRetryDelayMs(6)).toBeNull();
+  });
+
+  test("keeps retry scope limited to autosave retryable connection failures", () => {
+    const retryable = new Error("connection reset");
+    const semantic = new Error("remote conflict");
+    const isRetryableConnectionFailure = (error: unknown) => error === retryable;
+
+    expect(
+      shouldRetryHistorySyncFailure({
+        mode: "autosave",
+        cause: retryable,
+        isRetryableConnectionFailure,
+      }),
+    ).toBe(true);
+    expect(
+      shouldRetryHistorySyncFailure({
+        mode: "full",
+        cause: retryable,
+        isRetryableConnectionFailure,
+      }),
+    ).toBe(false);
+    expect(
+      shouldRetryHistorySyncFailure({
+        mode: "initial",
+        cause: retryable,
+        isRetryableConnectionFailure,
+      }),
+    ).toBe(false);
+    expect(
+      shouldRetryHistorySyncFailure({
+        mode: "autosave",
+        cause: semantic,
+        isRetryableConnectionFailure,
+      }),
+    ).toBe(false);
   });
 
   test("publishes disabled when unconfigured", async () => {

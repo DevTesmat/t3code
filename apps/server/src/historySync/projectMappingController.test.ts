@@ -9,6 +9,7 @@ import type { HistorySyncStateRow } from "./localRepository.ts";
 import type { HistorySyncEventRow } from "./planner.ts";
 import {
   createHistorySyncProjectMappingController,
+  planProjectMappingApplyContinuation,
   type HistorySyncProjectMappingControllerDependencies,
 } from "./projectMappingController.ts";
 
@@ -84,6 +85,14 @@ function makeController(
 }
 
 describe("history sync project mapping controller", () => {
+  test("plans apply continuation from completed initial sync state", () => {
+    expect(planProjectMappingApplyContinuation(null)).toBe("start-initial-sync");
+    expect(planProjectMappingApplyContinuation({ hasCompletedInitialSync: 0 })).toBe(
+      "start-initial-sync",
+    );
+    expect(planProjectMappingApplyContinuation({ hasCompletedInitialSync: 1 })).toBe("sync-now");
+  });
+
   test("fails when connection is not configured", async () => {
     const controller = makeController({ getConnectionString: Effect.succeed(null) });
 

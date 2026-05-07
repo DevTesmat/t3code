@@ -10,8 +10,6 @@ import type {
   HistorySyncProjectMappingRow,
 } from "./planner.ts";
 import {
-  buildFirstSyncClientMergeEvents,
-  classifyAutosyncThreadStates,
   collectProjectCandidates,
   countActiveThreadCreates,
   filterAlreadyImportedRemoteDeltaEvents,
@@ -20,18 +18,15 @@ import {
   maxHistoryEventSequence,
   planLocalCommitAfterRemoteWrite,
   normalizeRemoteEventsForLocalImport,
-  planFirstSyncRecovery,
+  planAutosaveLocalPush,
+  planAutosaveRemoteDelta,
+  planAutosaveRemoteCoveredReceipts,
+  planFirstSync,
   planLocalReplacementFromRemote,
   rewriteLocalEventsForRemoteMappings,
   rewriteRemoteEventsForLocalMappings,
-  selectAutosaveCandidateLocalEvents,
-  selectAutosaveContiguousPushableEvents,
-  selectAutosaveRemoteCoveredReceiptEvents,
-  selectKnownRemoteDeltaLocalEvents,
   selectRemoteCoveredLocalEvents,
   selectRemoteBehindLocalEvents,
-  selectUnknownRemoteDeltaEvents,
-  shouldPushLocalHistoryOnFirstSync,
 } from "./planner.ts";
 import type { HistorySyncProgress } from "./projectionReload.ts";
 
@@ -177,6 +172,14 @@ export interface HistorySyncRunnerOptions {
 export function nextHistorySyncRetryDelayMs(attempt: number): number | null {
   if (!Number.isInteger(attempt) || attempt < 1) return null;
   return HISTORY_SYNC_RETRY_DELAYS_MS[attempt - 1] ?? null;
+}
+
+export function shouldRetryHistorySyncFailure(input: {
+  readonly mode: HistorySyncMode;
+  readonly cause: unknown;
+  readonly isRetryableConnectionFailure: (error: unknown) => boolean;
+}): boolean {
+  return input.mode === "autosave" && input.isRetryableConnectionFailure(input.cause);
 }
 
 function appendHistorySyncRetryFailure(
@@ -384,16 +387,16 @@ export function createHistorySyncRunner(input: HistorySyncRunnerDependencies) {
             connectionString,
             lastSyncedRemoteSequence,
           );
-          const unknownRemoteDeltaEvents = selectUnknownRemoteDeltaEvents({
-            remoteEvents: remoteDeltaEvents,
+          const remoteDeltaPlan = planAutosaveRemoteDelta({
+            remoteDeltaEvents,
             localEvents,
           });
-          if (unknownRemoteDeltaEvents.length > 0) {
+          if (remoteDeltaPlan.action === "remote-conflict") {
             const conflict = describeAutosaveRemoteConflict({
               remoteMaxSequence,
               lastSyncedRemoteSequence,
-              remoteDeltaEventCount: remoteDeltaEvents.length,
-              unknownRemoteEventCount: unknownRemoteDeltaEvents.length,
+              remoteDeltaEventCount: remoteDeltaPlan.remoteDeltaEvents.length,
+              unknownRemoteEventCount: remoteDeltaPlan.unknownRemoteDeltaEvents.length,
             });
             console.warn("[history-sync] autosave paused because remote has unknown events", {
               remoteMaxSequence: conflict.remoteMaxSequence,
@@ -410,14 +413,13 @@ export function createHistorySyncRunner(input: HistorySyncRunnerDependencies) {
             });
             return;
           }
+          if (remoteDeltaPlan.action !== "accept-remote-delta") {
+            return yield* Effect.fail(new Error("Unexpected autosave remote delta plan."));
+          }
 
           const now = new Date().toISOString();
-          const alreadyLocalRemoteDeltaEvents = selectKnownRemoteDeltaLocalEvents({
-            remoteEvents: remoteDeltaEvents,
-            localEvents,
-          });
           yield* commitAfterRemoteWrite({
-            remoteCoveredEvents: alreadyLocalRemoteDeltaEvents,
+            remoteCoveredEvents: remoteDeltaPlan.remoteCoveredEvents,
             previousRemoteSequence: lastSyncedRemoteSequence,
             pushedAt: now,
           });
@@ -432,7 +434,7 @@ export function createHistorySyncRunner(input: HistorySyncRunnerDependencies) {
         const projectMappings = yield* input.readProjectMappings;
         const unpushedLocalEvents = yield* input.readUnpushedLocalEvents;
         const projectionThreadRows = yield* input.readProjectionThreadAutosyncRows;
-        const remoteCoveredReceiptEvents = selectAutosaveRemoteCoveredReceiptEvents({
+        const remoteCoveredReceiptEvents = planAutosaveRemoteCoveredReceipts({
           unpushedLocalEvents,
           remoteMaxSequence,
         });
@@ -449,33 +451,31 @@ export function createHistorySyncRunner(input: HistorySyncRunnerDependencies) {
             remoteMaxSequence,
           });
         }
-        const candidateLocalEvents = selectAutosaveCandidateLocalEvents({
+        const localPushPlan = planAutosaveLocalPush({
           localEvents,
           unpushedLocalEvents,
           remoteMaxSequence,
+          projectionThreadRows,
           ...(options.autosaveMaxSequence !== undefined
             ? { maxSequence: options.autosaveMaxSequence }
             : {}),
         });
-        const pushableLocalEvents = selectAutosaveContiguousPushableEvents({
-          candidateEvents: candidateLocalEvents,
-          threadStates: classifyAutosyncThreadStates(localEvents, projectionThreadRows),
-        });
-        if (pushableLocalEvents.length > 0) {
+        if (localPushPlan.action === "push-local") {
           console.info("[history-sync] autosaving local pending history", {
-            pendingEvents: pushableLocalEvents.length,
-            deferredEvents: candidateLocalEvents.length - pushableLocalEvents.length,
+            pendingEvents: localPushPlan.pushableEvents.length,
+            deferredEvents:
+              localPushPlan.candidateEvents.length - localPushPlan.pushableEvents.length,
             localMaxSequence,
             lastSyncedRemoteSequence: Math.max(lastSyncedRemoteSequence, remoteMaxSequence),
             remoteMaxSequence,
           });
           yield* input.pushRemoteEventsBatched(
             connectionString,
-            rewriteLocalEventsForRemoteMappings(pushableLocalEvents, projectMappings),
+            rewriteLocalEventsForRemoteMappings(localPushPlan.pushableEvents, projectMappings),
           );
           const now = new Date().toISOString();
           yield* commitAfterRemoteWrite({
-            pushedEvents: pushableLocalEvents,
+            pushedEvents: localPushPlan.pushableEvents,
             previousRemoteSequence: Math.max(lastSyncedRemoteSequence, remoteMaxSequence),
             pushedAt: now,
           });
@@ -635,27 +635,20 @@ export function createHistorySyncRunner(input: HistorySyncRunnerDependencies) {
             });
           });
 
-        if (state?.initialSyncPhase) {
-          const mergeEventsForLocal =
-            localEvents.length === 0
-              ? []
-              : buildFirstSyncClientMergeEvents(localEvents, remoteEventsForLocal);
-          const mergeEventsForRemote =
-            localEvents.length === 0
-              ? []
-              : buildFirstSyncClientMergeEvents(localEvents, remoteEvents, projectMappings);
-          const recoveryPlan = planFirstSyncRecovery({
-            phase: state.initialSyncPhase,
-            localEvents,
-            localEventsForRemote,
-            remoteEvents,
-            remoteEventsForLocal,
-            remoteMaxSequence,
-            mergeEventsForLocal,
-            mergeEventsForRemote,
-          });
+        const firstSyncPlan = planFirstSync({
+          initialSyncPhase: state?.initialSyncPhase ?? null,
+          localEvents,
+          localEventsForRemote,
+          remoteEvents,
+          remoteEventsForLocal,
+          remoteMaxSequence,
+          projectMappings,
+        });
+
+        if (firstSyncPlan.action === "recover") {
+          const recoveryPlan = firstSyncPlan.recoveryPlan;
           console.info("[history-sync] first sync recovery planned", {
-            phase: state.initialSyncPhase,
+            phase: state?.initialSyncPhase ?? null,
             action: recoveryPlan.action,
           });
           if (recoveryPlan.action === "continue-local-push") {
@@ -678,43 +671,22 @@ export function createHistorySyncRunner(input: HistorySyncRunnerDependencies) {
           }
         }
 
-        if (
-          shouldPushLocalHistoryOnFirstSync({
-            hasCompletedInitialSync,
-            localEventCount: localEvents.length,
-            remoteEventCount: remoteEvents.length,
-          })
-        ) {
+        if (firstSyncPlan.action === "local-push") {
           console.info("[history-sync] first sync pushing local history to empty remote", {
             localEvents: localEvents.length,
             localMaxSequence,
           });
-          yield* runFirstSyncLocalPush({
-            pushEvents: localEventsForRemote,
-            receiptEvents: localEvents,
-            nextRemoteSequence: localMaxSequence,
-          });
+          yield* runFirstSyncLocalPush(firstSyncPlan);
           return;
         }
+        if (firstSyncPlan.action !== "remote-import") {
+          return yield* Effect.fail(new Error("Unexpected first sync plan."));
+        }
 
-        const mergeEvents =
-          localEvents.length === 0
-            ? []
-            : buildFirstSyncClientMergeEvents(localEvents, remoteEventsForLocal);
-        const mergeEventsForRemote =
-          localEvents.length === 0
-            ? []
-            : buildFirstSyncClientMergeEvents(localEvents, remoteEvents, projectMappings);
         console.info("[history-sync] first sync client merge computed", {
-          mergedEvents: mergeEvents.length,
+          mergedEvents: firstSyncPlan.importedEvents.length - remoteEventsForLocal.length,
         });
-        const importedEvents = [...remoteEventsForLocal, ...mergeEvents];
-        yield* runFirstSyncRemoteImport({
-          pushEvents: mergeEventsForRemote,
-          importedEvents,
-          receiptEvents: importedEvents,
-          nextRemoteSequence: maxHistoryEventSequence(mergeEventsForRemote, remoteMaxSequence),
-        });
+        yield* runFirstSyncRemoteImport(firstSyncPlan);
         return;
       }
 
@@ -893,10 +865,13 @@ export function createHistorySyncRunner(input: HistorySyncRunnerDependencies) {
               .pipe(Effect.ignoreCause({ log: true }));
           }
           const retryAttempt = options.retryAttempt ?? 1;
-          const retryDelayMs =
-            options.mode === "autosave" && input.isRetryableConnectionFailure(cause)
-              ? nextHistorySyncRetryDelayMs(retryAttempt)
-              : null;
+          const retryDelayMs = shouldRetryHistorySyncFailure({
+            mode: options.mode,
+            cause,
+            isRetryableConnectionFailure: input.isRetryableConnectionFailure,
+          })
+            ? nextHistorySyncRetryDelayMs(retryAttempt)
+            : null;
           if (retryDelayMs !== null) {
             const failedAt = new Date().toISOString();
             const firstFailedAt = options.retryContext?.firstFailedAt ?? failedAt;

@@ -48,6 +48,12 @@ function remoteMaxSequence(events: readonly HistorySyncEventRow[]): number {
   return maxHistoryEventSequence(events);
 }
 
+export function planProjectMappingApplyContinuation(
+  state: Pick<HistorySyncStateRow, "hasCompletedInitialSync"> | null,
+): "sync-now" | "start-initial-sync" {
+  return state?.hasCompletedInitialSync === 1 ? "sync-now" : "start-initial-sync";
+}
+
 export function createHistorySyncProjectMappingController(
   input: HistorySyncProjectMappingControllerDependencies,
 ) {
@@ -92,7 +98,8 @@ export function createHistorySyncProjectMappingController(
       });
       yield* input.clearStopped();
       const state = yield* input.readState;
-      if (state?.hasCompletedInitialSync === 1) {
+      const continuation = planProjectMappingApplyContinuation(state);
+      if (continuation === "sync-now") {
         yield* input.syncNow();
       } else {
         yield* input.startInitialSync();

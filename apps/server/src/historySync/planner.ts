@@ -108,6 +108,44 @@ export type HistorySyncFirstSyncRecoveryPlan =
       readonly message: string;
     };
 
+export type HistorySyncFirstSyncPlan =
+  | {
+      readonly action: "local-push";
+      readonly pushEvents: readonly HistorySyncEventRow[];
+      readonly receiptEvents: readonly HistorySyncEventRow[];
+      readonly nextRemoteSequence: number;
+    }
+  | {
+      readonly action: "remote-import";
+      readonly pushEvents: readonly HistorySyncEventRow[];
+      readonly importedEvents: readonly HistorySyncEventRow[];
+      readonly receiptEvents: readonly HistorySyncEventRow[];
+      readonly nextRemoteSequence: number;
+    }
+  | {
+      readonly action: "recover";
+      readonly recoveryPlan: HistorySyncFirstSyncRecoveryPlan;
+    };
+
+export type HistorySyncAutosavePlan =
+  | {
+      readonly action: "accept-remote-delta";
+      readonly remoteCoveredEvents: readonly HistorySyncEventRow[];
+    }
+  | {
+      readonly action: "push-local";
+      readonly candidateEvents: readonly HistorySyncEventRow[];
+      readonly pushableEvents: readonly HistorySyncEventRow[];
+    }
+  | {
+      readonly action: "remote-conflict";
+      readonly remoteDeltaEvents: readonly HistorySyncEventRow[];
+      readonly unknownRemoteDeltaEvents: readonly HistorySyncEventRow[];
+    }
+  | {
+      readonly action: "idle";
+    };
+
 export function maxHistoryEventSequence(
   events: readonly HistorySyncEventRow[],
   initial = 0,
@@ -677,6 +715,97 @@ export function planFirstSyncRecovery(input: {
   };
 }
 
+export function buildFirstSyncRecoveryMergeEvents(input: {
+  readonly localEvents: readonly HistorySyncEventRow[];
+  readonly remoteEvents: readonly HistorySyncEventRow[];
+  readonly remoteEventsForLocal: readonly HistorySyncEventRow[];
+  readonly projectMappings: readonly HistorySyncProjectMappingRow[];
+}): {
+  readonly mergeEventsForLocal: readonly HistorySyncEventRow[];
+  readonly mergeEventsForRemote: readonly HistorySyncEventRow[];
+} {
+  if (input.localEvents.length === 0) {
+    return {
+      mergeEventsForLocal: [],
+      mergeEventsForRemote: [],
+    };
+  }
+  return {
+    mergeEventsForLocal: buildFirstSyncClientMergeEvents(
+      input.localEvents,
+      input.remoteEventsForLocal,
+    ),
+    mergeEventsForRemote: buildFirstSyncClientMergeEvents(
+      input.localEvents,
+      input.remoteEvents,
+      input.projectMappings,
+    ),
+  };
+}
+
+export function planFirstSync(input: {
+  readonly initialSyncPhase?: HistorySyncFirstSyncRecoveryPhase | null;
+  readonly localEvents: readonly HistorySyncEventRow[];
+  readonly localEventsForRemote: readonly HistorySyncEventRow[];
+  readonly remoteEvents: readonly HistorySyncEventRow[];
+  readonly remoteEventsForLocal: readonly HistorySyncEventRow[];
+  readonly remoteMaxSequence: number;
+  readonly projectMappings: readonly HistorySyncProjectMappingRow[];
+}): HistorySyncFirstSyncPlan {
+  const mergeEvents = buildFirstSyncRecoveryMergeEvents({
+    localEvents: input.localEvents,
+    remoteEvents: input.remoteEvents,
+    remoteEventsForLocal: input.remoteEventsForLocal,
+    projectMappings: input.projectMappings,
+  });
+
+  if (input.initialSyncPhase) {
+    const recoveryPlan = planFirstSyncRecovery({
+      phase: input.initialSyncPhase,
+      localEvents: input.localEvents,
+      localEventsForRemote: input.localEventsForRemote,
+      remoteEvents: input.remoteEvents,
+      remoteEventsForLocal: input.remoteEventsForLocal,
+      remoteMaxSequence: input.remoteMaxSequence,
+      mergeEventsForLocal: mergeEvents.mergeEventsForLocal,
+      mergeEventsForRemote: mergeEvents.mergeEventsForRemote,
+    });
+    if (recoveryPlan.action !== "restart") {
+      return {
+        action: "recover",
+        recoveryPlan,
+      };
+    }
+  }
+
+  if (
+    shouldPushLocalHistoryOnFirstSync({
+      hasCompletedInitialSync: false,
+      localEventCount: input.localEvents.length,
+      remoteEventCount: input.remoteEvents.length,
+    })
+  ) {
+    return {
+      action: "local-push",
+      pushEvents: input.localEventsForRemote,
+      receiptEvents: input.localEvents,
+      nextRemoteSequence: maxHistoryEventSequence(input.localEventsForRemote),
+    };
+  }
+
+  const importedEvents = [...input.remoteEventsForLocal, ...mergeEvents.mergeEventsForLocal];
+  return {
+    action: "remote-import",
+    pushEvents: mergeEvents.mergeEventsForRemote,
+    importedEvents,
+    receiptEvents: importedEvents,
+    nextRemoteSequence: maxHistoryEventSequence(
+      mergeEvents.mergeEventsForRemote,
+      input.remoteMaxSequence,
+    ),
+  };
+}
+
 export function isRemoteBehindLocal(input: {
   readonly hasCompletedInitialSync: boolean;
   readonly localMaxSequence: number;
@@ -914,6 +1043,65 @@ export function selectAutosaveContiguousPushableEvents(input: {
     pushable.push(event);
   }
   return pushable;
+}
+
+export function planAutosaveRemoteDelta(input: {
+  readonly remoteDeltaEvents: readonly HistorySyncEventRow[];
+  readonly localEvents: readonly HistorySyncEventRow[];
+}): HistorySyncAutosavePlan {
+  const unknownRemoteDeltaEvents = selectUnknownRemoteDeltaEvents({
+    remoteEvents: input.remoteDeltaEvents,
+    localEvents: input.localEvents,
+  });
+  if (unknownRemoteDeltaEvents.length > 0) {
+    return {
+      action: "remote-conflict",
+      remoteDeltaEvents: input.remoteDeltaEvents,
+      unknownRemoteDeltaEvents,
+    };
+  }
+  return {
+    action: "accept-remote-delta",
+    remoteCoveredEvents: selectKnownRemoteDeltaLocalEvents({
+      remoteEvents: input.remoteDeltaEvents,
+      localEvents: input.localEvents,
+    }),
+  };
+}
+
+export function planAutosaveRemoteCoveredReceipts(input: {
+  readonly unpushedLocalEvents: readonly HistorySyncEventRow[];
+  readonly remoteMaxSequence: number;
+}): readonly HistorySyncEventRow[] {
+  return selectAutosaveRemoteCoveredReceiptEvents(input);
+}
+
+export function planAutosaveLocalPush(input: {
+  readonly localEvents: readonly HistorySyncEventRow[];
+  readonly unpushedLocalEvents: readonly HistorySyncEventRow[];
+  readonly projectionThreadRows: readonly HistorySyncAutosyncProjectionThreadRow[];
+  readonly remoteMaxSequence: number;
+  readonly maxSequence?: number;
+}): HistorySyncAutosavePlan {
+  const candidateEvents = selectAutosaveCandidateLocalEvents({
+    localEvents: input.localEvents,
+    unpushedLocalEvents: input.unpushedLocalEvents,
+    remoteMaxSequence: input.remoteMaxSequence,
+    ...(input.maxSequence !== undefined ? { maxSequence: input.maxSequence } : {}),
+  });
+  const pushableEvents = selectAutosaveContiguousPushableEvents({
+    candidateEvents,
+    threadStates: classifyAutosyncThreadStates(input.localEvents, input.projectionThreadRows),
+  });
+  if (pushableEvents.length > 0) {
+    return {
+      action: "push-local",
+      candidateEvents,
+      pushableEvents,
+    };
+  }
+
+  return { action: "idle" };
 }
 
 export function shouldScheduleAutosaveForDomainEvent(event: OrchestrationEvent): boolean {

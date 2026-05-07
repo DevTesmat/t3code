@@ -265,6 +265,33 @@ layer("history sync project mapping repository", (it) => {
     }),
   );
 
+  it.effect("keeps basename suggestions unresolved and does not auto-persist them", () =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      yield* runMigrations({ toMigrationInclusive: 36 });
+      yield* insertLocalProject(sql, {
+        projectId: "local-api",
+        workspaceRoot: "/Users/me/api",
+      });
+
+      const plan = yield* buildProjectMappingPlanFromEvents(sql, {
+        remoteEvents: [
+          projectCreated(1, "remote-api", "/Volumes/remote/api"),
+          threadCreated(2, "thread-api", "remote-api"),
+        ],
+        remoteMaxSequence: 2,
+      });
+
+      assert.strictEqual(plan.candidates[0]?.suggestedLocalProjectId, "local-api");
+      assert.strictEqual(plan.candidates[0]?.suggestionReason, "basename");
+      assert.strictEqual(plan.candidates[0]?.status, "unresolved");
+      assert.strictEqual(
+        (yield* readValidProjectMappings(sql)).some((row) => row.remoteProjectId === "remote-api"),
+        false,
+      );
+    }),
+  );
+
   it.effect("invalidates mapping apply sync id when local projects drift", () =>
     Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient;

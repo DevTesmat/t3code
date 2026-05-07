@@ -7,6 +7,10 @@ import {
   countActiveThreadCreates,
   filterAlreadyImportedRemoteDeltaEvents,
   isRemoteBehindLocal,
+  planAutosaveLocalPush,
+  planAutosaveRemoteCoveredReceipts,
+  planAutosaveRemoteDelta,
+  planFirstSync,
   planLocalCommitAfterRemoteWrite,
   planFirstSyncRecovery,
   planLocalReplacementFromRemote,
@@ -151,6 +155,57 @@ describe("history sync planner", () => {
 
     expect(merged.map((row) => row.sequence)).toEqual([3, 4]);
     expect(merged.map((row) => row.streamId)).toEqual(["project-local", "thread-local"]);
+  });
+
+  test("first sync planner selects local push, remote import, and recovery decisions", () => {
+    const local = [projectCreated(1, "project-a"), threadCreated(2, "thread-a")];
+    const remote = [projectCreated(1, "project-remote")];
+
+    expect(
+      planFirstSync({
+        localEvents: local,
+        localEventsForRemote: local,
+        remoteEvents: [],
+        remoteEventsForLocal: [],
+        remoteMaxSequence: 0,
+        projectMappings: [],
+      }),
+    ).toMatchObject({
+      action: "local-push",
+      pushEvents: local,
+      receiptEvents: local,
+      nextRemoteSequence: 2,
+    });
+
+    expect(
+      planFirstSync({
+        localEvents: local,
+        localEventsForRemote: local,
+        remoteEvents: remote,
+        remoteEventsForLocal: remote,
+        remoteMaxSequence: 1,
+        projectMappings: [],
+      }),
+    ).toMatchObject({
+      action: "remote-import",
+      importedEvents: expect.arrayContaining(remote),
+      nextRemoteSequence: 3,
+    });
+
+    expect(
+      planFirstSync({
+        initialSyncPhase: "backup",
+        localEvents: local,
+        localEventsForRemote: local,
+        remoteEvents: remote,
+        remoteEventsForLocal: remote,
+        remoteMaxSequence: 1,
+        projectMappings: [],
+      }),
+    ).toMatchObject({
+      action: "remote-import",
+      importedEvents: expect.arrayContaining(remote),
+    });
   });
 
   test("first sync recovery continues local push when remote is still empty", () => {
@@ -438,6 +493,58 @@ describe("history sync planner", () => {
       }),
     ).toEqual([]);
     expect(countActiveThreadCreates(local)).toBe(2);
+  });
+
+  test("autosave planner separates remote conflict, covered receipts, and local push decisions", () => {
+    const local = [threadCreated(1, "thread-done"), turnDiffCompleted(2, "thread-done", "turn")];
+    const remoteDelta = [{ ...local[1]!, sequence: 3 }];
+    const unknownRemoteDelta = [messageSent(4, "thread-remote", "remote")];
+
+    expect(
+      planAutosaveRemoteDelta({
+        remoteDeltaEvents: remoteDelta,
+        localEvents: local,
+      }),
+    ).toEqual({
+      action: "accept-remote-delta",
+      remoteCoveredEvents: [local[1]],
+    });
+    expect(
+      planAutosaveRemoteDelta({
+        remoteDeltaEvents: unknownRemoteDelta,
+        localEvents: local,
+      }),
+    ).toMatchObject({
+      action: "remote-conflict",
+      unknownRemoteDeltaEvents: unknownRemoteDelta,
+    });
+    expect(
+      planAutosaveRemoteCoveredReceipts({
+        unpushedLocalEvents: local,
+        remoteMaxSequence: 1,
+      }),
+    ).toEqual([local[0]]);
+    expect(
+      planAutosaveLocalPush({
+        localEvents: local,
+        unpushedLocalEvents: local,
+        remoteMaxSequence: 0,
+        projectionThreadRows: [
+          {
+            threadId: "thread-done",
+            pendingUserInputCount: 0,
+            hasActionableProposedPlan: 0,
+            latestTurnId: null,
+            sessionStatus: "ready",
+            sessionActiveTurnId: null,
+          },
+        ],
+      }),
+    ).toMatchObject({
+      action: "push-local",
+      candidateEvents: local,
+      pushableEvents: local,
+    });
   });
 
   test.each([

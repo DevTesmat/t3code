@@ -82,25 +82,25 @@ extract testable boundaries, then harden risky paths.
 
 ## Feature-Purpose Inventory
 
-| Capability                                    | Label           | Purpose / note                                                                                                  |
-| --------------------------------------------- | --------------- | --------------------------------------------------------------------------------------------------------------- |
-| MySQL connection config and secret storage    | Keep            | Required for user-controlled remote history storage. Keep password secret-only.                                 |
-| Explicit first sync                           | Keep            | Important safety gate before destructive local import.                                                          |
-| Pre-sync SQLite backup                        | Keep, harden    | Required rollback path for first sync. Needs schema/table compatibility checks.                                 |
-| Push local to empty remote on first sync      | Keep            | Best path for single-device setup.                                                                              |
-| Merge local client events after remote import | Keep, split     | Preserves local work during first sync. Move to pure planner tests before refactor.                             |
-| Project mapping wizard                        | Keep, simplify  | Required when workspace roots differ between machines. Split planner from persistence.                          |
-| Exact-path auto mapping                       | Keep            | Low-risk convenience. Test stale/changed local project behavior.                                                |
-| Basename suggestion                           | Keep cautiously | Useful but under-justified for reliability; never auto-apply.                                                   |
-| `map-folder.createIfMissing` field            | Removed         | Contract no longer exposes folder creation because server only records a generated project ID.                  |
-| `repo-identity` suggestion reason             | Removed         | Contract no longer exposes this suggestion because server never produced it.                                    |
-| Local pushed-event receipts                   | Keep            | Core to avoiding duplicate pushes after imports and upgrades.                                                   |
-| Remote-behind-local repair                    | Keep, harden    | Important for remote reset/recovery; should be planned and tested separately.                                   |
-| Replace empty/unprojected local from remote   | Keep, harden    | Useful restart/recovery path, but destructive and projection-count based.                                       |
-| Autosave                                      | Keep, split     | Central IDE reliability workflow; should remain conservative under conflicts.                                   |
-| Retry autosave connection failures            | Keep            | Good reliability behavior for transient network outages. Consider extending to manual sync only if UX wants it. |
-| Module-level latest status/control globals    | Simplify        | Works for current RPC wiring, but obscures lifecycle readiness and test isolation.                              |
-| Snapshot reload on `idle` status              | Keep, harden    | Required for UI to see imported/restored history; should report reload failure distinctly.                      |
+| Capability                                    | Label          | Purpose / note                                                                                                                |
+| --------------------------------------------- | -------------- | ----------------------------------------------------------------------------------------------------------------------------- |
+| MySQL connection config and secret storage    | Keep           | Required for user-controlled remote history storage. Keep password secret-only.                                               |
+| Explicit first sync                           | Keep           | Important safety gate before destructive local import.                                                                        |
+| Pre-sync SQLite backup                        | Keep, hardened | Required rollback path for first sync. Schema/table compatibility and missing-backup guidance are covered.                    |
+| Push local to empty remote on first sync      | Keep           | Best path for single-device setup.                                                                                            |
+| Merge local client events after remote import | Keep, split    | Preserves local work during first sync; merge/recovery decisions are planner-owned and runner-executed.                       |
+| Project mapping wizard                        | Keep, split    | Required when workspace roots differ between machines; persistence, RPC orchestration, and continuation policy are separated. |
+| Exact-path auto mapping                       | Keep, covered  | Low-risk convenience with stale/changed local project behavior covered.                                                       |
+| Basename suggestion                           | Keep, explicit | Useful suggestion only; never auto-applied and covered as unresolved planner output.                                          |
+| `map-folder.createIfMissing` field            | Removed        | Contract no longer exposes folder creation because server only records a generated project ID.                                |
+| `repo-identity` suggestion reason             | Removed        | Contract no longer exposes this suggestion because server never produced it.                                                  |
+| Local pushed-event receipts                   | Keep           | Core to avoiding duplicate pushes after imports and upgrades.                                                                 |
+| Remote-behind-local repair                    | Keep, hardened | Important for remote reset/recovery; now shares the receipt/state commit planner.                                             |
+| Replace empty/unprojected local from remote   | Keep, hardened | Useful restart/recovery path; destructive decisions are explicit planner output.                                              |
+| Autosave                                      | Keep, split    | Central IDE reliability workflow; conflict, receipt, and push decisions are planner-owned and runner-executed.                |
+| Retry autosave connection failures            | Keep, explicit | Autosave-only retry is intentional; manual/full/initial retry remains out of scope unless UX requests it.                     |
+| Module-level latest status/control globals    | Keep, explicit | Compatibility bridge; config fallback and not-ready manual dispatch are documented by facade tests.                           |
+| Snapshot reload on `idle` status              | Keep, covered  | Required for UI to see imported/restored history; projection reload failures are normalized and tested.                       |
 
 ## Future Boundaries
 
@@ -222,6 +222,14 @@ imports. New server-internal code should import from the direct owner modules.
 - Completed: first-sync recovery edge coverage now covers backup-phase restart,
   mapped/skipped project rewrites during recovery, missing backup restore/config
   visibility, and collision-rescue blocked recovery.
+- Completed: final audited split work moved first-sync orchestration decisions
+  and autosave conflict/receipt/push decisions behind named planner helpers
+  while preserving runner-owned side effects.
+- Completed: final project-mapping simplification made apply continuation a
+  named controller policy and locked basename suggestions as unresolved,
+  non-auto-persisted planner output.
+- Completed: retry scope is now explicit and tested as autosave-only for
+  retryable connection failures.
 - Next due item: no named remaining hardening backlog item.
 - Remaining work should focus on behavior hardening, not further mechanical
   extraction, unless a new owner boundary becomes clearly useful.
@@ -236,37 +244,40 @@ imports. New server-internal code should import from the direct owner modules.
 - If a task is intentionally deferred or blocked, state the blocker and name the
   next actionable task instead of implying the backlog is complete.
 
-## Reliability Risks
+## Residual Review
 
-- Import transactions protect SQLite writes, but remote pushes are not
-  transactional with local state writes. Receipts/state must be idempotent and
-  recomputable.
-- Autosave conflict handling stops further autosave on unknown remote events and
-  now presents manual Sync now recovery copy while preserving the same blocking
-  safety behavior.
-- Failed or interrupted syncs now run lifecycle stale-sync recovery so a stuck
-  `syncing` status is republished as `error` instead of lingering forever.
-- Initial sync recovery is now automatic for provably safe phase retries, but
-  collision-rescue merges, partial remote coverage, and unexpected remote drift
-  still require manual review because regenerated or ambiguous events cannot be
-  proven idempotent from current metadata.
-- Receipt and sync-state writes now commit through one local path after remote
-  work succeeds; remote MySQL pushes are still outside the SQLite transaction,
-  so idempotency and recomputation remain required.
-- Project mappings are validated against current local project rows before use,
-  but mapping UX still relies on the existing stale-plan error when local drift
-  happens between wizard load and apply.
-- Backup restore validates all manifest restore tables before destructive
-  deletes, and the table manifest guard should be updated whenever new
-  history-derived tables are added.
-- Projection reload failure after import/restore can leave event storage updated
-  but UI projections stale. Treat reload failure as a first-class sync failure.
-- Startup uses module-level readiness globals. RPCs before service init fail
-  with "not ready" except config, which returns a disabled fallback; this
-  mismatch should be made explicit.
-- `clearLocalHistory` and restore table lists now share one manifest, but future
-  migrations adding history-derived tables must classify them in that manifest
-  or intentionally exclude them.
+- Accepted invariant: remote MySQL pushes are not transactional with local
+  SQLite writes. This is expected across two stores; receipt/state commits are
+  idempotent and recomputable through the shared planner path.
+- Covered: autosave conflict handling intentionally stops autosave on unknown
+  newer remote events, exposes Sync now recovery copy, and keeps conflict,
+  receipt, and push decisions in pure planner helpers.
+- Accepted retry scope: only autosave retries retryable connection failures.
+  Manual/full/initial syncs still surface errors immediately so semantic
+  conflicts and explicit user actions are not retried unexpectedly.
+- Covered: failed or interrupted syncs run lifecycle stale-sync recovery so a
+  stuck `syncing` status is republished as `error`.
+- Accepted conservative branch: initial sync recovery automatically resumes only
+  provable phase retries. Collision rescue, partial merge coverage, and
+  unexpected remote drift stay manual-review paths and have explicit
+  runner/planner coverage.
+- Covered: project mappings are validated against current local project rows.
+  Drift between wizard load and apply intentionally fails through the existing
+  stale-plan path.
+- Covered: basename mapping suggestions remain suggestions only. Exact-path
+  matches can auto-persist, but basename matches stay unresolved until the user
+  explicitly maps or skips them.
+- Covered: backup restore validates manifest table compatibility before
+  destructive deletes; missing backup guidance is tested at backup, restore, and
+  config-controller boundaries.
+- Covered: projection reload failure after import/restore is normalized as a
+  first-class `HistorySyncConfigError` and tested.
+- Covered compatibility behavior: module-level facade globals keep a disabled
+  config fallback before service registration while manual operations fail with
+  "not ready"; facade tests document the contract.
+- Covered guardrail: `clearLocalHistory` and restore table lists share
+  `tableManifest.ts`; migration-backed manifest tests require future
+  history-derived tables to be classified or explicitly excluded.
 
 ## Test Matrix
 
@@ -299,4 +310,6 @@ split. Avoid brittle end-to-end MySQL/browser tests for core correctness.
 
 ## Remaining Hardening Backlog
 
-No named remaining hardening backlog item.
+No named remaining hardening backlog item. All residual audit entries are
+classified above as covered behavior or accepted invariants rather than due
+work.
