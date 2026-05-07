@@ -138,12 +138,21 @@ RPC imports and tests can move gradually.
 - Completed: `historySync/projectMappings.ts` now owns mapping
   persistence, sync IDs, exact-path/basename suggestions, mapping plan creation,
   exact-path auto-persist, and map/skip/map-folder action application.
-- Active slice: `historySync/backup.ts` is being split out for backup path
-  handling, backup summary reads, pre-sync backup creation, restore table copy,
-  attach/detach handling, and restore error normalization.
-- Remaining after the active slice: backup schema validation, status bus and
-  lifecycle/service split, projection reload failure handling, contract drift
-  cleanup, and destructive recovery path review.
+- Completed: `historySync/backup.ts` now owns backup path handling, backup
+  summary reads, pre-sync backup creation, restore table copy, attach/detach
+  handling, and restore error normalization.
+- Completed: `historySync/statusBus.ts` now owns latest status state, status
+  logging, subscriber fanout, public status reads/subscriptions, and the service
+  publish bridge.
+- Completed: `historySync/lifecycle.ts` now owns run locking, stopped-state
+  handling, startup scheduling, autosave debouncing, shutdown flush, and status
+  stream exposure.
+- Active slice: `historySync/projectionReload.ts` is being split out for
+  projection reload calls, projection progress fanout, and reload failure
+  normalization.
+- Remaining after the active slice: backup schema validation,
+  contract drift cleanup, destructive recovery path review, and any remaining
+  service facade simplification.
 
 ## Reliability Risks
 

@@ -8,7 +8,7 @@ import {
   type HistorySyncStatus,
   type HistorySyncUpdateConfigInput,
 } from "@t3tools/contracts";
-import { Context, Duration, Effect, Layer, PubSub, Ref, Scope, Stream } from "effect";
+import { Context, Effect, Layer, PubSub, Ref, Scope, Stream } from "effect";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 
 import { ServerSecretStore } from "./auth/Services/ServerSecretStore.ts";
@@ -16,21 +16,29 @@ import { ServerConfig } from "./config.ts";
 import { ServerSettingsService } from "./serverSettings.ts";
 import type { ServerSettingsError } from "@t3tools/contracts";
 import { OrchestrationEngineService } from "./orchestration/Services/OrchestrationEngine.ts";
-import {
-  type ProjectionBootstrapProgress,
-  subscribeProjectionBootstrapProgress,
-} from "./orchestration/Layers/ProjectionPipeline.ts";
 import * as HistorySyncBackup from "./historySync/backup.ts";
 import * as LocalHistoryRepository from "./historySync/localRepository.ts";
+import {
+  createHistorySyncLifecycleController,
+  type HistorySyncMode,
+} from "./historySync/lifecycle.ts";
 import * as ProjectMappings from "./historySync/projectMappings.ts";
+import {
+  reloadHistorySyncProjections,
+  type HistorySyncProgress,
+} from "./historySync/projectionReload.ts";
+import {
+  DISABLED_HISTORY_SYNC_STATUS,
+  publishHistorySyncStatus,
+  readHistorySyncStatus,
+} from "./historySync/statusBus.ts";
+
+export { readHistorySyncStatus, subscribeHistorySyncStatus } from "./historySync/statusBus.ts";
 
 export const HISTORY_SYNC_CONNECTION_STRING_SECRET = "history-sync-mysql-connection-string";
 
 const textDecoder = new TextDecoder();
 const textEncoder = new TextEncoder();
-const DISABLED_HISTORY_SYNC_STATUS: HistorySyncStatus = { state: "disabled", configured: false };
-let latestHistorySyncStatus: HistorySyncStatus = DISABLED_HISTORY_SYNC_STATUS;
-const historySyncStatusSubscribers = new Set<(status: HistorySyncStatus) => Effect.Effect<void>>();
 let latestHistorySyncControl: Pick<
   HistorySyncServiceShape,
   | "getConfig"
@@ -47,17 +55,8 @@ const defaultHistorySyncTiming = {
   shutdownFlushTimeoutMs: 5_000,
 };
 const HISTORY_SYNC_OPERATION_TIMEOUT_MS = 10 * 60_000;
-const HISTORY_SYNC_STARTUP_DELAY_MS = 15_000;
-const HISTORY_SYNC_AUTOSAVE_DEBOUNCE_MS = 5_000;
 const HISTORY_SYNC_RETRY_DELAYS_MS = [10_000, 3 * 60_000, 10 * 60_000, 10 * 60_000, 10 * 60_000];
 const HISTORY_SYNC_RECENT_FAILURE_LIMIT = 5;
-
-interface HistorySyncProgress {
-  readonly phase: string;
-  readonly label: string;
-  readonly current: number;
-  readonly total: number;
-}
 
 interface HistorySyncRetryFailure {
   readonly failedAt: string;
@@ -114,77 +113,13 @@ function clampHistorySyncProgress(progress: HistorySyncProgress): HistorySyncPro
   };
 }
 
-function projectionProgressLabel(progress: ProjectionBootstrapProgress): string {
-  return `Projecting ${progress.projector.replace(/^projection\./, "").replace(/-/g, " ")}`;
-}
-
-function logHistorySyncStatus(status: HistorySyncStatus): void {
-  switch (status.state) {
-    case "disabled":
-      console.info("[history-sync] disabled", { configured: status.configured });
-      return;
-    case "needs-initial-sync":
-      console.info("[history-sync] waiting for explicit initial sync", {
-        configured: status.configured,
-        lastSyncedAt: status.lastSyncedAt,
-      });
-      return;
-    case "syncing":
-      console.info("[history-sync] syncing", {
-        startedAt: status.startedAt,
-        lastSyncedAt: status.lastSyncedAt,
-      });
-      return;
-    case "retrying":
-      console.warn("[history-sync] retrying after connection failure", {
-        message: status.message,
-        attempt: status.attempt,
-        maxAttempts: status.maxAttempts,
-        nextRetryAt: status.nextRetryAt,
-        lastSyncedAt: status.lastSyncedAt,
-      });
-      return;
-    case "idle":
-      console.info("[history-sync] idle", { lastSyncedAt: status.lastSyncedAt });
-      return;
-    case "error":
-      console.error("[history-sync] stopped after error", {
-        message: status.message,
-        lastSyncedAt: status.lastSyncedAt,
-      });
-      return;
-    case "needs-project-mapping":
-      console.warn("[history-sync] waiting for project mapping", {
-        remoteMaxSequence: status.remoteMaxSequence,
-        unresolvedProjectCount: status.unresolvedProjectCount,
-        lastSyncedAt: status.lastSyncedAt,
-      });
-      return;
-  }
-}
-
-export function readHistorySyncStatus(): HistorySyncStatus {
-  return latestHistorySyncStatus;
-}
-
-export function subscribeHistorySyncStatus(
-  subscriber: (status: HistorySyncStatus) => Effect.Effect<void>,
-): Effect.Effect<() => void> {
-  return Effect.sync(() => {
-    historySyncStatusSubscribers.add(subscriber);
-    return () => {
-      historySyncStatusSubscribers.delete(subscriber);
-    };
-  });
-}
-
 export const getHistorySyncConfig = Effect.suspend(() =>
   latestHistorySyncControl
     ? latestHistorySyncControl.getConfig
     : Effect.succeed({
         enabled: false,
         configured: false,
-        status: latestHistorySyncStatus,
+        status: readHistorySyncStatus(),
         intervalMs: defaultHistorySyncTiming.intervalMs,
         shutdownFlushTimeoutMs: defaultHistorySyncTiming.shutdownFlushTimeoutMs,
         statusIndicatorEnabled: true,
@@ -344,8 +279,6 @@ import {
   toConnectionSummary,
 } from "./historySync/remoteStore.ts";
 
-type HistorySyncMode = "initial" | "full" | "autosave";
-
 export interface HistorySyncServiceShape {
   readonly start: Effect.Effect<void, never, Scope.Scope>;
   readonly syncNow: Effect.Effect<void>;
@@ -388,30 +321,11 @@ export const HistorySyncServiceLive = Layer.effect(
     const serverConfig = yield* ServerConfig;
     const statusRef = yield* Ref.make<HistorySyncStatus>(DISABLED_HISTORY_SYNC_STATUS);
     const statusPubSub = yield* PubSub.unbounded<HistorySyncStatus>();
-    const runningRef = yield* Ref.make(false);
-    const stoppedRef = yield* Ref.make(false);
-    const pendingAutosaveRef = yield* Ref.make(false);
     let syncNowEffect: Effect.Effect<void> = Effect.void;
+    let clearStoppedEffect: Effect.Effect<void> = Effect.void;
 
     const publishStatus = (status: HistorySyncStatus) =>
-      Effect.sync(() => {
-        latestHistorySyncStatus = status;
-        logHistorySyncStatus(status);
-      }).pipe(
-        Effect.andThen(
-          Effect.all(
-            [
-              Ref.set(statusRef, status),
-              PubSub.publish(statusPubSub, status),
-              ...[...historySyncStatusSubscribers].map((subscriber) =>
-                subscriber(status).pipe(Effect.ignore({ log: true })),
-              ),
-            ],
-            { concurrency: "unbounded" },
-          ),
-        ),
-        Effect.asVoid,
-      );
+      publishHistorySyncStatus({ status, statusRef, statusPubSub });
 
     const publishSyncProgress = (input: {
       readonly startedAt: string;
@@ -537,7 +451,7 @@ export const HistorySyncServiceLive = Layer.effect(
                   }),
               ),
             );
-          yield* Ref.set(stoppedRef, false);
+          yield* clearStoppedEffect;
         } else if (input.clearConnection) {
           yield* secretStore.remove(HISTORY_SYNC_CONNECTION_STRING_SECRET).pipe(
             Effect.mapError(
@@ -547,7 +461,7 @@ export const HistorySyncServiceLive = Layer.effect(
                 }),
             ),
           );
-          yield* Ref.set(stoppedRef, false);
+          yield* clearStoppedEffect;
         }
 
         const current = yield* settingsService.getSettings;
@@ -573,7 +487,7 @@ export const HistorySyncServiceLive = Layer.effect(
                 }),
             ),
           );
-          yield* Ref.set(stoppedRef, false);
+          yield* clearStoppedEffect;
           if (state?.hasCompletedInitialSync !== 1) {
             yield* publishStatus({
               state: "needs-initial-sync",
@@ -680,7 +594,7 @@ export const HistorySyncServiceLive = Layer.effect(
           remoteEvents,
           now,
         });
-        yield* Ref.set(stoppedRef, false);
+        yield* clearStoppedEffect;
         const state = yield* readState;
         if (state?.hasCompletedInitialSync === 1) {
           yield* syncNowEffect;
@@ -766,9 +680,9 @@ export const HistorySyncServiceLive = Layer.effect(
 
     const restoreBackupFromDisk = Effect.gen(function* () {
       yield* HistorySyncBackup.restoreBackupTablesFromDisk(sql, serverConfig.dbPath);
-      if (engine.reloadFromStorage) {
-        yield* engine.reloadFromStorage();
-      }
+      yield* engine.reloadFromStorage
+        ? reloadHistorySyncProjections({ reloadFromStorage: engine.reloadFromStorage })
+        : reloadHistorySyncProjections({});
       const restoredState = yield* readState.pipe(Effect.catch(() => Effect.succeed(null)));
       const connectionString = yield* getConnectionString;
       yield* publishStatus(
@@ -815,20 +729,11 @@ export const HistorySyncServiceLive = Layer.effect(
         yield* options.mode === "delta"
           ? importRemoteDeltaEvents(events)
           : importRemoteEvents(events);
-        if (engine.reloadFromStorage) {
-          const unsubscribe = yield* subscribeProjectionBootstrapProgress((progress) =>
-            publishSyncProgress({
-              ...context,
-              progress: {
-                phase: "projecting",
-                label: projectionProgressLabel(progress),
-                current: progress.projectedCount,
-                total: Math.max(1, progress.maxSequence),
-              },
-            }),
-          );
-          yield* engine.reloadFromStorage().pipe(Effect.ensuring(Effect.sync(unsubscribe)));
-        }
+        yield* reloadHistorySyncProjections({
+          ...(engine.reloadFromStorage ? { reloadFromStorage: engine.reloadFromStorage } : {}),
+          context,
+          publishProgress: publishSyncProgress,
+        });
         const projectionCounts = yield* readLocalProjectionCounts;
         console.info("[history-sync] local import projected", {
           importedEvents: events.length,
@@ -841,6 +746,7 @@ export const HistorySyncServiceLive = Layer.effect(
     const performSync = (options: {
       readonly mode: HistorySyncMode;
       readonly autosaveMaxSequence?: number;
+      readonly markStopped: Effect.Effect<void>;
       readonly retryAttempt?: number;
       readonly retryContext?: HistorySyncRetryContext;
     }): Effect.Effect<void> =>
@@ -922,7 +828,7 @@ export const HistorySyncServiceLive = Layer.effect(
                 remoteDeltaEvents: remoteDeltaEvents.length,
                 unknownRemoteDeltaEvents: unknownRemoteDeltaEvents.length,
               });
-              yield* Ref.set(stoppedRef, true);
+              yield* options.markStopped;
               yield* publishStatus({
                 state: "error",
                 configured: true,
@@ -1328,7 +1234,7 @@ export const HistorySyncServiceLive = Layer.effect(
               return;
             }
 
-            yield* Ref.set(stoppedRef, true);
+            yield* options.markStopped;
             const retryFailures = options.retryContext?.recentFailures;
             yield* publishStatus({
               state: "error",
@@ -1362,123 +1268,20 @@ export const HistorySyncServiceLive = Layer.effect(
         ),
       );
 
-    const runSyncMode = (
-      mode: HistorySyncMode,
-      options: { readonly clearStopped: boolean; readonly autosaveMaxSequence?: number },
-    ): Effect.Effect<void> =>
-      Effect.gen(function* () {
-        const running = yield* Ref.get(runningRef);
-        if (running) {
-          if (mode === "autosave") {
-            yield* Ref.set(pendingAutosaveRef, true);
-          }
-          return;
-        }
-        if (options.clearStopped) {
-          yield* Ref.set(stoppedRef, false);
-        } else {
-          const stopped = yield* Ref.get(stoppedRef);
-          if (stopped) return;
-        }
-        yield* Ref.set(runningRef, true);
-        yield* performSync({
-          mode,
-          ...(options.autosaveMaxSequence !== undefined
-            ? { autosaveMaxSequence: options.autosaveMaxSequence }
-            : {}),
-        }).pipe(
-          Effect.ensuring(
-            Effect.gen(function* () {
-              yield* Ref.set(runningRef, false);
-              const shouldReschedule = yield* Ref.getAndSet(pendingAutosaveRef, false);
-              if (shouldReschedule) {
-                yield* Effect.sleep(HISTORY_SYNC_AUTOSAVE_DEBOUNCE_MS).pipe(
-                  Effect.andThen(runSyncMode("autosave", { clearStopped: false })),
-                );
-              }
-            }),
-          ),
-        );
-      });
-
-    const syncNow: HistorySyncServiceShape["syncNow"] = runSyncMode("full", {
-      clearStopped: false,
+    const lifecycle = yield* createHistorySyncLifecycleController({
+      statusPubSub,
+      loadTiming: settingsService.getSettings.pipe(Effect.map((settings) => settings.historySync)),
+      defaultTiming: defaultHistorySyncTiming,
+      publishConfiguredStartupStatus,
+      performSync,
+      toConfig,
+      restoreBackupFromDisk,
+      streamDomainEvents: engine.streamDomainEvents,
+      shouldScheduleAutosaveForDomainEvent,
     });
+    const { start, syncNow, runSync, startInitialSync, restoreBackup } = lifecycle;
     syncNowEffect = syncNow;
-
-    const runSync: HistorySyncServiceShape["runSync"] = runSyncMode("full", {
-      clearStopped: true,
-    }).pipe(Effect.andThen(toConfig));
-
-    const startInitialSync: HistorySyncServiceShape["startInitialSync"] = Ref.get(runningRef).pipe(
-      Effect.flatMap((running) => {
-        if (running) return toConfig;
-        return Ref.set(stoppedRef, false).pipe(
-          Effect.andThen(Ref.set(runningRef, true)),
-          Effect.andThen(performSync({ mode: "initial" })),
-          Effect.ensuring(Ref.set(runningRef, false)),
-          Effect.andThen(toConfig),
-        );
-      }),
-    );
-
-    const restoreBackup: HistorySyncServiceShape["restoreBackup"] = Ref.get(runningRef).pipe(
-      Effect.flatMap((running) => {
-        if (running) {
-          return Effect.fail(
-            new HistorySyncConfigError({
-              message: "Cannot restore the history sync backup while sync is running.",
-            }),
-          );
-        }
-        return Ref.set(runningRef, true).pipe(
-          Effect.andThen(restoreBackupFromDisk),
-          Effect.ensuring(Ref.set(runningRef, false)),
-          Effect.andThen(toConfig),
-        );
-      }),
-    );
-
-    const start: HistorySyncServiceShape["start"] = Effect.gen(function* () {
-      const timing = yield* settingsService.getSettings.pipe(
-        Effect.map((settings) => settings.historySync),
-        Effect.catch((error) =>
-          Effect.logWarning("history sync using default timing because settings failed to load", {
-            cause: error,
-          }).pipe(Effect.as(defaultHistorySyncTiming)),
-        ),
-      );
-      const syncWhenNotRunning = Ref.get(runningRef).pipe(
-        Effect.flatMap((running) =>
-          running
-            ? Effect.void
-            : publishConfiguredStartupStatus.pipe(
-                Effect.flatMap((shouldSync) => (shouldSync ? syncNow : Effect.void)),
-              ),
-        ),
-      );
-      yield* Effect.sleep(HISTORY_SYNC_STARTUP_DELAY_MS).pipe(
-        Effect.andThen(syncWhenNotRunning),
-        Effect.forkScoped,
-      );
-      yield* Effect.addFinalizer(() =>
-        runSyncMode("autosave", { clearStopped: false }).pipe(
-          Effect.timeout(timing.shutdownFlushTimeoutMs),
-          Effect.ignore({ log: true }),
-        ),
-      );
-      yield* engine.streamDomainEvents.pipe(
-        Stream.filter(shouldScheduleAutosaveForDomainEvent),
-        Stream.debounce(Duration.millis(HISTORY_SYNC_AUTOSAVE_DEBOUNCE_MS)),
-        Stream.runForEach((event) =>
-          runSyncMode("autosave", {
-            clearStopped: false,
-            autosaveMaxSequence: event.sequence,
-          }),
-        ),
-        Effect.forkScoped,
-      );
-    });
+    clearStoppedEffect = lifecycle.clearStopped;
 
     latestHistorySyncControl = {
       getConfig: toConfig,
@@ -1504,7 +1307,7 @@ export const HistorySyncServiceLive = Layer.effect(
       getProjectMappings,
       applyProjectMappings,
       get streamStatus() {
-        return Stream.fromPubSub(statusPubSub);
+        return lifecycle.streamStatus;
       },
     } satisfies HistorySyncServiceShape;
   }),
