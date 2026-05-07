@@ -80,25 +80,25 @@ then harden the risky paths.
 
 ## Feature-Purpose Inventory
 
-| Capability                                    | Label               | Purpose / note                                                                                                  |
-| --------------------------------------------- | ------------------- | --------------------------------------------------------------------------------------------------------------- |
-| MySQL connection config and secret storage    | Keep                | Required for user-controlled remote history storage. Keep password secret-only.                                 |
-| Explicit first sync                           | Keep                | Important safety gate before destructive local import.                                                          |
-| Pre-sync SQLite backup                        | Keep, harden        | Required rollback path for first sync. Needs schema/table compatibility checks.                                 |
-| Push local to empty remote on first sync      | Keep                | Best path for single-device setup.                                                                              |
-| Merge local client events after remote import | Keep, split         | Preserves local work during first sync. Move to pure planner tests before refactor.                             |
-| Project mapping wizard                        | Keep, simplify      | Required when workspace roots differ between machines. Split planner from persistence.                          |
-| Exact-path auto mapping                       | Keep                | Low-risk convenience. Test stale/changed local project behavior.                                                |
-| Basename suggestion                           | Keep cautiously     | Useful but under-justified for reliability; never auto-apply.                                                   |
-| `map-folder.createIfMissing` field            | Remove or implement | Contract exposes it but server only records a generated project ID; no folder/project creation occurs.          |
-| `repo-identity` suggestion reason             | Remove or implement | Contract allows it but server never produces it.                                                                |
-| Local pushed-event receipts                   | Keep                | Core to avoiding duplicate pushes after imports and upgrades.                                                   |
-| Remote-behind-local repair                    | Keep, harden        | Important for remote reset/recovery; should be planned and tested separately.                                   |
-| Replace empty/unprojected local from remote   | Keep, harden        | Useful restart/recovery path, but destructive and projection-count based.                                       |
-| Autosave                                      | Keep, split         | Central IDE reliability workflow; should remain conservative under conflicts.                                   |
-| Retry autosave connection failures            | Keep                | Good reliability behavior for transient network outages. Consider extending to manual sync only if UX wants it. |
-| Module-level latest status/control globals    | Simplify            | Works for current RPC wiring, but obscures lifecycle readiness and test isolation.                              |
-| Snapshot reload on `idle` status              | Keep, harden        | Required for UI to see imported/restored history; should report reload failure distinctly.                      |
+| Capability                                    | Label           | Purpose / note                                                                                                  |
+| --------------------------------------------- | --------------- | --------------------------------------------------------------------------------------------------------------- |
+| MySQL connection config and secret storage    | Keep            | Required for user-controlled remote history storage. Keep password secret-only.                                 |
+| Explicit first sync                           | Keep            | Important safety gate before destructive local import.                                                          |
+| Pre-sync SQLite backup                        | Keep, harden    | Required rollback path for first sync. Needs schema/table compatibility checks.                                 |
+| Push local to empty remote on first sync      | Keep            | Best path for single-device setup.                                                                              |
+| Merge local client events after remote import | Keep, split     | Preserves local work during first sync. Move to pure planner tests before refactor.                             |
+| Project mapping wizard                        | Keep, simplify  | Required when workspace roots differ between machines. Split planner from persistence.                          |
+| Exact-path auto mapping                       | Keep            | Low-risk convenience. Test stale/changed local project behavior.                                                |
+| Basename suggestion                           | Keep cautiously | Useful but under-justified for reliability; never auto-apply.                                                   |
+| `map-folder.createIfMissing` field            | Removed         | Contract no longer exposes folder creation because server only records a generated project ID.                  |
+| `repo-identity` suggestion reason             | Removed         | Contract no longer exposes this suggestion because server never produced it.                                    |
+| Local pushed-event receipts                   | Keep            | Core to avoiding duplicate pushes after imports and upgrades.                                                   |
+| Remote-behind-local repair                    | Keep, harden    | Important for remote reset/recovery; should be planned and tested separately.                                   |
+| Replace empty/unprojected local from remote   | Keep, harden    | Useful restart/recovery path, but destructive and projection-count based.                                       |
+| Autosave                                      | Keep, split     | Central IDE reliability workflow; should remain conservative under conflicts.                                   |
+| Retry autosave connection failures            | Keep            | Good reliability behavior for transient network outages. Consider extending to manual sync only if UX wants it. |
+| Module-level latest status/control globals    | Simplify        | Works for current RPC wiring, but obscures lifecycle readiness and test isolation.                              |
+| Snapshot reload on `idle` status              | Keep, harden    | Required for UI to see imported/restored history; should report reload failure distinctly.                      |
 
 ## Future Boundaries
 
@@ -147,12 +147,14 @@ RPC imports and tests can move gradually.
 - Completed: `historySync/lifecycle.ts` now owns run locking, stopped-state
   handling, startup scheduling, autosave debouncing, shutdown flush, and status
   stream exposure.
-- Active slice: `historySync/projectionReload.ts` is being split out for
-  projection reload calls, projection progress fanout, and reload failure
-  normalization.
-- Remaining after the active slice: backup schema validation,
-  contract drift cleanup, destructive recovery path review, and any remaining
-  service facade simplification.
+- Completed: `historySync/projectionReload.ts` now owns projection reload calls,
+  projection progress fanout, and reload failure normalization.
+- Completed: backup restore schema preflight now validates attached backup table
+  compatibility before destructive restore deletes run.
+- Active slice: mapping contract drift cleanup is removing unused
+  `map-folder.createIfMissing` and `repo-identity` contract surface.
+- Remaining after the active slice: destructive recovery path review and any
+  remaining service facade simplification.
 
 ## Reliability Risks
 
@@ -204,8 +206,7 @@ split. Avoid brittle end-to-end MySQL/browser tests for core correctness.
     running lock, pending autosave reschedule, stopped autosave after error,
     manual sync clears stopped.
 - Contract/UI logic tests:
-  - remove or implement unused `createIfMissing` and `repo-identity`.
-  - status decoding for every state remains stable.
+  - keep status decoding for every state stable.
   - topbar/settings status text for retrying, mapping, sync progress, and error.
 
 ## Ordered Cleanup Backlog
@@ -239,8 +240,7 @@ split. Avoid brittle end-to-end MySQL/browser tests for core correctness.
 
 5. Clean contract drift.
    - Files: `packages/contracts/src/server.ts`, web mapping UI if needed.
-   - Decide whether to remove or implement `createIfMissing` and
-     `repo-identity`.
+   - Removed unused `createIfMissing` and `repo-identity`.
    - Must coordinate schema changes through server/web tests.
 
 6. Make projection reload failure explicit.

@@ -1,7 +1,12 @@
 import { Schema } from "effect";
 import { describe, expect, it } from "vitest";
 
-import { HistorySyncProjectMappingPlan, HistorySyncStatus, ServerProvider } from "./server.ts";
+import {
+  HistorySyncProjectMappingAction,
+  HistorySyncProjectMappingPlan,
+  HistorySyncStatus,
+  ServerProvider,
+} from "./server.ts";
 
 const decodeServerProvider = Schema.decodeUnknownSync(ServerProvider);
 
@@ -173,5 +178,43 @@ describe("HistorySyncProjectMappingPlan", () => {
 
     expect(parsed.candidates[0]?.suggestionReason).toBe("basename");
     expect(parsed.localProjects[0]?.projectId).toBe("local-project");
+  });
+
+  it("does not decode removed repo-identity suggestions", () => {
+    expect(() =>
+      Schema.decodeUnknownSync(HistorySyncProjectMappingPlan)({
+        syncId: "client:42",
+        remoteMaxSequence: 42,
+        candidates: [
+          {
+            remoteProjectId: "remote-project",
+            remoteTitle: "Remote Project",
+            remoteWorkspaceRoot: "/Users/me/project",
+            threadCount: 3,
+            suggestionReason: "repo-identity",
+            status: "unresolved",
+          },
+        ],
+        localProjects: [],
+      }),
+    ).toThrow();
+  });
+});
+
+describe("HistorySyncProjectMappingAction", () => {
+  it("decodes map-folder actions without folder creation semantics", () => {
+    const parsed = Schema.decodeUnknownSync(HistorySyncProjectMappingAction)({
+      remoteProjectId: "remote-project",
+      action: "map-folder",
+      workspaceRoot: "/Users/me/project",
+      title: "Project",
+    });
+
+    expect(parsed).toEqual({
+      remoteProjectId: "remote-project",
+      action: "map-folder",
+      workspaceRoot: "/Users/me/project",
+      title: "Project",
+    });
   });
 });

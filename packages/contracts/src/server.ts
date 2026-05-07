@@ -251,7 +251,6 @@ export type HistorySyncProjectMappingCandidateStatus =
 
 export const HistorySyncProjectMappingSuggestionReason = Schema.Literals([
   "exact-path",
-  "repo-identity",
   "basename",
 ]);
 export type HistorySyncProjectMappingSuggestionReason =
@@ -288,7 +287,6 @@ export const HistorySyncProjectMappingAction = Schema.Union([
     action: Schema.Literal("map-folder"),
     workspaceRoot: TrimmedNonEmptyString,
     title: Schema.optionalKey(TrimmedNonEmptyString),
-    createIfMissing: Schema.optionalKey(Schema.Boolean),
   }),
   Schema.Struct({
     remoteProjectId: ProjectId,

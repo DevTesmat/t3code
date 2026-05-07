@@ -1248,7 +1248,7 @@ function HistorySyncSettingsSection() {
                       }}
                     >
                       <option value="map-existing">Existing project</option>
-                      <option value="map-folder">New folder</option>
+                      <option value="map-folder">Local folder</option>
                       <option value="skip">Skip</option>
                     </select>
                     {draft.action === "map-existing" ? (

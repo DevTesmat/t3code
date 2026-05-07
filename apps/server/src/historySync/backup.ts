@@ -6,6 +6,29 @@ import { Effect } from "effect";
 import type * as SqlClient from "effect/unstable/sql/SqlClient";
 
 const HISTORY_SYNC_BACKUP_FILE_NAME = "history-sync-pre-sync.sqlite";
+const RESTORE_BACKUP_TABLES = [
+  "orchestration_command_receipts",
+  "projection_pending_approvals",
+  "projection_turns",
+  "projection_thread_sessions",
+  "projection_thread_activities",
+  "projection_thread_proposed_plans",
+  "projection_thread_messages",
+  "projection_threads",
+  "projection_projects",
+  "projection_state",
+  "checkpoint_diff_blobs",
+  "history_sync_pushed_events",
+  "orchestration_events",
+  "history_sync_project_mappings",
+  "history_sync_state",
+] as const;
+
+export interface BackupTableMetadata {
+  readonly tableName: string;
+  readonly localColumnCount: number;
+  readonly backupColumnCount: number | null;
+}
 
 function describeUnknownError(error: unknown): string {
   if (error instanceof Error) {
@@ -65,6 +88,73 @@ export function createSqliteBackup(sql: SqlClient.SqlClient, dbPath: string) {
     });
     console.info("[history-sync] sqlite backup created", { path: backupPath });
   });
+}
+
+export function validateBackupTableMetadata(
+  tables: readonly BackupTableMetadata[],
+): Effect.Effect<void, HistorySyncConfigError> {
+  const missingTables = tables
+    .filter((table) => table.backupColumnCount === null)
+    .map((table) => table.tableName);
+  if (missingTables.length > 0) {
+    return Effect.fail(
+      new HistorySyncConfigError({
+        message: `History sync SQLite backup is incompatible. Missing tables: ${missingTables.join(", ")}.`,
+      }),
+    );
+  }
+
+  const mismatchedTables = tables.filter(
+    (table) =>
+      table.backupColumnCount !== null && table.localColumnCount !== table.backupColumnCount,
+  );
+  if (mismatchedTables.length > 0) {
+    return Effect.fail(
+      new HistorySyncConfigError({
+        message: `History sync SQLite backup is incompatible. Column count mismatch: ${mismatchedTables
+          .map(
+            (table) =>
+              `${table.tableName} (local ${table.localColumnCount}, backup ${table.backupColumnCount})`,
+          )
+          .join(", ")}.`,
+      }),
+    );
+  }
+
+  return Effect.void;
+}
+
+function validateAttachedBackupSchema(sql: SqlClient.SqlClient) {
+  return Effect.forEach(
+    RESTORE_BACKUP_TABLES,
+    (tableName) =>
+      Effect.gen(function* () {
+        const backupTableRows = yield* sql<{ readonly name: string }>`
+          SELECT name
+          FROM history_sync_backup.sqlite_master
+          WHERE type = 'table' AND name = ${tableName}
+        `;
+        const localColumnRows = yield* sql<{ readonly count: number }>`
+          SELECT COUNT(*) AS count
+          FROM pragma_table_info(${tableName})
+        `;
+        const backupColumnRows =
+          backupTableRows.length === 0
+            ? []
+            : yield* sql<{ readonly count: number }>`
+                SELECT COUNT(*) AS count
+                FROM history_sync_backup.pragma_table_info(${tableName})
+              `;
+
+        return {
+          tableName,
+          localColumnCount: localColumnRows[0]?.count ?? 0,
+          backupColumnCount:
+            backupTableRows.length === 0 ? null : (backupColumnRows[0]?.count ?? 0),
+        } satisfies BackupTableMetadata;
+      }),
+    { concurrency: 1 },
+  ).pipe(Effect.flatMap(validateBackupTableMetadata));
 }
 
 function restoreBackupTables(sql: SqlClient.SqlClient) {
@@ -162,7 +252,8 @@ export function restoreBackupTablesFromDisk(sql: SqlClient.SqlClient, dbPath: st
       });
     }
     yield* sql`ATTACH DATABASE ${backupPath} AS history_sync_backup`;
-    yield* restoreBackupTables(sql).pipe(
+    yield* validateAttachedBackupSchema(sql).pipe(
+      Effect.andThen(restoreBackupTables(sql)),
       Effect.ensuring(sql`DETACH DATABASE history_sync_backup`.pipe(Effect.ignore)),
     );
     console.info("[history-sync] sqlite backup restored", { path: backupPath });

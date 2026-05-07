@@ -53,7 +53,6 @@ describe("history sync project mapping wizard logic", () => {
         action: "map-folder",
         workspaceRoot: "C:\\Dev\\Project",
         title: "Remote",
-        createIfMissing: true,
       },
     ]);
   });

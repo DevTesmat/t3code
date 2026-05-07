@@ -51,7 +51,6 @@ export function buildHistorySyncProjectMappingActions(
         action: "map-folder" as const,
         workspaceRoot: draft.workspaceRoot.trim(),
         title: draft.title.trim() || candidate.remoteTitle,
-        createIfMissing: true,
       };
     });
 }
