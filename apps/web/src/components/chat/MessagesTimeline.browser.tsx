@@ -271,6 +271,69 @@ describe("MessagesTimeline", () => {
     }
   });
 
+  it("keeps full streaming plan content mounted while collapsed", async () => {
+    const props = buildProps();
+    const hiddenStreamingLine = "Hidden streaming step remains mounted";
+    const longPlanMarkdown = [
+      "# Streaming plan",
+      "",
+      ...Array.from({ length: 24 }, (_, index) =>
+        index === 23 ? `- ${hiddenStreamingLine}` : `- Step ${index + 1}`,
+      ),
+    ].join("\n");
+
+    const baseProposedPlan = {
+      id: "plan-1",
+      turnId: null,
+      planMarkdown: longPlanMarkdown,
+      implementedAt: null,
+      implementationThreadId: null,
+      createdAt: "2026-04-13T12:00:00.000Z",
+      updatedAt: "2026-04-13T12:00:00.000Z",
+    };
+
+    const screen = await render(
+      <MessagesTimeline
+        {...props}
+        timelineEntries={[
+          {
+            id: "plan-entry-1",
+            kind: "proposed-plan",
+            createdAt: "2026-04-13T12:00:00.000Z",
+            proposedPlan: {
+              ...baseProposedPlan,
+              streaming: true,
+            },
+          },
+        ]}
+      />,
+    );
+
+    try {
+      await expect.element(page.getByRole("button", { name: "Expand plan" })).toBeVisible();
+      expect(document.body.textContent).toContain(hiddenStreamingLine);
+
+      await screen.rerender(
+        <MessagesTimeline
+          {...props}
+          timelineEntries={[
+            {
+              id: "plan-entry-1",
+              kind: "proposed-plan",
+              createdAt: "2026-04-13T12:00:00.000Z",
+              proposedPlan: baseProposedPlan,
+            },
+          ]}
+        />,
+      );
+
+      expect(document.body.textContent).toContain("...");
+      expect(document.body.textContent).not.toContain(hiddenStreamingLine);
+    } finally {
+      await screen.unmount();
+    }
+  });
+
   it("passes maintain-scroll suppression through to LegendList", async () => {
     const props = buildProps();
     const timelineEntries = [

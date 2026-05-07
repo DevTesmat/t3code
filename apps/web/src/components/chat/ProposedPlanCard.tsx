@@ -180,7 +180,11 @@ export const ProposedPlanCard = memo(function ProposedPlanCard({
       <div className="mt-4">
         <div className={cn("relative", canCollapse && !expanded && "max-h-104 overflow-hidden")}>
           {canCollapse && !expanded ? (
-            <ChatMarkdown text={collapsedPreview ?? ""} cwd={cwd} isStreaming={isStreaming} />
+            <ChatMarkdown
+              text={isStreaming ? displayedPlanMarkdown : (collapsedPreview ?? "")}
+              cwd={cwd}
+              isStreaming={isStreaming}
+            />
           ) : (
             <ChatMarkdown text={displayedPlanMarkdown} cwd={cwd} isStreaming={isStreaming} />
           )}
