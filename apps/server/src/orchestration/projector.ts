@@ -21,6 +21,7 @@ import {
   ThreadInteractionModeSetPayload,
   ThreadMetaUpdatedPayload,
   ThreadPinnedPayload,
+  ThreadProposedPlanDeltaReceivedPayload,
   ThreadProposedPlanUpsertedPayload,
   ThreadRuntimeModeSetPayload,
   ThreadUnpinnedPayload,
@@ -537,6 +538,26 @@ export function projectEvent(
           ...nextBase,
           threads: updateThread(nextBase.threads, payload.threadId, {
             proposedPlans,
+            updatedAt: event.occurredAt,
+          }),
+        };
+      });
+
+    case "thread.proposed-plan-delta-received":
+      return Effect.gen(function* () {
+        const payload = yield* decodeForEvent(
+          ThreadProposedPlanDeltaReceivedPayload,
+          event.payload,
+          event.type,
+          "payload",
+        );
+        const thread = nextBase.threads.find((entry) => entry.id === payload.threadId);
+        if (!thread) {
+          return nextBase;
+        }
+        return {
+          ...nextBase,
+          threads: updateThread(nextBase.threads, payload.threadId, {
             updatedAt: event.occurredAt,
           }),
         };

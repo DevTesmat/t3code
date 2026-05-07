@@ -79,6 +79,7 @@ const PlanSidebar = memo(function PlanSidebar({
   const { copyToClipboard, isCopied } = useCopyToClipboard();
 
   const planMarkdown = activeProposedPlan?.planMarkdown ?? null;
+  const proposedPlanStreaming = activeProposedPlan?.streaming === true;
   const displayedPlanMarkdown = planMarkdown ? stripDisplayedPlanMarkdown(planMarkdown) : null;
   const planTitle = planMarkdown ? proposedPlanTitle(planMarkdown) : null;
 
@@ -151,7 +152,7 @@ const PlanSidebar = memo(function PlanSidebar({
           ) : null}
         </div>
         <div className="flex items-center gap-1">
-          {planMarkdown ? (
+          {planMarkdown && !proposedPlanStreaming ? (
             <Menu>
               <MenuTrigger
                 render={
@@ -248,7 +249,7 @@ const PlanSidebar = memo(function PlanSidebar({
                   <ChevronRightIcon className="size-3 shrink-0 text-muted-foreground/40 transition-transform" />
                 )}
                 <span className="text-[10px] font-semibold tracking-widest text-muted-foreground/40 uppercase group-hover:text-muted-foreground/60">
-                  {planTitle ?? "Full Plan"}
+                  {proposedPlanStreaming ? "Streaming plan" : (planTitle ?? "Full Plan")}
                 </span>
               </button>
               {proposedPlanExpanded ? (
@@ -256,7 +257,7 @@ const PlanSidebar = memo(function PlanSidebar({
                   <ChatMarkdown
                     text={displayedPlanMarkdown ?? ""}
                     cwd={markdownCwd}
-                    isStreaming={false}
+                    isStreaming={proposedPlanStreaming}
                   />
                 </div>
               ) : null}

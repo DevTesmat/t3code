@@ -797,6 +797,47 @@ it.effect("decodes client proposed plan import commands", () =>
   }),
 );
 
+it.effect("decodes internal proposed plan delta commands and events", () =>
+  Effect.gen(function* () {
+    const createdAt = "2026-01-01T00:00:00.000Z";
+    const command = yield* decodeOrchestrationCommand({
+      type: "thread.proposed-plan.delta.receive",
+      commandId: "cmd-plan-delta",
+      threadId: "thread-1",
+      planId: "plan-1",
+      turnId: "turn-1",
+      delta: "# Pla",
+      createdAt,
+    });
+    assert.strictEqual(command.type, "thread.proposed-plan.delta.receive");
+    assert.strictEqual(command.delta, "# Pla");
+
+    const event = yield* decodeOrchestrationEvent({
+      eventId: "evt-plan-delta",
+      aggregateKind: "thread",
+      aggregateId: "thread-1",
+      sequence: 1,
+      streamId: "thread-1",
+      streamVersion: 1,
+      type: "thread.proposed-plan-delta-received",
+      occurredAt: createdAt,
+      commandId: "cmd-plan-delta",
+      causationEventId: null,
+      correlationId: null,
+      metadata: {},
+      payload: {
+        threadId: "thread-1",
+        planId: "plan-1",
+        turnId: "turn-1",
+        delta: "# Pla",
+        createdAt,
+      },
+    });
+    assert.strictEqual(event.type, "thread.proposed-plan-delta-received");
+    assert.strictEqual(event.payload.delta, "# Pla");
+  }),
+);
+
 it.effect("preserves proposed plan implementation metadata when present", () =>
   Effect.gen(function* () {
     const parsed = yield* decodeOrchestrationProposedPlan({

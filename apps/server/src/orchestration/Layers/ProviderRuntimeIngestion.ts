@@ -1877,6 +1877,15 @@ const make = Effect.gen(function* () {
       if (shouldProjectToParentThread && proposedPlanDelta && proposedPlanDelta.length > 0) {
         const planId = proposedPlanIdFromEvent(event, thread.id);
         yield* appendBufferedProposedPlan(planId, proposedPlanDelta, now);
+        yield* orchestrationEngine.dispatch({
+          type: "thread.proposed-plan.delta.receive",
+          commandId: providerCommandId(event, "proposed-plan-delta"),
+          threadId: thread.id,
+          planId,
+          turnId: toTurnId(event.turnId) ?? null,
+          delta: proposedPlanDelta,
+          createdAt: now,
+        });
       }
 
       const assistantCompletion =

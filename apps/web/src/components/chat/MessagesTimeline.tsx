@@ -556,6 +556,7 @@ function TimelineRowContent({ row }: { row: TimelineRow }) {
         <div className="min-w-0 px-1 py-0.5">
           <ProposedPlanCard
             planMarkdown={row.proposedPlan.planMarkdown}
+            isStreaming={row.proposedPlan.streaming === true}
             environmentId={ctx.activeThreadEnvironmentId}
             cwd={ctx.markdownCwd}
             workspaceRoot={ctx.workspaceRoot}

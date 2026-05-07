@@ -705,6 +705,41 @@ describe("deriveMessagesTimelineRows", () => {
     ]);
   });
 
+  it("preserves streaming proposed-plan state for timeline rendering", () => {
+    const rows = deriveMessagesTimelineRows({
+      timelineEntries: [
+        {
+          id: "plan-entry",
+          kind: "proposed-plan",
+          createdAt: "2026-01-01T00:00:01Z",
+          proposedPlan: {
+            id: "plan-1" as never,
+            createdAt: "2026-01-01T00:00:01Z",
+            updatedAt: "2026-01-01T00:00:02Z",
+            turnId: "turn-1" as never,
+            planMarkdown: "# Pla",
+            streaming: true,
+            implementedAt: null,
+            implementationThreadId: null,
+          },
+        },
+      ],
+      completionDividerBeforeEntryId: null,
+      isWorking: false,
+      activeTurnStartedAt: null,
+      turnDiffSummaryByAssistantMessageId: new Map(),
+      revertTurnCountByUserMessageId: new Map(),
+    });
+
+    expect(rows[0]).toMatchObject({
+      kind: "proposed-plan",
+      proposedPlan: {
+        planMarkdown: "# Pla",
+        streaming: true,
+      },
+    });
+  });
+
   it("keeps validation commands in their own adjacent group", () => {
     const rows = deriveMessagesTimelineRows({
       timelineEntries: [

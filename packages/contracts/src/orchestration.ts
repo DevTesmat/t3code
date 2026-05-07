@@ -786,6 +786,16 @@ const ThreadProposedPlanUpsertCommand = Schema.Struct({
   createdAt: IsoDateTime,
 });
 
+const ThreadProposedPlanDeltaReceiveCommand = Schema.Struct({
+  type: Schema.Literal("thread.proposed-plan.delta.receive"),
+  commandId: CommandId,
+  threadId: ThreadId,
+  planId: OrchestrationProposedPlanId,
+  turnId: Schema.NullOr(TurnId),
+  delta: Schema.String,
+  createdAt: IsoDateTime,
+});
+
 const ThreadTurnDiffCompleteCommand = Schema.Struct({
   type: Schema.Literal("thread.turn.diff.complete"),
   commandId: CommandId,
@@ -821,6 +831,7 @@ const InternalOrchestrationCommand = Schema.Union([
   ThreadMessageAssistantDeltaCommand,
   ThreadMessageAssistantCompleteCommand,
   ThreadProposedPlanUpsertCommand,
+  ThreadProposedPlanDeltaReceiveCommand,
   ThreadTurnDiffCompleteCommand,
   ThreadActivityAppendCommand,
   ThreadRevertCompleteCommand,
@@ -855,6 +866,7 @@ export const OrchestrationEventType = Schema.Literals([
   "thread.reverted",
   "thread.session-stop-requested",
   "thread.session-set",
+  "thread.proposed-plan-delta-received",
   "thread.proposed-plan-upserted",
   "thread.turn-diff-completed",
   "thread.activity-appended",
@@ -1032,6 +1044,14 @@ export const ThreadProposedPlanUpsertedPayload = Schema.Struct({
   proposedPlan: OrchestrationProposedPlan,
 });
 
+export const ThreadProposedPlanDeltaReceivedPayload = Schema.Struct({
+  threadId: ThreadId,
+  planId: OrchestrationProposedPlanId,
+  turnId: Schema.NullOr(TurnId),
+  delta: Schema.String,
+  createdAt: IsoDateTime,
+});
+
 export const ThreadTurnDiffCompletedPayload = Schema.Struct({
   threadId: ThreadId,
   turnId: TurnId,
@@ -1174,6 +1194,11 @@ export const OrchestrationEvent = Schema.Union([
     ...EventBaseFields,
     type: Schema.Literal("thread.session-set"),
     payload: ThreadSessionSetPayload,
+  }),
+  Schema.Struct({
+    ...EventBaseFields,
+    type: Schema.Literal("thread.proposed-plan-delta-received"),
+    payload: ThreadProposedPlanDeltaReceivedPayload,
   }),
   Schema.Struct({
     ...EventBaseFields,

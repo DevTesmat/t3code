@@ -670,6 +670,91 @@ describe("incremental orchestration updates", () => {
     ]);
   });
 
+  it("streams proposed plan deltas and replaces them with the completed plan", () => {
+    const thread = makeThread();
+    const state = makeState(thread);
+    const createdAt = "2026-02-27T00:00:01.000Z";
+    const turnId = TurnId.make("turn-plan");
+
+    const withFirstDelta = applyOrchestrationEvent(
+      state,
+      makeEvent("thread.proposed-plan-delta-received", {
+        threadId: thread.id,
+        planId: "plan-live",
+        turnId,
+        delta: "# Pla",
+        createdAt,
+      }),
+      localEnvironmentId,
+    );
+    const withSecondDelta = applyOrchestrationEvent(
+      withFirstDelta,
+      makeEvent("thread.proposed-plan-delta-received", {
+        threadId: thread.id,
+        planId: "plan-live",
+        turnId,
+        delta: "n\n\n- Step",
+        createdAt: "2026-02-27T00:00:02.000Z",
+      }),
+      localEnvironmentId,
+    );
+
+    const streamingThread = selectThreadByRef(
+      withSecondDelta,
+      scopeThreadRef(thread.environmentId, thread.id),
+    );
+    expect(streamingThread?.proposedPlans).toEqual([
+      expect.objectContaining({
+        id: "plan-live",
+        turnId,
+        planMarkdown: "# Plan\n\n- Step",
+        streaming: true,
+      }),
+    ]);
+
+    const completed = applyOrchestrationEvent(
+      withSecondDelta,
+      makeEvent("thread.proposed-plan-upserted", {
+        threadId: thread.id,
+        proposedPlan: {
+          id: "plan-live",
+          turnId,
+          planMarkdown: "# Final plan\n\n- Step",
+          implementedAt: null,
+          implementationThreadId: null,
+          createdAt,
+          updatedAt: "2026-02-27T00:00:03.000Z",
+        },
+      }),
+      localEnvironmentId,
+    );
+    const completedThread = selectThreadByRef(
+      completed,
+      scopeThreadRef(thread.environmentId, thread.id),
+    );
+    expect(completedThread?.proposedPlans).toEqual([
+      expect.not.objectContaining({ streaming: true }),
+    ]);
+    expect(completedThread?.proposedPlans[0]?.planMarkdown).toBe("# Final plan\n\n- Step");
+
+    const withStaleDelta = applyOrchestrationEvent(
+      completed,
+      makeEvent("thread.proposed-plan-delta-received", {
+        threadId: thread.id,
+        planId: "plan-live",
+        turnId,
+        delta: "\n- stale",
+        createdAt: "2026-02-27T00:00:04.000Z",
+      }),
+      localEnvironmentId,
+    );
+    const staleThread = selectThreadByRef(
+      withStaleDelta,
+      scopeThreadRef(thread.environmentId, thread.id),
+    );
+    expect(staleThread?.proposedPlans[0]?.planMarkdown).toBe("# Final plan\n\n- Step");
+  });
+
   it("applies replayed draft import events before any snapshot refresh", () => {
     const state = makeState(makeThread({ id: ThreadId.make("existing-thread") }));
     const threadId = ThreadId.make("thread-imported-draft");

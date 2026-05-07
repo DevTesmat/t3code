@@ -60,6 +60,7 @@ export interface ProposedPlan {
   id: OrchestrationProposedPlanId;
   turnId: TurnId | null;
   planMarkdown: string;
+  streaming?: boolean;
   implementedAt: string | null;
   implementationThreadId: ThreadId | null;
   createdAt: string;

@@ -150,6 +150,7 @@ export interface LatestProposedPlanState {
   updatedAt: string;
   turnId: TurnId | null;
   planMarkdown: string;
+  streaming?: boolean;
   implementedAt: string | null;
   implementationThreadId: ThreadId | null;
 }
@@ -1077,6 +1078,7 @@ function toLatestProposedPlanState(proposedPlan: ProposedPlan): LatestProposedPl
     updatedAt: proposedPlan.updatedAt,
     turnId: proposedPlan.turnId,
     planMarkdown: proposedPlan.planMarkdown,
+    streaming: proposedPlan.streaming === true,
     implementedAt: proposedPlan.implementedAt,
     implementationThreadId: proposedPlan.implementationThreadId,
   };

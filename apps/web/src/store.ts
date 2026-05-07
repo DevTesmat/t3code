@@ -124,6 +124,7 @@ const MAX_THREAD_MESSAGES = 2_000;
 const MAX_THREAD_CHECKPOINTS = 500;
 const MAX_THREAD_PROPOSED_PLANS = 200;
 const MAX_THREAD_ACTIVITIES = 500;
+const MAX_LIVE_PROPOSED_PLAN_CHARS = 120_000;
 const EMPTY_THREAD_IDS: ThreadId[] = [];
 
 function arraysEqual<T>(left: readonly T[], right: readonly T[]): boolean {
@@ -1548,6 +1549,44 @@ function applyEnvironmentOrchestrationEvent(
     case "thread.proposed-plan-upserted":
       return updateThreadState(state, event.payload.threadId, (thread) => {
         const proposedPlan = mapProposedPlan(event.payload.proposedPlan);
+        const proposedPlans = [
+          ...thread.proposedPlans.filter((entry) => entry.id !== proposedPlan.id),
+          proposedPlan,
+        ]
+          .toSorted(
+            (left, right) =>
+              left.createdAt.localeCompare(right.createdAt) || left.id.localeCompare(right.id),
+          )
+          .slice(-MAX_THREAD_PROPOSED_PLANS);
+        return {
+          ...thread,
+          proposedPlans,
+          updatedAt: event.occurredAt,
+        };
+      });
+
+    case "thread.proposed-plan-delta-received":
+      return updateThreadState(state, event.payload.threadId, (thread) => {
+        const existing = thread.proposedPlans.find((entry) => entry.id === event.payload.planId);
+        if (existing && !existing.streaming) {
+          return thread;
+        }
+        const nextPlanMarkdown = `${existing?.planMarkdown ?? ""}${event.payload.delta}`.slice(
+          -MAX_LIVE_PROPOSED_PLAN_CHARS,
+        );
+        if (nextPlanMarkdown.trim().length === 0) {
+          return thread;
+        }
+        const proposedPlan: ProposedPlan = {
+          id: event.payload.planId,
+          turnId: event.payload.turnId,
+          planMarkdown: nextPlanMarkdown,
+          streaming: true,
+          implementedAt: null,
+          implementationThreadId: null,
+          createdAt: existing?.createdAt ?? event.payload.createdAt,
+          updatedAt: event.payload.createdAt,
+        };
         const proposedPlans = [
           ...thread.proposedPlans.filter((entry) => entry.id !== proposedPlan.id),
           proposedPlan,

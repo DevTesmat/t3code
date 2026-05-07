@@ -746,6 +746,30 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
       };
     }
 
+    case "thread.proposed-plan.delta.receive": {
+      yield* requireThread({
+        readModel,
+        command,
+        threadId: command.threadId,
+      });
+      return {
+        ...withEventBase({
+          aggregateKind: "thread",
+          aggregateId: command.threadId,
+          occurredAt: command.createdAt,
+          commandId: command.commandId,
+        }),
+        type: "thread.proposed-plan-delta-received",
+        payload: {
+          threadId: command.threadId,
+          planId: command.planId,
+          turnId: command.turnId,
+          delta: command.delta,
+          createdAt: command.createdAt,
+        },
+      };
+    }
+
     case "thread.turn.diff.complete": {
       yield* requireThread({
         readModel,

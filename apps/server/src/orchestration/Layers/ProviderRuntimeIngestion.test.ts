@@ -2302,6 +2302,25 @@ describe("ProviderRuntimeIngestion", () => {
         entry.id === "plan:thread-1:turn:turn-plan-buffer",
     );
     expect(proposedPlan?.planMarkdown).toBe("## Buffered plan\n\n- first\n- second");
+
+    const events = await Effect.runPromise(
+      Stream.runCollect(harness.engine.readEvents(0)).pipe(
+        Effect.map((chunk) => Array.from(chunk)),
+      ),
+    );
+    const deltaEvents = events.filter(
+      (
+        event,
+      ): event is Extract<
+        (typeof events)[number],
+        { type: "thread.proposed-plan-delta-received" }
+      > => event.type === "thread.proposed-plan-delta-received",
+    );
+    expect(deltaEvents.map((event) => event.payload.delta)).toEqual([
+      "## Buffered plan\n\n- first",
+      "\n- second",
+    ]);
+    expect(deltaEvents[0]?.payload.planId).toBe("plan:thread-1:turn:turn-plan-buffer");
   });
 
   it("buffers assistant deltas when assistant streaming is disabled until completion", async () => {

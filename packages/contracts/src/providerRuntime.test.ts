@@ -69,6 +69,26 @@ describe("ProviderRuntimeEvent", () => {
     expect(parsed.payload.planMarkdown).toBe("# Ship it");
   });
 
+  it("decodes proposed-plan delta events", () => {
+    const parsed = decodeRuntimeEvent({
+      type: "turn.proposed.delta",
+      eventId: "event-proposed-plan-delta-1",
+      provider: "codex",
+      createdAt: "2026-02-28T00:00:00.000Z",
+      threadId: "thread-1",
+      turnId: "turn-1",
+      payload: {
+        delta: "# Shi",
+      },
+    });
+
+    expect(parsed.type).toBe("turn.proposed.delta");
+    if (parsed.type !== "turn.proposed.delta") {
+      throw new Error("expected turn.proposed.delta");
+    }
+    expect(parsed.payload.delta).toBe("# Shi");
+  });
+
   it("decodes user-input.requested with structured questions", () => {
     const parsed = decodeRuntimeEvent({
       type: "user-input.requested",
