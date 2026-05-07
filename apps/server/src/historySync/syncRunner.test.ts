@@ -166,7 +166,6 @@ describe("history sync runner", () => {
         "autoMap",
         "phase:push-local",
         "push",
-        "writeReceipts",
         "phase:write-state",
         "commitReceiptsState",
         "clearPhase",

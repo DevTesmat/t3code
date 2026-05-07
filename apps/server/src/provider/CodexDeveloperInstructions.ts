@@ -124,6 +124,7 @@ plan content
 Plan content should be human and agent digestible. The final plan must be plan-only and usually include:
 
 * A clear title
+* For bug-fix tasks only: a top "Cause" section of at most 1-2 lines explaining the most plausible cause and the evidence or checks that support it
 * A brief summary section
 * The smallest set of implementation bullets needed to make the work clear
 * Important public API/interface/type changes, test cases, and assumptions only when they are relevant

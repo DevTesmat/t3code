@@ -84,6 +84,10 @@ describe("buildTurnStartParams", () => {
     assert.match(CODEX_PLAN_MODE_DEVELOPER_INSTRUCTIONS, /Aim for under 40 lines/);
     assert.match(
       CODEX_PLAN_MODE_DEVELOPER_INSTRUCTIONS,
+      /top "Cause" section of at most 1-2 lines/,
+    );
+    assert.match(
+      CODEX_PLAN_MODE_DEVELOPER_INSTRUCTIONS,
       /repetitive "Risk" \/ "Plan" \/ "Verification" subsections/,
     );
     assert.match(CODEX_PLAN_MODE_DEVELOPER_INSTRUCTIONS, /After the batch is done/);

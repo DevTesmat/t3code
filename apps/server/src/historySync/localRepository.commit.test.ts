@@ -64,10 +64,17 @@ layer("history sync local repository commits", (it) => {
     Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient;
       yield* runMigrations({ toMigrationInclusive: 36 });
+      yield* sql`
+        CREATE TRIGGER fail_history_sync_state_insert
+        BEFORE INSERT ON history_sync_state
+        BEGIN
+          SELECT RAISE(ABORT, 'state write failed');
+        END
+      `;
 
       const exit = yield* Effect.exit(
         commitPushedEventReceiptsAndState(sql, {
-          events: [event(1, "duplicate-event"), event(2, "duplicate-event")],
+          events: [event(1), event(2)],
           pushedAt: "2026-05-01T00:00:01.000Z",
           state: {
             hasCompletedInitialSync: true,
