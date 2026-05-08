@@ -711,6 +711,9 @@ const WorkGroupSection = memo(function WorkGroupSection({
   const [collapsedDefaultOutputKeys, setCollapsedDefaultOutputKeys] = useState<ReadonlySet<string>>(
     () => new Set(),
   );
+  const [collapsedDefaultInlineDiffKeys, setCollapsedDefaultInlineDiffKeys] = useState<
+    ReadonlySet<string>
+  >(() => new Set());
   const hasOverflow = groupedEntries.length > MAX_VISIBLE_WORK_LOG_ENTRIES;
   const visibleEntries =
     hasOverflow && !isExpanded
@@ -752,7 +755,19 @@ const WorkGroupSection = memo(function WorkGroupSection({
       return next;
     });
   }, []);
-  const toggleInlineDiffExpanded = useCallback((key: string) => {
+  const toggleInlineDiffExpanded = useCallback((key: string, defaultExpanded: boolean) => {
+    if (defaultExpanded) {
+      setCollapsedDefaultInlineDiffKeys((current) => {
+        const next = new Set(current);
+        if (next.has(key)) {
+          next.delete(key);
+        } else {
+          next.add(key);
+        }
+        return next;
+      });
+      return;
+    }
     setExpandedInlineDiffKeys((current) => {
       const next = new Set(current);
       if (next.has(key)) {
@@ -799,6 +814,9 @@ const WorkGroupSection = memo(function WorkGroupSection({
                 workspaceRoot={workspaceRoot}
                 outputExpanded={expandedOutputKeys.has(workEntryToolKey(workEntry))}
                 defaultOutputCollapsed={collapsedDefaultOutputKeys.has(workEntryToolKey(workEntry))}
+                defaultInlineDiffCollapsed={collapsedDefaultInlineDiffKeys.has(
+                  workEntryToolKey(workEntry),
+                )}
                 onToggleOutputExpanded={toggleOutputExpanded}
                 inlineDiffExpanded={expandedInlineDiffKeys.has(workEntryToolKey(workEntry))}
                 onToggleInlineDiffExpanded={toggleInlineDiffExpanded}
@@ -836,6 +854,9 @@ const WorkGroupSection = memo(function WorkGroupSection({
             workspaceRoot={workspaceRoot}
             outputExpanded={expandedOutputKeys.has(workEntryToolKey(workEntry))}
             defaultOutputCollapsed={collapsedDefaultOutputKeys.has(workEntryToolKey(workEntry))}
+            defaultInlineDiffCollapsed={collapsedDefaultInlineDiffKeys.has(
+              workEntryToolKey(workEntry),
+            )}
             onToggleOutputExpanded={toggleOutputExpanded}
             inlineDiffExpanded={expandedInlineDiffKeys.has(workEntryToolKey(workEntry))}
             onToggleInlineDiffExpanded={toggleInlineDiffExpanded}
@@ -1561,8 +1582,9 @@ const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
   outputExpanded: boolean;
   inlineDiffExpanded: boolean;
   defaultOutputCollapsed: boolean;
+  defaultInlineDiffCollapsed: boolean;
   onToggleOutputExpanded: (key: string, defaultExpanded: boolean) => void;
-  onToggleInlineDiffExpanded: (key: string) => void;
+  onToggleInlineDiffExpanded: (key: string, defaultExpanded: boolean) => void;
 }) {
   const {
     workEntry,
@@ -1570,6 +1592,7 @@ const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
     outputExpanded,
     inlineDiffExpanded,
     defaultOutputCollapsed,
+    defaultInlineDiffCollapsed,
     onToggleOutputExpanded,
     onToggleInlineDiffExpanded,
   } = props;
@@ -1619,6 +1642,8 @@ const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
   const defaultOutputExpanded = isTerminal && shouldAutoShowTerminalOutput(workEntry, liveOutput);
   const defaultLivePatchExpanded =
     isFileChange && workEntry.status === "running" && liveOutput.text.length > 0;
+  const defaultCompletedPatchExpanded =
+    isFileChange && workEntry.status === "completed" && hasChangedFiles;
   const showOutputPreview =
     isExpandable && (outputExpanded || (defaultOutputExpanded && !defaultOutputCollapsed));
 
@@ -1739,7 +1764,9 @@ const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
   }
 
   if (hasInlineDiff || (isFileChange && hasLiveOutput)) {
-    const showInlineDiffPreview = inlineDiffExpanded || defaultLivePatchExpanded;
+    const defaultInlineDiffExpanded = defaultLivePatchExpanded || defaultCompletedPatchExpanded;
+    const showInlineDiffPreview =
+      inlineDiffExpanded || (defaultInlineDiffExpanded && !defaultInlineDiffCollapsed);
     return (
       <div className="group rounded-lg border border-border/35 bg-card/20 px-1 py-0.5 transition-colors duration-150 hover:bg-muted/20 focus-within:bg-muted/20">
         <button
@@ -1747,7 +1774,7 @@ const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
           className="flex min-h-7 w-full min-w-0 items-center gap-2 text-left transition-[opacity,translate] duration-200 focus-visible:outline-none"
           aria-expanded={showInlineDiffPreview}
           aria-label={showInlineDiffPreview ? "Collapse inline diff" : "Expand inline diff"}
-          onClick={() => onToggleInlineDiffExpanded(toolKey)}
+          onClick={() => onToggleInlineDiffExpanded(toolKey, defaultInlineDiffExpanded)}
           data-testid="inline-diff-toggle"
         >
           <span

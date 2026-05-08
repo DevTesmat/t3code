@@ -798,7 +798,7 @@ lifecycleLayer("CodexAdapterLive lifecycle", (it) => {
         method: "process/stderr",
         turnId: asTurnId("turn-1"),
         message:
-          "apply_patch verification failed: Failed to find expected lines in apps/web/src/session-logic.ts:",
+          "2026-05-08T11:35:53.211779Z ERROR codex_core::tools::router: error=apply_patch verification failed: Failed to find expected lines in apps/web/src/session-logic.ts:",
       } satisfies ProviderEvent);
       yield* runtime.emit({
         id: asEventId("evt-patch-failed-line-1"),

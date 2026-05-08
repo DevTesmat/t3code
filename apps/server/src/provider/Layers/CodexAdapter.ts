@@ -137,7 +137,8 @@ function trimText(value: string | undefined | null): string | undefined {
 }
 
 const FATAL_CODEX_STDERR_SNIPPETS = ["failed to connect to websocket"];
-const APPLY_PATCH_VERIFICATION_FAILED_PREFIX = "apply_patch verification failed:";
+const APPLY_PATCH_VERIFICATION_FAILED_PATTERN =
+  /(?:^|error=)apply_patch verification failed:\s*(?<reason>[\s\S]+)$/u;
 const APPLY_PATCH_EXPECTED_LINES_PATTERN = /Failed to find expected lines in (?<path>.+?):\s*$/u;
 
 function isFatalCodexProcessStderrMessage(message: string): boolean {
@@ -155,10 +156,12 @@ interface PendingApplyPatchVerificationFailure {
 function parseApplyPatchVerificationFailureStart(
   message: string,
 ): { readonly path?: string | undefined; readonly reason: string } | null {
-  if (!message.startsWith(APPLY_PATCH_VERIFICATION_FAILED_PREFIX)) {
+  const failureMatch = APPLY_PATCH_VERIFICATION_FAILED_PATTERN.exec(message);
+  const rawReason = trimText(failureMatch?.groups?.reason);
+  if (!rawReason) {
     return null;
   }
-  const reason = trimText(message.slice(APPLY_PATCH_VERIFICATION_FAILED_PREFIX.length)) ?? message;
+  const reason = rawReason;
   const match = APPLY_PATCH_EXPECTED_LINES_PATTERN.exec(reason);
   const pathValue = trimText(match?.groups?.path);
   return {
@@ -172,7 +175,7 @@ function isApplyPatchVerificationContinuation(event: ProviderEvent): boolean {
     return false;
   }
   return (
-    !event.message.startsWith(APPLY_PATCH_VERIFICATION_FAILED_PREFIX) &&
+    !parseApplyPatchVerificationFailureStart(event.message) &&
     !isFatalCodexProcessStderrMessage(event.message)
   );
 }
