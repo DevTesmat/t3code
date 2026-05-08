@@ -1208,8 +1208,8 @@ export default function ChatView(props: ChatViewProps) {
   const composerPhase: SessionPhase = activeTurnRunning ? "running" : phase;
   const threadActivities = activeThread?.activities ?? EMPTY_ACTIVITIES;
   const workLogEntries = useMemo(
-    () => deriveWorkLogEntries(threadActivities, activeLatestTurn?.turnId ?? undefined),
-    [activeLatestTurn?.turnId, threadActivities],
+    () => deriveWorkLogEntries(threadActivities, undefined),
+    [threadActivities],
   );
   const threadSubagents = useMemo(
     () => deriveThreadSubagents(threadActivities),

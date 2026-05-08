@@ -75,6 +75,18 @@ function makeAssistantMessage(overrides: Partial<ChatMessage> = {}): ChatMessage
   };
 }
 
+function makeUserMessage(overrides: Partial<ChatMessage> = {}): ChatMessage {
+  return {
+    id: MessageId.make("user-1"),
+    role: "user",
+    text: "Run the next step",
+    turnId: TurnId.make("turn-1"),
+    createdAt: "2026-02-23T00:00:01.000Z",
+    streaming: false,
+    ...overrides,
+  };
+}
+
 describe("deriveThreadSubagents", () => {
   it("folds collab agent lifecycle activities into stable subagent rows", () => {
     const activities: OrchestrationThreadActivity[] = [
@@ -1002,6 +1014,111 @@ describe("deriveWorkLogEntries", () => {
     });
     expect(workTimelineEntries).toHaveLength(1);
     expect(timelineEntries.map((entry) => entry.kind)).toEqual(["message", "work"]);
+  });
+
+  it("keeps previous turn tool rows when a new turn has no tool activity yet", () => {
+    const activities: OrchestrationThreadActivity[] = [
+      makeActivity({
+        id: "turn-1-tool-start",
+        createdAt: "2026-02-23T00:00:01.000Z",
+        summary: "Ran command started",
+        kind: "tool.started",
+        turnId: "turn-1",
+        payload: {
+          itemType: "command_execution",
+          status: "in_progress",
+          detail: "bun run lint",
+          data: {
+            toolCallId: "turn-1-command",
+            command: "bun run lint",
+          },
+        },
+      }),
+      makeActivity({
+        id: "turn-1-tool-complete",
+        createdAt: "2026-02-23T00:00:02.000Z",
+        summary: "Ran command",
+        kind: "tool.completed",
+        turnId: "turn-1",
+        payload: {
+          itemType: "command_execution",
+          status: "completed",
+          detail: "bun run lint",
+          data: {
+            toolCallId: "turn-1-command",
+            command: "bun run lint",
+            exitCode: 0,
+          },
+        },
+      }),
+    ];
+    const turn2UserMessage = makeUserMessage({
+      id: MessageId.make("turn-2-user"),
+      turnId: TurnId.make("turn-2"),
+      createdAt: "2026-02-23T00:00:03.000Z",
+    });
+
+    const entries = deriveWorkLogEntries(activities, undefined);
+    const timelineEntries = deriveTimelineEntries([turn2UserMessage], [], entries);
+
+    expect(entries.map((entry) => entry.id)).toEqual(["turn-1-tool-complete"]);
+    expect(timelineEntries.map((entry) => entry.id)).toEqual([
+      "turn-1-tool-complete",
+      "turn-2-user",
+    ]);
+  });
+
+  it("keeps previous turn tool rows when new turn tool activity arrives", () => {
+    const activities: OrchestrationThreadActivity[] = [
+      makeActivity({
+        id: "turn-1-tool-complete",
+        createdAt: "2026-02-23T00:00:02.000Z",
+        summary: "Ran lint",
+        kind: "tool.completed",
+        turnId: "turn-1",
+        payload: {
+          itemType: "command_execution",
+          status: "completed",
+          detail: "bun run lint",
+          data: {
+            toolCallId: "turn-1-command",
+            command: "bun run lint",
+            exitCode: 0,
+          },
+        },
+      }),
+      makeActivity({
+        id: "turn-2-tool-start",
+        createdAt: "2026-02-23T00:00:04.000Z",
+        summary: "Ran typecheck started",
+        kind: "tool.started",
+        turnId: "turn-2",
+        payload: {
+          itemType: "command_execution",
+          status: "in_progress",
+          detail: "bun typecheck",
+          data: {
+            toolCallId: "turn-2-command",
+            command: "bun typecheck",
+          },
+        },
+      }),
+    ];
+    const turn2UserMessage = makeUserMessage({
+      id: MessageId.make("turn-2-user"),
+      turnId: TurnId.make("turn-2"),
+      createdAt: "2026-02-23T00:00:03.000Z",
+    });
+
+    const entries = deriveWorkLogEntries(activities, undefined);
+    const timelineEntries = deriveTimelineEntries([turn2UserMessage], [], entries);
+
+    expect(entries.map((entry) => entry.id)).toEqual(["turn-1-tool-complete", "turn-2-tool-start"]);
+    expect(timelineEntries.map((entry) => entry.id)).toEqual([
+      "turn-1-tool-complete",
+      "turn-2-user",
+      "turn-2-tool-start",
+    ]);
   });
 
   it("does not downgrade a completed command when a later update arrives for the same tool", () => {
