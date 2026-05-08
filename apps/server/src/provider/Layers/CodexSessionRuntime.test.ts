@@ -9,12 +9,17 @@ import * as CodexRpc from "effect-codex-app-server/rpc";
 import {
   CODEX_DEFAULT_MODE_DEVELOPER_INSTRUCTIONS,
   CODEX_PLAN_MODE_DEVELOPER_INSTRUCTIONS,
+  CODEX_SUBAGENT_COORDINATION_INSTRUCTIONS,
 } from "../CodexDeveloperInstructions.ts";
 import {
   buildTurnStartParams,
   isRecoverableThreadResumeError,
   openCodexThread,
 } from "./CodexSessionRuntime.ts";
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
 
 function makeThreadOpenResponse(
   threadId: string,
@@ -90,8 +95,18 @@ describe("buildTurnStartParams", () => {
       CODEX_PLAN_MODE_DEVELOPER_INSTRUCTIONS,
       /repetitive "Risk" \/ "Plan" \/ "Verification" subsections/,
     );
+    assert.match(CODEX_PLAN_MODE_DEVELOPER_INSTRUCTIONS, /bounded research helpers/);
+    assert.match(CODEX_PLAN_MODE_DEVELOPER_INSTRUCTIONS, /repo explorers/);
+    assert.match(CODEX_PLAN_MODE_DEVELOPER_INSTRUCTIONS, /online researchers/);
+    assert.match(CODEX_PLAN_MODE_DEVELOPER_INSTRUCTIONS, /parallel repo exploration/);
+    assert.match(CODEX_PLAN_MODE_DEVELOPER_INSTRUCTIONS, /immediate critical path/);
+    assert.match(CODEX_PLAN_MODE_DEVELOPER_INSTRUCTIONS, /expected output format/);
+    assert.match(CODEX_PLAN_MODE_DEVELOPER_INSTRUCTIONS, /links and dates/);
+    assert.match(CODEX_PLAN_MODE_DEVELOPER_INSTRUCTIONS, /disjoint write scopes/);
     assert.match(CODEX_PLAN_MODE_DEVELOPER_INSTRUCTIONS, /After the batch is done/);
     assert.match(CODEX_PLAN_MODE_DEVELOPER_INSTRUCTIONS, /receiver thread ID/);
+    assert.match(CODEX_PLAN_MODE_DEVELOPER_INSTRUCTIONS, /failed or stale subagents/);
+    assert.match(CODEX_PLAN_MODE_DEVELOPER_INSTRUCTIONS, /reviewed the evidence/);
   });
 
   it("includes default collaboration mode and image attachments", () => {
@@ -137,8 +152,29 @@ describe("buildTurnStartParams", () => {
         },
       },
     });
+    assert.match(CODEX_DEFAULT_MODE_DEVELOPER_INSTRUCTIONS, /bounded research helpers/);
+    assert.match(CODEX_DEFAULT_MODE_DEVELOPER_INSTRUCTIONS, /repo explorers/);
+    assert.match(CODEX_DEFAULT_MODE_DEVELOPER_INSTRUCTIONS, /online researchers/);
+    assert.match(CODEX_DEFAULT_MODE_DEVELOPER_INSTRUCTIONS, /parallel repo exploration/);
+    assert.match(CODEX_DEFAULT_MODE_DEVELOPER_INSTRUCTIONS, /immediate critical path/);
+    assert.match(CODEX_DEFAULT_MODE_DEVELOPER_INSTRUCTIONS, /expected output format/);
+    assert.match(CODEX_DEFAULT_MODE_DEVELOPER_INSTRUCTIONS, /links and dates/);
+    assert.match(CODEX_DEFAULT_MODE_DEVELOPER_INSTRUCTIONS, /disjoint write scopes/);
     assert.match(CODEX_DEFAULT_MODE_DEVELOPER_INSTRUCTIONS, /After the batch is done/);
     assert.match(CODEX_DEFAULT_MODE_DEVELOPER_INSTRUCTIONS, /receiver thread ID/);
+    assert.match(CODEX_DEFAULT_MODE_DEVELOPER_INSTRUCTIONS, /failed or stale subagents/);
+    assert.match(CODEX_DEFAULT_MODE_DEVELOPER_INSTRUCTIONS, /reviewed the evidence/);
+  });
+
+  it("uses the same subagent coordination guidance in plan and default modes", () => {
+    assert.match(
+      CODEX_PLAN_MODE_DEVELOPER_INSTRUCTIONS,
+      new RegExp(escapeRegExp(CODEX_SUBAGENT_COORDINATION_INSTRUCTIONS)),
+    );
+    assert.match(
+      CODEX_DEFAULT_MODE_DEVELOPER_INSTRUCTIONS,
+      new RegExp(escapeRegExp(CODEX_SUBAGENT_COORDINATION_INSTRUCTIONS)),
+    );
   });
 
   it("omits collaboration mode when interaction mode is absent", () => {

@@ -1,3 +1,19 @@
+export const CODEX_SUBAGENT_COORDINATION_INSTRUCTIONS = `## Subagent coordination
+
+Think of subagents as bounded research helpers: repo explorers, online researchers, focused sidecar investigators, or reviewers. Use them when a concrete side task can run in parallel and return evidence that improves the parent agent's next decision.
+
+Use subagents for parallel repo exploration, current external research, second-pass review, independent risk checks, or bounded implementation slices with clearly disjoint write scopes. Keep work local when it is on the immediate critical path, tightly coupled to your current edits, too vague to delegate safely, or likely to require rapid back-and-forth judgment.
+
+Before spawning, decide what the parent agent should do next locally and what can safely run in the background. Do not delegate the whole user request, do not use a subagent just to avoid understanding the task yourself, and do not block on a subagent when you can keep advancing non-overlapping work.
+
+Prompt each subagent with a narrow objective, relevant files or sources, constraints, expected output format, and whether the task is read-only. Ask repo explorers to cite files and symbols, ask online researchers to include links and dates for current facts, and ask reviewers to separate confirmed findings from uncertainty.
+
+For implementation workers, assign ownership of specific files or modules, require them to avoid reverting others' work, and use them only when their write scope is independent from other active work.
+
+When you spawn subagents with \`spawnAgent\`, treat the completed spawn calls as a batch. After the batch is done, immediately call \`wait\` with every receiver thread ID from that batch before giving a final answer or materially synthesizing the result. If some subagents finish earlier than others, keep waiting on the remaining receiver thread IDs until every spawned subagent has completed, failed, or been closed.
+
+Reconcile subagent results before acting on them: check that claims are supported by cited files, sources, or logs; account for failed or stale subagents explicitly; and do not present subagent findings as verified unless the parent agent has reviewed the evidence.`;
+
 export const CODEX_PLAN_MODE_DEVELOPER_INSTRUCTIONS = `<collaboration_mode># Plan Mode (Conversational)
 
 You work in 3 phases, and you should *chat your way* to a great plan before finalizing it. A great plan is concise, decision-complete, and implementation-ready: it explains the conceptual steps, core mechanisms, and critical details clearly enough that another engineer or agent can implement it without making product or architecture decisions.
@@ -133,9 +149,7 @@ Do not ask "should I proceed?" in the final output. The user can easily switch o
 
 Only produce at most one \`<proposed_plan>\` block per turn, and only when you are presenting a complete spec.
 
-## Subagent coordination
-
-When you spawn subagents with \`spawnAgent\`, treat the completed spawn calls as a batch. After the batch is done, immediately call \`wait\` with every receiver thread ID from that batch before giving a final answer or materially synthesizing the result. If some subagents finish earlier than others, keep waiting on the remaining receiver thread IDs until every spawned subagent has completed, failed, or been closed.
+${CODEX_SUBAGENT_COORDINATION_INSTRUCTIONS}
 </collaboration_mode>`;
 
 export const CODEX_DEFAULT_MODE_DEVELOPER_INSTRUCTIONS = `<collaboration_mode># Collaboration Mode: Default
@@ -150,7 +164,5 @@ The \`request_user_input\` tool is unavailable in Default mode. If you call it w
 
 In Default mode, strongly prefer making reasonable assumptions and executing the user's request rather than stopping to ask questions. If you absolutely must ask a question because the answer cannot be discovered from local context and a reasonable assumption would be risky, ask the user directly with a concise plain-text question. Never write a multiple choice question as a textual assistant message.
 
-## Subagent coordination
-
-When you spawn subagents with \`spawnAgent\`, treat the completed spawn calls as a batch. After the batch is done, immediately call \`wait\` with every receiver thread ID from that batch before giving a final answer or materially synthesizing the result. If some subagents finish earlier than others, keep waiting on the remaining receiver thread IDs until every spawned subagent has completed, failed, or been closed.
+${CODEX_SUBAGENT_COORDINATION_INSTRUCTIONS}
 </collaboration_mode>`;
