@@ -146,9 +146,12 @@ predictable under long streams, reconnects, restarts, and provider crashes.
 - Completed: WebSocket history-sync snapshot reloads now share in-flight shell
   and per-thread reloads, debounce repeated idle notifications, and log
   subscriber counts plus load durations around actual reload work.
-- Next due item: add repeatable performance/load scenarios for long provider
-  streams, terminal output floods, many active sessions, reconnects, and large
-  timelines/diffs.
+- Completed: repeatable synthetic performance/load scenarios now live behind
+  `bun run perf:load`, covering long provider streams, terminal output floods,
+  many active sessions, reconnecting WebSocket clients, and large
+  timeline/diff workloads with optional budget enforcement.
+- Next due item: harden frontend persistence and rendering budgets around
+  draft payload size, persistence duration, and browser perf assertions.
 - Remaining work should focus on measured hardening and explicit operational
   signals before UI polish or broad refactors.
 
@@ -181,9 +184,9 @@ predictable under long streams, reconnects, restarts, and provider crashes.
   user-input, checkpoint, and final-message events.
 - Open risk: adapter-local unbounded queues can accumulate before bounded
   ingestion sees backpressure.
-- Open risk: reconnect/restart snapshot fanout now coalesces history-sync idle
-  reloads, but still needs repeatable load scenarios to set concrete latency
-  and memory budgets.
+- Open risk: load scenarios are now repeatable and budgeted, but they are still
+  synthetic harnesses; browser/server integration gates should be added before
+  treating the budgets as release-blocking.
 - Open risk: runtime event buffers are bounded with conservative blocking
   semantics, but coalescible/droppable event classes still use the
   must-deliver path until a measured lossy/coalescing buffer is introduced.
@@ -238,20 +241,13 @@ browser/load scenarios where timing and rendering behavior matter.
 
 ## Remaining Hardening Backlog
 
-1. Add repeatable performance/load scenarios.
-   - Long provider stream.
-   - Terminal output flood.
-   - Many active sessions.
-   - Many reconnecting WebSocket clients.
-   - Large thread timeline and large diff rendering.
-
-2. Harden frontend persistence and rendering budgets.
+1. Harden frontend persistence and rendering budgets.
    - Track composer draft payload size and persistence duration.
    - Warn or compact when local draft state exceeds budget.
    - Add browser perf assertions for timeline, composer, sidebar, and diff
      flows.
 
-3. Make release preflight performance-aware.
+2. Make release preflight performance-aware.
    - Keep `bun run fmt:check`, `bun lint`, `bun typecheck`, and `bun run test`.
    - Add browser tests, desktop smoke, bundle budget, and focused performance
      scenarios to the documented release gate.
