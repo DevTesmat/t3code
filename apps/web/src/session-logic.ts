@@ -74,6 +74,12 @@ export interface WorkLogEntry {
   toolCallId?: string;
   toolKey?: string;
   collabTool?: string;
+  failure?: {
+    kind: string;
+    path?: string;
+    reason?: string;
+    expectedContent?: string;
+  };
 }
 
 export type ThreadSubagentStatus = "running" | "completed" | "failed" | "closed" | "unknown";
@@ -657,6 +663,7 @@ function toDerivedWorkLogEntry(activity: OrchestrationThreadActivity): DerivedWo
   const outputPreview = extractCommandOutputPreview(payload, itemType);
   const commandStatus = extractCommandStatus(payload, activity.kind, itemType);
   const collabStatus = extractCollabWorkLogStatus(payload, activity.kind, itemType);
+  const failure = extractManagedFailure(payload);
   const exitCode = extractCommandExitCode(payload);
   const collabTool = extractCollabTool(payload);
   const collabLabel =
@@ -737,6 +744,9 @@ function toDerivedWorkLogEntry(activity: OrchestrationThreadActivity): DerivedWo
   }
   if (collabLabel) {
     entry.toolTitle = collabLabel;
+  }
+  if (failure) {
+    entry.failure = failure;
   }
   const collapseKey = deriveToolLifecycleCollapseKey(entry);
   if (collapseKey) {
@@ -1001,6 +1011,7 @@ function mergeDerivedWorkLogEntries(
   const toolCallId = next.toolCallId ?? previous.toolCallId;
   const toolKey = next.toolKey ?? previous.toolKey;
   const turnId = next.turnId ?? previous.turnId;
+  const failure = next.failure ?? previous.failure;
   return {
     ...previous,
     ...next,
@@ -1018,6 +1029,7 @@ function mergeDerivedWorkLogEntries(
     ...(toolCallId ? { toolCallId } : {}),
     ...(toolKey ? { toolKey } : {}),
     ...(turnId ? { turnId } : {}),
+    ...(failure ? { failure } : {}),
   };
 }
 
@@ -1267,6 +1279,26 @@ function extractCommandStatus(
     return "completed";
   }
   return "running";
+}
+
+function extractManagedFailure(
+  payload: Record<string, unknown> | null,
+): WorkLogEntry["failure"] | undefined {
+  const data = asRecord(payload?.data);
+  const failure = asRecord(data?.failure);
+  const kind = asTrimmedString(failure?.kind);
+  if (!kind) {
+    return undefined;
+  }
+  const path = asTrimmedString(failure?.path ?? data?.path);
+  const reason = asTrimmedString(failure?.reason ?? data?.reason);
+  const expectedContent = asTrimmedString(failure?.expectedContent ?? data?.expectedContent);
+  return {
+    kind,
+    ...(path ? { path } : {}),
+    ...(reason ? { reason } : {}),
+    ...(expectedContent ? { expectedContent } : {}),
+  };
 }
 
 function extractCollabWorkLogStatus(

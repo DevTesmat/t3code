@@ -3555,6 +3555,57 @@ describe("ProviderRuntimeIngestion", () => {
     expect(checkpoint?.checkpointRef).toBe("provider-diff:evt-turn-diff-updated");
   });
 
+  it("projects managed patch verification warnings as failed file-edit activities", async () => {
+    const harness = await createHarness();
+    const now = new Date().toISOString();
+
+    harness.emit({
+      type: "runtime.warning",
+      eventId: asEventId("evt-managed-patch-failure"),
+      provider: ProviderDriverKind.make("codex"),
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("turn-patch-failure"),
+      payload: {
+        message: "Patch verification failed for apps/web/src/session-logic.ts",
+        failure: {
+          kind: "apply_patch_verification_failed",
+          recoverability: "known-retryable",
+          message: "Patch verification failed for apps/web/src/session-logic.ts",
+          itemType: "file_change",
+          path: "apps/web/src/session-logic.ts",
+          reason: "Failed to find expected lines in apps/web/src/session-logic.ts:",
+          expectedContent: "const oldValue = true;",
+        },
+      },
+    });
+
+    const thread = await waitForThread(harness.engine, (entry) =>
+      entry.activities.some(
+        (activity: ProviderRuntimeTestActivity) => activity.id === "evt-managed-patch-failure",
+      ),
+    );
+    const activity = thread.activities.find(
+      (entry: ProviderRuntimeTestActivity) => entry.id === "evt-managed-patch-failure",
+    );
+    const payload =
+      activity?.payload && typeof activity.payload === "object"
+        ? (activity.payload as Record<string, unknown>)
+        : undefined;
+    const data =
+      payload?.data && typeof payload.data === "object"
+        ? (payload.data as Record<string, unknown>)
+        : undefined;
+
+    expect(activity?.kind).toBe("tool.completed");
+    expect(activity?.summary).toBe("File edit failed");
+    expect(payload?.itemType).toBe("file_change");
+    expect(payload?.status).toBe("failed");
+    expect(data?.path).toBe("apps/web/src/session-logic.ts");
+    expect(data?.expectedContent).toBe("const oldValue = true;");
+    expect(data?.toolCallId).toBe("managed-failure:evt-managed-patch-failure");
+  });
+
   it("projects context window updates into normalized thread activities", async () => {
     const harness = await createHarness();
     const now = new Date().toISOString();

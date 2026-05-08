@@ -671,6 +671,44 @@ describe("MessagesTimeline", () => {
     expect(markup).toContain("TypeError: nope");
   });
 
+  it("renders managed patch failures as compact failed edit rows", async () => {
+    const { MessagesTimeline } = await import("./MessagesTimeline");
+    const markup = renderToStaticMarkup(
+      <MessagesTimeline
+        {...buildProps()}
+        timelineEntries={[
+          {
+            id: "entry-1",
+            kind: "work",
+            createdAt: "2026-03-17T19:12:28.000Z",
+            entry: {
+              id: "work-1",
+              createdAt: "2026-03-17T19:12:28.000Z",
+              label: "File edit failed",
+              detail: "Failed to find expected lines in apps/web/src/session-logic.ts:",
+              tone: "tool",
+              itemType: "file_change",
+              changedFiles: ["apps/web/src/session-logic.ts"],
+              status: "failed",
+              failure: {
+                kind: "apply_patch_verification_failed",
+                path: "apps/web/src/session-logic.ts",
+                reason: "Failed to find expected lines in apps/web/src/session-logic.ts:",
+                expectedContent: "const oldValue = true;",
+              },
+            },
+          },
+        ]}
+      />,
+    );
+
+    expect(markup).toContain("File edit failed");
+    expect(markup).toContain("apps/web/src/session-logic.ts");
+    expect(markup).toContain("Failed");
+    expect(markup).toContain("managed-failed-edit-toggle");
+    expect(markup).not.toContain("inline-diff-toggle");
+  });
+
   it("auto-renders running terminal output previews", async () => {
     const { MessagesTimeline } = await import("./MessagesTimeline");
     const markup = renderToStaticMarkup(

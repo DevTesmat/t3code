@@ -78,6 +78,26 @@ export type RuntimePlanStepStatus = typeof RuntimePlanStepStatus.Type;
 const RuntimeItemStatus = Schema.Literals(["inProgress", "completed", "failed", "declined"]);
 export type RuntimeItemStatus = typeof RuntimeItemStatus.Type;
 
+const RuntimeManagedFailureRecoverability = Schema.Literals([
+  "known-retryable",
+  "known-terminal",
+  "unmanaged",
+]);
+export type RuntimeManagedFailureRecoverability = typeof RuntimeManagedFailureRecoverability.Type;
+
+const RuntimeManagedFailure = Schema.Struct({
+  kind: TrimmedNonEmptyStringSchema,
+  recoverability: RuntimeManagedFailureRecoverability,
+  message: TrimmedNonEmptyStringSchema,
+  itemType: Schema.optional(TrimmedNonEmptyStringSchema),
+  toolCallId: Schema.optional(TrimmedNonEmptyStringSchema),
+  path: Schema.optional(TrimmedNonEmptyStringSchema),
+  reason: Schema.optional(TrimmedNonEmptyStringSchema),
+  expectedContent: Schema.optional(TrimmedNonEmptyStringSchema),
+  detail: Schema.optional(Schema.Unknown),
+});
+export type RuntimeManagedFailure = typeof RuntimeManagedFailure.Type;
+
 const RuntimeContentStreamKind = Schema.Literals([
   "assistant_text",
   "reasoning_text",
@@ -592,6 +612,7 @@ export type FilesPersistedPayload = typeof FilesPersistedPayload.Type;
 const RuntimeWarningPayload = Schema.Struct({
   message: TrimmedNonEmptyStringSchema,
   detail: Schema.optional(Schema.Unknown),
+  failure: Schema.optional(RuntimeManagedFailure),
 });
 export type RuntimeWarningPayload = typeof RuntimeWarningPayload.Type;
 

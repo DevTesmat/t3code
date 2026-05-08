@@ -136,10 +136,74 @@ function trimText(value: string | undefined | null): string | undefined {
 }
 
 const FATAL_CODEX_STDERR_SNIPPETS = ["failed to connect to websocket"];
+const APPLY_PATCH_VERIFICATION_FAILED_PREFIX = "apply_patch verification failed:";
+const APPLY_PATCH_EXPECTED_LINES_PATTERN = /Failed to find expected lines in (?<path>.+?):\s*$/u;
 
 function isFatalCodexProcessStderrMessage(message: string): boolean {
   const normalized = message.toLowerCase();
   return FATAL_CODEX_STDERR_SNIPPETS.some((snippet) => normalized.includes(snippet));
+}
+
+interface PendingApplyPatchVerificationFailure {
+  readonly event: ProviderEvent;
+  readonly path?: string | undefined;
+  readonly reason: string;
+  readonly lines: string[];
+}
+
+function parseApplyPatchVerificationFailureStart(
+  message: string,
+): { readonly path?: string | undefined; readonly reason: string } | null {
+  if (!message.startsWith(APPLY_PATCH_VERIFICATION_FAILED_PREFIX)) {
+    return null;
+  }
+  const reason = trimText(message.slice(APPLY_PATCH_VERIFICATION_FAILED_PREFIX.length)) ?? message;
+  const match = APPLY_PATCH_EXPECTED_LINES_PATTERN.exec(reason);
+  const pathValue = trimText(match?.groups?.path);
+  return {
+    reason,
+    ...(pathValue ? { path: pathValue } : {}),
+  };
+}
+
+function isApplyPatchVerificationContinuation(event: ProviderEvent): boolean {
+  if (event.method !== "process/stderr" || !event.message) {
+    return false;
+  }
+  return (
+    !event.message.startsWith(APPLY_PATCH_VERIFICATION_FAILED_PREFIX) &&
+    !isFatalCodexProcessStderrMessage(event.message)
+  );
+}
+
+function buildApplyPatchVerificationFailureWarning(
+  pending: PendingApplyPatchVerificationFailure,
+  canonicalThreadId: ThreadId,
+): ProviderRuntimeEvent {
+  const expectedContent = trimText(pending.lines.join("\n"));
+  const message = pending.path
+    ? `Patch verification failed for ${pending.path}`
+    : "Patch verification failed";
+  return {
+    type: "runtime.warning",
+    ...runtimeEventBase(pending.event, canonicalThreadId),
+    payload: {
+      message,
+      detail: {
+        originalMessage: pending.event.message,
+        expectedContent,
+      },
+      failure: {
+        kind: "apply_patch_verification_failed",
+        recoverability: "known-retryable",
+        message,
+        itemType: "file_change",
+        ...(pending.path ? { path: pending.path } : {}),
+        reason: pending.reason,
+        ...(expectedContent ? { expectedContent } : {}),
+      },
+    },
+  };
 }
 
 function normalizeCodexTokenUsage(
@@ -1446,6 +1510,49 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
     options?.nativeEventLogger === undefined ? nativeEventLogger : undefined;
   const runtimeEventQueue = yield* Queue.unbounded<ProviderRuntimeEvent>();
   const sessions = new Map<ThreadId, CodexAdapterSessionContext>();
+  const pendingPatchFailureByThread = new Map<ThreadId, PendingApplyPatchVerificationFailure>();
+
+  const flushPendingPatchFailure = (threadId: ThreadId): ReadonlyArray<ProviderRuntimeEvent> => {
+    const pending = pendingPatchFailureByThread.get(threadId);
+    if (!pending) {
+      return [];
+    }
+    pendingPatchFailureByThread.delete(threadId);
+    return [buildApplyPatchVerificationFailureWarning(pending, threadId)];
+  };
+
+  const mapEventWithBufferedStderr = (
+    event: ProviderEvent,
+  ): ReadonlyArray<ProviderRuntimeEvent> => {
+    if (event.method !== "process/stderr" || !event.message) {
+      return [
+        ...flushPendingPatchFailure(event.threadId),
+        ...mapToRuntimeEvents(event, event.threadId),
+      ];
+    }
+
+    const start = parseApplyPatchVerificationFailureStart(event.message);
+    if (start) {
+      const flushed = flushPendingPatchFailure(event.threadId);
+      pendingPatchFailureByThread.set(event.threadId, {
+        event,
+        ...start,
+        lines: [],
+      });
+      return flushed;
+    }
+
+    const pending = pendingPatchFailureByThread.get(event.threadId);
+    if (pending && isApplyPatchVerificationContinuation(event)) {
+      pending.lines.push(event.message);
+      return [];
+    }
+
+    return [
+      ...flushPendingPatchFailure(event.threadId),
+      ...mapToRuntimeEvents(event, event.threadId),
+    ];
+  };
 
   const startSession: CodexAdapterShape["startSession"] = (input) =>
     Effect.scoped(
@@ -1505,7 +1612,7 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
         const eventFiber = yield* Stream.runForEach(runtime.events, (event) =>
           Effect.gen(function* () {
             yield* writeNativeEvent(event);
-            const runtimeEvents = mapToRuntimeEvents(event, event.threadId);
+            const runtimeEvents = mapEventWithBufferedStderr(event);
             if (runtimeEvents.length === 0) {
               yield* Effect.logDebug("ignoring unhandled Codex provider event", {
                 method: event.method,
@@ -1517,7 +1624,14 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
             }
             yield* Queue.offerAll(runtimeEventQueue, runtimeEvents);
           }),
-        ).pipe(Effect.forkChild);
+        ).pipe(
+          Effect.ensuring(
+            Effect.suspend(() =>
+              Queue.offerAll(runtimeEventQueue, flushPendingPatchFailure(input.threadId)),
+            ),
+          ),
+          Effect.forkChild,
+        );
 
         const started = yield* runtime.start().pipe(
           Effect.mapError(

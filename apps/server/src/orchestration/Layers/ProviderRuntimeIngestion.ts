@@ -452,6 +452,41 @@ function requestKindFromCanonicalRequestType(
   }
 }
 
+function managedFailureWarningToActivity(
+  event: Extract<ProviderRuntimeEvent, { type: "runtime.warning" }>,
+  maybeSequence: { readonly sequence?: number },
+): OrchestrationThreadActivity | null {
+  const failure = event.payload.failure;
+  if (!failure || failure.kind !== "apply_patch_verification_failed") {
+    return null;
+  }
+
+  const data: Record<string, unknown> = {
+    failure,
+    toolCallId: failure.toolCallId ?? `managed-failure:${event.eventId}`,
+    ...(failure.path ? { path: failure.path } : {}),
+    ...(failure.reason ? { reason: failure.reason } : {}),
+    ...(failure.expectedContent ? { expectedContent: failure.expectedContent } : {}),
+  };
+
+  return {
+    id: event.eventId,
+    createdAt: event.createdAt,
+    tone: "tool",
+    kind: "tool.completed",
+    summary: "File edit failed",
+    payload: {
+      itemType: "file_change",
+      title: "File edit",
+      status: "failed",
+      detail: failure.reason ?? failure.message,
+      data,
+    },
+    turnId: toTurnId(event.turnId) ?? null,
+    ...maybeSequence,
+  };
+}
+
 function runtimeEventToActivities(
   event: ProviderRuntimeEvent,
 ): ReadonlyArray<OrchestrationThreadActivity> {
@@ -535,6 +570,10 @@ function runtimeEventToActivities(
     }
 
     case "runtime.warning": {
+      const managedFailureActivity = managedFailureWarningToActivity(event, maybeSequence);
+      if (managedFailureActivity) {
+        return [managedFailureActivity];
+      }
       return [
         {
           id: event.eventId,

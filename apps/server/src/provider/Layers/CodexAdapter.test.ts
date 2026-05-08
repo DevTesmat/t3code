@@ -784,6 +784,63 @@ lifecycleLayer("CodexAdapterLive lifecycle", (it) => {
     }),
   );
 
+  it.effect("groups apply_patch verification stderr into a managed runtime warning", () =>
+    Effect.gen(function* () {
+      const { adapter, runtime } = yield* startLifecycleRuntime();
+      const firstEventFiber = yield* Stream.runHead(adapter.streamEvents).pipe(Effect.forkChild);
+
+      yield* runtime.emit({
+        id: asEventId("evt-patch-failed-start"),
+        kind: "notification",
+        provider: ProviderDriverKind.make("codex"),
+        threadId: asThreadId("thread-1"),
+        createdAt: new Date().toISOString(),
+        method: "process/stderr",
+        turnId: asTurnId("turn-1"),
+        message:
+          "apply_patch verification failed: Failed to find expected lines in apps/web/src/session-logic.ts:",
+      } satisfies ProviderEvent);
+      yield* runtime.emit({
+        id: asEventId("evt-patch-failed-line-1"),
+        kind: "notification",
+        provider: ProviderDriverKind.make("codex"),
+        threadId: asThreadId("thread-1"),
+        createdAt: new Date().toISOString(),
+        method: "process/stderr",
+        turnId: asTurnId("turn-1"),
+        message: "  const oldValue = true;",
+      } satisfies ProviderEvent);
+      yield* runtime.emit({
+        id: asEventId("evt-flush"),
+        kind: "notification",
+        provider: ProviderDriverKind.make("codex"),
+        threadId: asThreadId("thread-1"),
+        createdAt: new Date().toISOString(),
+        method: "thread/metadata/updated",
+        payload: {
+          threadId: "thread-1",
+          title: "flush",
+        },
+      } satisfies ProviderEvent);
+
+      const firstEvent = yield* Fiber.join(firstEventFiber);
+
+      assert.equal(firstEvent._tag, "Some");
+      if (firstEvent._tag !== "Some") {
+        return;
+      }
+      assert.equal(firstEvent.value.type, "runtime.warning");
+      if (firstEvent.value.type !== "runtime.warning") {
+        return;
+      }
+      assert.equal(firstEvent.value.payload.failure?.kind, "apply_patch_verification_failed");
+      assert.equal(firstEvent.value.payload.failure?.recoverability, "known-retryable");
+      assert.equal(firstEvent.value.payload.failure?.itemType, "file_change");
+      assert.equal(firstEvent.value.payload.failure?.path, "apps/web/src/session-logic.ts");
+      assert.equal(firstEvent.value.payload.failure?.expectedContent, "const oldValue = true;");
+    }),
+  );
+
   it.effect("maps fatal websocket stderr notifications to runtime.error", () =>
     Effect.gen(function* () {
       const { adapter, runtime } = yield* startLifecycleRuntime();

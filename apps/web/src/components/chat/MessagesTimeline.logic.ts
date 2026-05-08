@@ -393,6 +393,10 @@ function areWorkEntriesUnchanged(a: WorkLogEntry, b: WorkLogEntry): boolean {
     a.requestKind === b.requestKind &&
     a.toolCallId === b.toolCallId &&
     a.toolKey === b.toolKey &&
+    a.failure?.kind === b.failure?.kind &&
+    a.failure?.path === b.failure?.path &&
+    a.failure?.reason === b.failure?.reason &&
+    a.failure?.expectedContent === b.failure?.expectedContent &&
     areOptionalStringArraysUnchanged(a.changedFiles, b.changedFiles) &&
     areOutputPreviewsUnchanged(a.outputPreview, b.outputPreview)
   );

@@ -1538,6 +1538,44 @@ describe("deriveWorkLogEntries", () => {
     ]);
   });
 
+  it("preserves managed file-change failure details", () => {
+    const activities: OrchestrationThreadActivity[] = [
+      makeActivity({
+        id: "failed-file-tool",
+        kind: "tool.completed",
+        summary: "File edit failed",
+        payload: {
+          itemType: "file_change",
+          status: "failed",
+          detail: "Failed to find expected lines in apps/web/src/session-logic.ts:",
+          data: {
+            path: "apps/web/src/session-logic.ts",
+            toolCallId: "managed-failure:evt-1",
+            failure: {
+              kind: "apply_patch_verification_failed",
+              path: "apps/web/src/session-logic.ts",
+              reason: "Failed to find expected lines in apps/web/src/session-logic.ts:",
+              expectedContent: "const oldValue = true;",
+            },
+          },
+        },
+      }),
+    ];
+
+    const [entry] = deriveWorkLogEntries(activities, undefined);
+    expect(entry).toMatchObject({
+      status: "failed",
+      itemType: "file_change",
+      toolCallId: "managed-failure:evt-1",
+      changedFiles: ["apps/web/src/session-logic.ts"],
+      failure: {
+        kind: "apply_patch_verification_failed",
+        path: "apps/web/src/session-logic.ts",
+        expectedContent: "const oldValue = true;",
+      },
+    });
+  });
+
   it("drops duplicated tool detail when it only repeats the title", () => {
     const activities: OrchestrationThreadActivity[] = [
       makeActivity({

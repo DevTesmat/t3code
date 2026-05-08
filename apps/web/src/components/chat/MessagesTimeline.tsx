@@ -1130,6 +1130,14 @@ function commandOutputPreviewLabel(workEntry: TimelineWorkEntry): string | null 
   }
 }
 
+function isManagedFailedEdit(workEntry: TimelineWorkEntry): boolean {
+  return (
+    workEntry.status === "failed" &&
+    workEntry.itemType === "file_change" &&
+    workEntry.failure?.kind === "apply_patch_verification_failed"
+  );
+}
+
 function workEntryToolKey(workEntry: TimelineWorkEntry): string {
   return workEntry.toolKey ?? workEntry.toolCallId ?? workEntry.id;
 }
@@ -1212,6 +1220,30 @@ const ToolOutputPreview = memo(function ToolOutputPreview(props: {
         <pre className="m-0 min-w-max font-inherit leading-inherit whitespace-pre">
           {outputText}
           {outputTruncated ? "\n[output truncated]" : ""}
+        </pre>
+      </div>
+    </div>
+  );
+});
+
+const ManagedFailedEditPreview = memo(function ManagedFailedEditPreview(props: {
+  workEntry: TimelineWorkEntry;
+}) {
+  const expectedContent = props.workEntry.failure?.expectedContent;
+  if (!expectedContent) {
+    return null;
+  }
+  return (
+    <div className="pl-7 pr-1 pb-1">
+      <div className="mb-1 font-mono text-[9px] leading-3 text-muted-foreground/55">
+        expected content
+      </div>
+      <div
+        className="max-h-56 overflow-auto rounded-md border border-destructive/25 bg-destructive/5 px-2 py-1 font-mono text-[11px] leading-4 text-destructive/85"
+        data-testid="managed-failed-edit-preview"
+      >
+        <pre className="m-0 min-w-max font-inherit leading-inherit whitespace-pre">
+          {expectedContent}
         </pre>
       </div>
     </div>
@@ -1558,6 +1590,7 @@ const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
   const hasChangedFiles = (workEntry.changedFiles?.length ?? 0) > 0;
   const previewIsChangedFiles = hasChangedFiles && !workEntry.command && !workEntry.detail;
   const hasInlineDiff = hasChangedFiles && !isTerminal;
+  const managedFailedEdit = isManagedFailedEdit(workEntry);
   const isFileChange =
     workEntry.itemType === "file_change" || workEntry.requestKind === "file-change";
   const outputPreview =
@@ -1580,7 +1613,8 @@ const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
     ((isTerminal || isFileChange) &&
       workEntry.status === "running" &&
       Boolean(workEntry.toolCallId));
-  const isExpandable = outputPreview !== null || hasLiveOutput;
+  const isExpandable =
+    outputPreview !== null || hasLiveOutput || Boolean(workEntry.failure?.expectedContent);
   const toolKey = workEntryToolKey(workEntry);
   const defaultOutputExpanded = isTerminal && shouldAutoShowTerminalOutput(workEntry, liveOutput);
   const defaultLivePatchExpanded =
@@ -1650,6 +1684,56 @@ const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
           )}
         </div>
         {showOutputPreview && <ToolOutputPreview workEntry={workEntry} liveOutput={liveOutput} />}
+      </div>
+    );
+  }
+
+  if (managedFailedEdit) {
+    const showFailurePreview = outputExpanded;
+    return (
+      <div className="group rounded-lg border border-destructive/20 bg-destructive/5 px-1 py-0.5 transition-colors duration-150 hover:bg-destructive/8 focus-within:bg-destructive/8">
+        <div className="flex min-h-7 items-center gap-2 transition-[opacity,translate] duration-200">
+          <span className="flex size-5 shrink-0 items-center justify-center text-destructive/70">
+            <SquarePenIcon className="size-3" />
+          </span>
+          <p
+            className="min-w-0 flex-1 truncate text-[11px] leading-5 text-destructive/80"
+            title={displayText}
+          >
+            <span className="text-foreground/80">{heading}</span>
+            {preview && <span className="text-muted-foreground/55"> - {preview}</span>}
+          </p>
+          {workEntry.status && (
+            <span
+              className={cn(
+                "shrink-0 rounded-md border px-1.5 py-0.5 text-[10px] leading-3 font-medium",
+                terminalStatusClass(workEntry),
+              )}
+            >
+              {terminalStatusLabel(workEntry)}
+            </span>
+          )}
+          {workEntry.failure?.expectedContent && (
+            <button
+              type="button"
+              className="flex size-5 shrink-0 items-center justify-center rounded-md text-muted-foreground/45 transition-[transform,color] duration-150 hover:text-muted-foreground/80 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring/45"
+              aria-label={
+                showFailurePreview ? "Collapse expected content" : "Expand expected content"
+              }
+              aria-expanded={showFailurePreview}
+              onClick={() => onToggleOutputExpanded(toolKey, false)}
+              data-testid="managed-failed-edit-toggle"
+            >
+              <ChevronRightIcon
+                className={cn(
+                  "size-3.5 transition-transform duration-150",
+                  showFailurePreview && "rotate-90",
+                )}
+              />
+            </button>
+          )}
+        </div>
+        {showFailurePreview && <ManagedFailedEditPreview workEntry={workEntry} />}
       </div>
     );
   }
