@@ -39,7 +39,7 @@ import {
 import { create } from "zustand";
 import { createJSONStorage, persist } from "zustand/middleware";
 import { useShallow } from "zustand/react/shallow";
-import { createDebouncedStorage, createMemoryStorage } from "./lib/storage";
+import { createDebouncedStorage, createMemoryStorage, type StateStorage } from "./lib/storage";
 import { getDefaultServerModel } from "./providerModels";
 import { UnifiedSettings } from "@t3tools/contracts/settings";
 
@@ -53,9 +53,40 @@ export const DraftId = Schema.String.pipe(Schema.brand("DraftId"));
 export type DraftId = typeof DraftId.Type;
 
 const COMPOSER_PERSIST_DEBOUNCE_MS = 300;
+export const COMPOSER_DRAFT_STORAGE_WARN_BYTES = 512 * 1024;
+export const COMPOSER_DRAFT_STORAGE_COMPACT_BYTES = 1024 * 1024;
+export const COMPOSER_DRAFT_STORAGE_WARN_DURATION_MS = 16;
+
+export interface ComposerDraftPersistenceSnapshot {
+  readonly lastPayloadBytes: number;
+  readonly lastPersistedBytes: number;
+  readonly lastWriteDurationMs: number;
+  readonly lastWriteCompacted: boolean;
+  readonly compactedWriteCount: number;
+  readonly oversizedWriteCount: number;
+  readonly failedWriteCount: number;
+}
+
+let composerDraftPersistenceSnapshot: ComposerDraftPersistenceSnapshot = {
+  lastPayloadBytes: 0,
+  lastPersistedBytes: 0,
+  lastWriteDurationMs: 0,
+  lastWriteCompacted: false,
+  compactedWriteCount: 0,
+  oversizedWriteCount: 0,
+  failedWriteCount: 0,
+};
+
+export function getComposerDraftPersistenceSnapshot(): ComposerDraftPersistenceSnapshot {
+  return composerDraftPersistenceSnapshot;
+}
+
+const composerMeasuredStorage = createComposerDraftPersistenceStorage(
+  typeof localStorage !== "undefined" ? localStorage : createMemoryStorage(),
+);
 
 const composerDebouncedStorage = createDebouncedStorage(
-  typeof localStorage !== "undefined" ? localStorage : createMemoryStorage(),
+  composerMeasuredStorage,
   COMPOSER_PERSIST_DEBOUNCE_MS,
 );
 
@@ -204,6 +235,136 @@ const PersistedComposerDraftStoreStorage = Schema.Struct({
   version: Schema.Number,
   state: PersistedComposerDraftStoreState,
 });
+
+function measureStringBytes(value: string): number {
+  return new TextEncoder().encode(value).byteLength;
+}
+
+function nowMs(): number {
+  return typeof performance !== "undefined" && typeof performance.now === "function"
+    ? performance.now()
+    : Date.now();
+}
+
+function warnComposerDraftPersistence(message: string, details: Record<string, unknown>): void {
+  if (typeof console !== "undefined" && typeof console.warn === "function") {
+    console.warn(message, details);
+  }
+}
+
+export function compactComposerDraftStorageValue(value: string): {
+  value: string;
+  compacted: boolean;
+  persistedBytes: number;
+} {
+  const payloadBytes = measureStringBytes(value);
+  if (payloadBytes <= COMPOSER_DRAFT_STORAGE_COMPACT_BYTES) {
+    return { value, compacted: false, persistedBytes: payloadBytes };
+  }
+
+  try {
+    const parsed = JSON.parse(value) as {
+      state?: {
+        draftsByThreadKey?: Record<string, { attachments?: unknown }>;
+      };
+    };
+    const draftsByThreadKey = parsed.state?.draftsByThreadKey;
+    if (!draftsByThreadKey || typeof draftsByThreadKey !== "object") {
+      return { value, compacted: false, persistedBytes: payloadBytes };
+    }
+
+    let compacted = false;
+    for (const draft of Object.values(draftsByThreadKey)) {
+      if (draft && typeof draft === "object" && Array.isArray(draft.attachments)) {
+        if (draft.attachments.length > 0) {
+          compacted = true;
+        }
+        draft.attachments = [];
+      }
+    }
+
+    if (!compacted) {
+      return { value, compacted: false, persistedBytes: payloadBytes };
+    }
+
+    const compactedValue = JSON.stringify(parsed);
+    return {
+      value: compactedValue,
+      compacted: true,
+      persistedBytes: measureStringBytes(compactedValue),
+    };
+  } catch {
+    return { value, compacted: false, persistedBytes: payloadBytes };
+  }
+}
+
+function updateComposerDraftPersistenceSnapshot(
+  next: Pick<
+    ComposerDraftPersistenceSnapshot,
+    "lastPayloadBytes" | "lastPersistedBytes" | "lastWriteDurationMs" | "lastWriteCompacted"
+  > & {
+    failed?: boolean;
+  },
+): void {
+  composerDraftPersistenceSnapshot = {
+    ...composerDraftPersistenceSnapshot,
+    ...next,
+    compactedWriteCount:
+      composerDraftPersistenceSnapshot.compactedWriteCount + (next.lastWriteCompacted ? 1 : 0),
+    oversizedWriteCount:
+      composerDraftPersistenceSnapshot.oversizedWriteCount +
+      (next.lastPayloadBytes > COMPOSER_DRAFT_STORAGE_WARN_BYTES ? 1 : 0),
+    failedWriteCount: composerDraftPersistenceSnapshot.failedWriteCount + (next.failed ? 1 : 0),
+  };
+}
+
+function createComposerDraftPersistenceStorage(baseStorage: StateStorage): StateStorage {
+  return {
+    getItem: (name) => baseStorage.getItem(name),
+    setItem: (name, value) => {
+      const payloadBytes = measureStringBytes(value);
+      const compacted = compactComposerDraftStorageValue(value);
+      const startedAt = nowMs();
+      let failed = false;
+      try {
+        baseStorage.setItem(name, compacted.value);
+      } catch (error) {
+        failed = true;
+        warnComposerDraftPersistence("Composer draft persistence write failed", {
+          payloadBytes,
+          persistedBytes: compacted.persistedBytes,
+          compacted: compacted.compacted,
+          error,
+        });
+      }
+      const writeDurationMs = nowMs() - startedAt;
+      updateComposerDraftPersistenceSnapshot({
+        lastPayloadBytes: payloadBytes,
+        lastPersistedBytes: compacted.persistedBytes,
+        lastWriteDurationMs: writeDurationMs,
+        lastWriteCompacted: compacted.compacted,
+        failed,
+      });
+      if (payloadBytes > COMPOSER_DRAFT_STORAGE_WARN_BYTES || compacted.compacted) {
+        warnComposerDraftPersistence("Composer draft persistence payload exceeded budget", {
+          payloadBytes,
+          persistedBytes: compacted.persistedBytes,
+          compacted: compacted.compacted,
+          budgetBytes: COMPOSER_DRAFT_STORAGE_WARN_BYTES,
+          compactBytes: COMPOSER_DRAFT_STORAGE_COMPACT_BYTES,
+        });
+      }
+      if (writeDurationMs > COMPOSER_DRAFT_STORAGE_WARN_DURATION_MS) {
+        warnComposerDraftPersistence("Composer draft persistence write exceeded duration budget", {
+          writeDurationMs,
+          budgetMs: COMPOSER_DRAFT_STORAGE_WARN_DURATION_MS,
+          persistedBytes: compacted.persistedBytes,
+        });
+      }
+    },
+    removeItem: (name) => baseStorage.removeItem(name),
+  };
+}
 
 /**
  * Composer content keyed by either a draft session (`DraftId`) or a real server

@@ -150,8 +150,12 @@ predictable under long streams, reconnects, restarts, and provider crashes.
   `bun run perf:load`, covering long provider streams, terminal output floods,
   many active sessions, reconnecting WebSocket clients, and large
   timeline/diff workloads with optional budget enforcement.
-- Next due item: harden frontend persistence and rendering budgets around
-  draft payload size, persistence duration, and browser perf assertions.
+- Completed: composer draft persistence now tracks serialized payload size and
+  write duration, warns on oversized/slow writes, compacts persisted image
+  attachment payloads when drafts exceed budget, and swallows storage failures
+  so local-storage quota errors do not break composer state.
+- Next due item: add browser perf assertions for timeline, composer, sidebar,
+  and diff flows.
 - Remaining work should focus on measured hardening and explicit operational
   signals before UI polish or broad refactors.
 
@@ -190,8 +194,10 @@ predictable under long streams, reconnects, restarts, and provider crashes.
 - Open risk: runtime event buffers are bounded with conservative blocking
   semantics, but coalescible/droppable event classes still use the
   must-deliver path until a measured lossy/coalescing buffer is introduced.
-- Open risk: local-storage draft persistence can become main-thread work when
-  draft payloads or attachment metadata grow.
+- Open risk: composer draft local-storage writes are now measured and compacted
+  for oversized image payloads, but the browser perf suite still needs
+  end-to-end assertions that large timeline, composer, sidebar, and diff flows
+  stay responsive.
 - Open risk: large React coordination components are harder to profile and
   reason about, even when subcomponents are memoized and virtualized.
 
@@ -241,11 +247,11 @@ browser/load scenarios where timing and rendering behavior matter.
 
 ## Remaining Hardening Backlog
 
-1. Harden frontend persistence and rendering budgets.
-   - Track composer draft payload size and persistence duration.
-   - Warn or compact when local draft state exceeds budget.
-   - Add browser perf assertions for timeline, composer, sidebar, and diff
-     flows.
+1. Add browser perf assertions.
+   - Cover timeline, composer, sidebar, and diff flows with repeatable browser
+     scenarios.
+   - Keep assertions focused on responsiveness, virtualization, and avoiding
+     app-shell rerenders during streaming updates.
 
 2. Make release preflight performance-aware.
    - Keep `bun run fmt:check`, `bun lint`, `bun typecheck`, and `bun run test`.

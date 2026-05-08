@@ -57,8 +57,11 @@ function selectionsByProvider(
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
+  COMPOSER_DRAFT_STORAGE_COMPACT_BYTES,
   COMPOSER_DRAFT_STORAGE_KEY,
+  compactComposerDraftStorageValue,
   finalizePromotedDraftThreadByRef,
+  getComposerDraftPersistenceSnapshot,
   markPromotedDraftThread,
   markPromotedDraftThreadByRef,
   markPromotedDraftThreads,
@@ -1510,5 +1513,89 @@ describe("createDebouncedStorage", () => {
     vi.advanceTimersByTime(300);
     expect(base.setItem).toHaveBeenCalledTimes(1);
     expect(base.setItem).toHaveBeenCalledWith("key", "v2");
+  });
+});
+
+describe("composerDraftStore persistence budgets", () => {
+  const threadId = ThreadId.make("thread-large-draft");
+  const threadRef = scopeThreadRef(TEST_ENVIRONMENT_ID, threadId);
+  const threadKey = scopedThreadKey(threadRef);
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+    removeLocalStorageItem(COMPOSER_DRAFT_STORAGE_KEY);
+    resetComposerDraftStore();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+    removeLocalStorageItem(COMPOSER_DRAFT_STORAGE_KEY);
+    resetComposerDraftStore();
+    vi.restoreAllMocks();
+  });
+
+  it("compacts oversized persisted image attachments before writing local storage", () => {
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const beforeSnapshot = getComposerDraftPersistenceSnapshot();
+    const largeDataUrl = `data:image/png;base64,${"a".repeat(COMPOSER_DRAFT_STORAGE_COMPACT_BYTES)}`;
+    const image = makeImage({
+      id: "img-large",
+      previewUrl: "blob:large",
+      sizeBytes: 1024,
+    });
+
+    useComposerDraftStore.getState().addImage(threadRef, image);
+    useComposerDraftStore.getState().syncPersistedAttachments(threadRef, [
+      {
+        id: image.id,
+        name: image.name,
+        mimeType: image.mimeType,
+        sizeBytes: image.sizeBytes,
+        dataUrl: largeDataUrl,
+      },
+    ]);
+    vi.advanceTimersByTime(300);
+
+    const snapshot = getComposerDraftPersistenceSnapshot();
+    expect(snapshot.lastWriteCompacted).toBe(true);
+    expect(snapshot.lastPayloadBytes).toBeGreaterThan(snapshot.lastPersistedBytes);
+    expect(snapshot.compactedWriteCount).toBeGreaterThan(beforeSnapshot.compactedWriteCount);
+    expect(warnSpy).toHaveBeenCalledWith(
+      "Composer draft persistence payload exceeded budget",
+      expect.objectContaining({ compacted: true }),
+    );
+  });
+
+  it("preserves draft text while compacting image attachment payloads", () => {
+    const largeDataUrl = `data:image/png;base64,${"a".repeat(COMPOSER_DRAFT_STORAGE_COMPACT_BYTES)}`;
+    const raw = JSON.stringify({
+      version: 6,
+      state: {
+        draftsByThreadKey: {
+          [threadKey]: {
+            prompt: "keep me",
+            attachments: [
+              {
+                id: "img-large",
+                name: "large.png",
+                mimeType: "image/png",
+                sizeBytes: 1024,
+                dataUrl: largeDataUrl,
+              },
+            ],
+          },
+        },
+      },
+    });
+
+    const compacted = compactComposerDraftStorageValue(raw);
+    const parsed = JSON.parse(compacted.value) as {
+      state?: { draftsByThreadKey?: Record<string, { prompt?: string; attachments?: unknown[] }> };
+    };
+
+    expect(compacted.compacted).toBe(true);
+    expect(compacted.persistedBytes).toBeLessThan(new TextEncoder().encode(raw).byteLength);
+    expect(parsed.state?.draftsByThreadKey?.[threadKey]?.prompt).toBe("keep me");
+    expect(parsed.state?.draftsByThreadKey?.[threadKey]?.attachments).toEqual([]);
   });
 });
