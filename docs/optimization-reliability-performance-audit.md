@@ -154,8 +154,10 @@ predictable under long streams, reconnects, restarts, and provider crashes.
   write duration, warns on oversized/slow writes, compacts persisted image
   attachment payloads when drafts exceed budget, and swallows storage failures
   so local-storage quota errors do not break composer state.
-- Next due item: add browser perf assertions for timeline, composer, sidebar,
-  and diff flows.
+- Completed: browser perf assertions now cover large timeline mount/streaming
+  rerender, large inline diff rendering, large composer changed-file summaries,
+  and sidebar project/thread derivation.
+- Next due item: make release preflight performance-aware.
 - Remaining work should focus on measured hardening and explicit operational
   signals before UI polish or broad refactors.
 
@@ -194,10 +196,9 @@ predictable under long streams, reconnects, restarts, and provider crashes.
 - Open risk: runtime event buffers are bounded with conservative blocking
   semantics, but coalescible/droppable event classes still use the
   must-deliver path until a measured lossy/coalescing buffer is introduced.
-- Open risk: composer draft local-storage writes are now measured and compacted
-  for oversized image payloads, but the browser perf suite still needs
-  end-to-end assertions that large timeline, composer, sidebar, and diff flows
-  stay responsive.
+- Open risk: browser perf assertions now cover the main timeline, composer,
+  sidebar, and inline diff flows, but they are not yet part of the documented
+  release preflight gate.
 - Open risk: large React coordination components are harder to profile and
   reason about, even when subcomponents are memoized and virtualized.
 
@@ -247,13 +248,7 @@ browser/load scenarios where timing and rendering behavior matter.
 
 ## Remaining Hardening Backlog
 
-1. Add browser perf assertions.
-   - Cover timeline, composer, sidebar, and diff flows with repeatable browser
-     scenarios.
-   - Keep assertions focused on responsiveness, virtualization, and avoiding
-     app-shell rerenders during streaming updates.
-
-2. Make release preflight performance-aware.
+1. Make release preflight performance-aware.
    - Keep `bun run fmt:check`, `bun lint`, `bun typecheck`, and `bun run test`.
    - Add browser tests, desktop smoke, bundle budget, and focused performance
      scenarios to the documented release gate.

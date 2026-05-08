@@ -158,4 +158,40 @@ describe("ComposerChangedFilesBar", () => {
       await screen.unmount();
     }
   });
+
+  it("keeps large changed-file composer summaries responsive and bounded", async () => {
+    const files = Array.from({ length: 600 }, (_, index) => ({
+      path: `apps/web/src/generated/feature-${String(index).padStart(3, "0")}.tsx`,
+      additions: index % 7,
+      deletions: index % 3,
+    }));
+    const screen = await render(
+      <ComposerChangedFilesBar
+        turnSummary={buildSummary({ turnId: "turn-large-composer-summary", files })}
+        resolvedTheme="light"
+        onOpenTurnDiff={vi.fn()}
+        maxExpandedHeightPx={180}
+      />,
+    );
+
+    try {
+      const startedAt = performance.now();
+      await page.getByRole("button", { name: /Changed files \(600\)/ }).click();
+      const durationMs = performance.now() - startedAt;
+      expect(
+        durationMs,
+        `large composer changed-files expansion exceeded browser perf budget: ${durationMs.toFixed(1)}ms`,
+      ).toBeLessThan(2_000);
+
+      await expect.element(page.getByText("feature-000.tsx")).toBeVisible();
+      const scrollContainer = document.querySelector<HTMLElement>(
+        "[data-composer-changed-files-scroll='true']",
+      );
+      expect(scrollContainer).not.toBeNull();
+      expect(scrollContainer!.clientHeight).toBeLessThanOrEqual(180);
+      expect(scrollContainer!.scrollHeight).toBeGreaterThan(scrollContainer!.clientHeight);
+    } finally {
+      await screen.unmount();
+    }
+  });
 });

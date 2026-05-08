@@ -140,6 +140,14 @@ function buildProps() {
   };
 }
 
+function expectBrowserDurationUnder(startedAt: number, budgetMs: number, scenario: string) {
+  const durationMs = performance.now() - startedAt;
+  expect(
+    durationMs,
+    `${scenario} exceeded browser perf budget: ${durationMs.toFixed(1)}ms > ${budgetMs}ms`,
+  ).toBeLessThan(budgetMs);
+}
+
 describe("MessagesTimeline", () => {
   afterEach(() => {
     scrollToEndSpy.mockReset();
@@ -581,7 +589,55 @@ describe("MessagesTimeline", () => {
     }
   });
 
-  it("expands a changed-file row inline and fetches only after expansion", async () => {
+  it("keeps large timeline mount and streaming rerender within browser budgets", async () => {
+    const timelineEntries = Array.from({ length: 800 }, (_, index) => ({
+      id: `message-${index}`,
+      kind: "message" as const,
+      createdAt: `2026-04-13T12:${String(index % 60).padStart(2, "0")}:00.000Z`,
+      message: {
+        id: MessageId.make(`message-${index}`),
+        role: index % 2 === 0 ? ("user" as const) : ("assistant" as const),
+        text: `Message ${index} ${"content ".repeat(6)}`,
+        turnId: null,
+        streaming: index === 799,
+        createdAt: `2026-04-13T12:${String(index % 60).padStart(2, "0")}:00.000Z`,
+        updatedAt: `2026-04-13T12:${String(index % 60).padStart(2, "0")}:00.000Z`,
+      },
+    }));
+    const props = buildProps();
+
+    const mountStartedAt = performance.now();
+    const screen = await render(<MessagesTimeline {...props} timelineEntries={timelineEntries} />);
+    expectBrowserDurationUnder(mountStartedAt, 4_000, "large timeline mount");
+
+    try {
+      const initialLegendListProps = legendListPropsSpy.mock.calls.at(-1)?.[0];
+      expect(initialLegendListProps?.data).toHaveLength(800);
+      const initialRenderItem = initialLegendListProps?.renderItem;
+      const streamingEntries = [...timelineEntries];
+      const streamingEntry = streamingEntries[799]!;
+      streamingEntries[799] = {
+        ...streamingEntry,
+        message: {
+          ...streamingEntry.message,
+          text: `${streamingEntry.message.text} streamed token`,
+        },
+      };
+
+      const rerenderStartedAt = performance.now();
+      await screen.rerender(<MessagesTimeline {...props} timelineEntries={streamingEntries} />);
+      expectBrowserDurationUnder(rerenderStartedAt, 2_000, "large timeline streaming rerender");
+
+      const rerenderLegendListProps = legendListPropsSpy.mock.calls.at(-1)?.[0];
+      expect(rerenderLegendListProps?.data).toHaveLength(800);
+      expect(rerenderLegendListProps?.renderItem).toBe(initialRenderItem);
+      expect(rerenderLegendListProps?.maintainScrollAtEnd).toBe(true);
+    } finally {
+      await screen.unmount();
+    }
+  });
+
+  it("renders completed changed-file rows inline and reuses the loaded diff when collapsed", async () => {
     const environmentId = EnvironmentId.make("environment-local");
     const threadId = ThreadId.make("thread-1");
     const turnId = TurnId.make("turn-1");
@@ -662,9 +718,6 @@ describe("MessagesTimeline", () => {
     );
 
     try {
-      expect(getTurnDiff).not.toHaveBeenCalled();
-
-      await page.getByTestId("inline-diff-toggle").click();
       await expect.element(page.getByTestId("inline-file-diff")).toHaveTextContent("src/app.ts");
       await expect.element(page.getByText("src/other.ts")).not.toBeInTheDocument();
       expect(getTurnDiff).toHaveBeenCalledWith({
@@ -676,6 +729,91 @@ describe("MessagesTimeline", () => {
       await page.getByTestId("inline-diff-toggle").click();
       await expect.element(page.getByTestId("inline-file-diff")).not.toBeInTheDocument();
       expect(getTurnDiff).toHaveBeenCalledTimes(1);
+    } finally {
+      queryClient.clear();
+      await screen.unmount();
+    }
+  });
+
+  it("keeps large inline diff rendering within browser budget and renders only the selected file", async () => {
+    const environmentId = EnvironmentId.make("environment-local");
+    const threadId = ThreadId.make("thread-1");
+    const turnId = TurnId.make("turn-large-diff");
+    const selectedPath = "src/generated/file-199.ts";
+    const diff = Array.from({ length: 240 }, (_, index) =>
+      [
+        `diff --git a/src/generated/file-${String(index).padStart(3, "0")}.ts b/src/generated/file-${String(index).padStart(3, "0")}.ts`,
+        "index 1111111..2222222 100644",
+        `--- a/src/generated/file-${String(index).padStart(3, "0")}.ts`,
+        `+++ b/src/generated/file-${String(index).padStart(3, "0")}.ts`,
+        "@@ -1 +1 @@",
+        `-old-${index}`,
+        `+new-${index}`,
+      ].join("\n"),
+    ).join("\n");
+    const getTurnDiff = vi.fn(async () => ({
+      threadId,
+      fromTurnCount: 1,
+      toTurnCount: 2,
+      diff,
+    }));
+    __setEnvironmentApiOverrideForTests(environmentId, {
+      orchestration: {
+        getTurnDiff,
+        getFullThreadDiff: vi.fn(),
+      },
+    } as unknown as EnvironmentApi);
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+
+    const renderStartedAt = performance.now();
+    const screen = await render(
+      <QueryClientProvider client={queryClient}>
+        <MessagesTimeline
+          {...buildProps()}
+          activeThreadId={threadId}
+          activeThreadEnvironmentId={environmentId}
+          turnDiffSummaryByTurnId={
+            new Map([
+              [
+                turnId,
+                {
+                  turnId,
+                  checkpointTurnCount: 2,
+                  completedAt: "2026-04-13T12:00:02.000Z",
+                  files: [{ path: selectedPath, additions: 1, deletions: 1 }],
+                },
+              ],
+            ])
+          }
+          timelineEntries={[
+            {
+              id: "work-large-diff",
+              kind: "work",
+              createdAt: "2026-04-13T12:00:00.000Z",
+              entry: {
+                id: "work-large-diff",
+                turnId,
+                createdAt: "2026-04-13T12:00:00.000Z",
+                label: "File change",
+                tone: "tool",
+                itemType: "file_change",
+                status: "completed",
+                changedFiles: [selectedPath],
+              },
+            },
+          ]}
+        />
+      </QueryClientProvider>,
+    );
+
+    try {
+      await expect.element(page.getByTestId("inline-file-diff")).toHaveTextContent(selectedPath);
+      expectBrowserDurationUnder(renderStartedAt, 5_000, "large inline diff render");
+      await expect.element(page.getByText("src/generated/file-000.ts")).not.toBeInTheDocument();
+      expect(getTurnDiff).toHaveBeenCalledTimes(1);
+
+      await page.getByTestId("inline-diff-toggle").click();
+      await expect.element(page.getByTestId("inline-file-diff")).not.toBeInTheDocument();
     } finally {
       queryClient.clear();
       await screen.unmount();
@@ -746,11 +884,11 @@ describe("MessagesTimeline", () => {
 
     try {
       const toggles = page.getByTestId("inline-diff-toggle");
-      await toggles.nth(0).click();
       await expect.element(page.getByText("+first")).toBeInTheDocument();
-      await expect.element(page.getByText("+second")).not.toBeInTheDocument();
+      await expect.element(page.getByText("+second")).toBeInTheDocument();
 
-      await toggles.nth(1).click();
+      await toggles.nth(0).click();
+      await expect.element(page.getByText("+first")).not.toBeInTheDocument();
       await expect.element(page.getByText("+second")).toBeInTheDocument();
     } finally {
       await screen.unmount();
