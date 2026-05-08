@@ -147,59 +147,6 @@ export function readPushedEventReceiptCount(sql: SqlClient.SqlClient) {
   });
 }
 
-interface HistorySyncPushedEventReceiptDbRow {
-  readonly sequence: number;
-  readonly eventId: string;
-  readonly streamId: string;
-  readonly eventType: string;
-  readonly pushedAt: string;
-}
-
-function readPushedEventReceiptsBySequence(sql: SqlClient.SqlClient, sequences: readonly number[]) {
-  return Effect.gen(function* () {
-    if (sequences.length === 0) return [] as readonly HistorySyncPushedEventReceiptDbRow[];
-    return yield* sql<HistorySyncPushedEventReceiptDbRow>`
-      SELECT
-        sequence,
-        event_id AS "eventId",
-        stream_id AS "streamId",
-        event_type AS "eventType",
-        pushed_at AS "pushedAt"
-      FROM history_sync_pushed_events
-      WHERE sequence IN ${sql.in(sequences)}
-      ORDER BY sequence ASC
-    `;
-  });
-}
-
-function restorePushedEventReceipts(
-  sql: SqlClient.SqlClient,
-  input: {
-    readonly touchedSequences: readonly number[];
-    readonly previousRows: readonly HistorySyncPushedEventReceiptDbRow[];
-  },
-) {
-  return Effect.gen(function* () {
-    if (input.touchedSequences.length === 0) return;
-    yield* sql`
-      DELETE FROM history_sync_pushed_events
-      WHERE sequence IN ${sql.in(input.touchedSequences)}
-    `;
-    if (input.previousRows.length === 0) return;
-    yield* sql`
-      INSERT INTO history_sync_pushed_events ${sql.insert(
-        input.previousRows.map((row) => ({
-          sequence: row.sequence,
-          event_id: row.eventId,
-          stream_id: row.streamId,
-          event_type: row.eventType,
-          pushed_at: row.pushedAt,
-        })),
-      )}
-    `;
-  });
-}
-
 export function seedPushedEventReceiptsForCompletedSync(
   sql: SqlClient.SqlClient,
   events: readonly HistorySyncEventRow[],
@@ -346,21 +293,12 @@ export function commitPushedEventReceiptsAndState(
     readonly state: WriteHistorySyncStateInput;
   },
 ) {
-  return Effect.gen(function* () {
-    // The current SQLite client serializes transaction scopes but does not issue
-    // BEGIN/ROLLBACK, so restore touched receipt rows if the paired state write fails.
-    const touchedSequences = [...new Set(input.events.map((event) => event.sequence))];
-    const previousRows = yield* readPushedEventReceiptsBySequence(sql, touchedSequences);
-    yield* writePushedEventReceipts(sql, input.events, input.pushedAt);
-    yield* writeState(sql, input.state).pipe(
-      Effect.catchCause((cause) =>
-        restorePushedEventReceipts(sql, { touchedSequences, previousRows }).pipe(
-          Effect.ignore,
-          Effect.andThen(Effect.failCause(cause)),
-        ),
-      ),
-    );
-  });
+  return sql.withTransaction(
+    Effect.gen(function* () {
+      yield* writePushedEventReceipts(sql, input.events, input.pushedAt);
+      yield* writeState(sql, input.state);
+    }),
+  );
 }
 
 export function setInitialSyncPhase(

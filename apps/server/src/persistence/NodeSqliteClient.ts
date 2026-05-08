@@ -211,6 +211,13 @@ const makeWithDatabase = Effect.fn("makeWithDatabase")(function* (
     acquirer,
     compiler,
     transactionAcquirer,
+    // Reserve the single native connection for write transactions up front.
+    // Nested transactions intentionally reuse the active transaction without
+    // savepoints; callers that catch nested failures keep all writes in the
+    // surrounding transaction.
+    beginTransaction: "BEGIN IMMEDIATE",
+    savepoint: () => "SELECT 1",
+    rollbackSavepoint: () => "SELECT 1",
     spanAttributes: [
       ...(options.spanAttributes ? Object.entries(options.spanAttributes) : []),
       [ATTR_DB_SYSTEM_NAME, "sqlite"],

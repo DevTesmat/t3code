@@ -111,7 +111,7 @@ layer("history sync local repository commits", (it) => {
     }),
   );
 
-  it.effect("restores previous receipt rows when a mixed old and new commit fails", () =>
+  it.effect("rolls back mixed old and new receipt rows when the transaction fails", () =>
     Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient;
       yield* runMigrations({ toMigrationInclusive: 36 });
