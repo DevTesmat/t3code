@@ -1739,6 +1739,11 @@ describe("ChatView timeline estimator parity (full app)", () => {
         "Unable to find composer changed files toggle.",
       );
 
+      await vi.waitFor(() => {
+        expect(scrollViewport.scrollHeight).toBeGreaterThan(scrollViewport.clientHeight);
+      });
+
+      scrollViewport.dispatchEvent(new WheelEvent("wheel", { bubbles: true, deltaY: -120 }));
       scrollViewport.scrollTop = 0;
       scrollViewport.dispatchEvent(new Event("scroll", { bubbles: true }));
 

@@ -58,6 +58,12 @@ jobs:
       - name: Test
         run: bun run test
 
+      - name: Performance load scenarios
+        run: bun run perf:load -- --enforce
+
+      - name: Web bundle budget
+        run: bun run --cwd apps/web check:bundle
+
       - name: Install browser test runtime
         run: |
           cd apps/web
@@ -68,6 +74,9 @@ jobs:
 
       - name: Build desktop pipeline
         run: bun run build:desktop
+
+      - name: Desktop smoke test
+        run: bun run test:desktop-smoke
 
       - name: Verify preload bundle output
         run: |

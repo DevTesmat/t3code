@@ -9,7 +9,7 @@ This document covers the unified release workflow for stable and nightly desktop
   - push tag matching `v*.*.*` for stable releases
   - scheduled nightly every 3 hours (`0 */3 * * *`)
   - manual `workflow_dispatch` for either channel
-- Runs quality gates first: format check, lint, typecheck, Vitest, browser tests, desktop build, and preload bundle verification.
+- Runs quality gates first: format check, lint, typecheck, Vitest, browser tests, synthetic performance/load scenarios, web bundle budget, desktop build, desktop smoke, and preload bundle verification.
 - Builds four artifacts in parallel for both channels:
   - macOS `arm64` DMG
   - macOS `x64` DMG
@@ -159,10 +159,22 @@ Checklist:
 3. Create release tag: `vX.Y.Z`.
 4. Push tag.
 5. Verify workflow steps:
-   - preflight passes
+   - preflight passes, including `bun run fmt:check`, `bun run lint`, `bun run typecheck`, `bun run test`, browser tests, `bun run perf:load -- --enforce`, web bundle budget, desktop build, desktop smoke, and preload verification
    - all matrix builds pass
    - release job uploads expected files
 6. Smoke test downloaded artifacts.
+
+For local release confidence before tagging, run:
+
+```sh
+bun run preflight:release
+```
+
+Install the browser test runtime first when needed:
+
+```sh
+bun run --cwd apps/web test:browser:install
+```
 
 ## 5) Troubleshooting
 

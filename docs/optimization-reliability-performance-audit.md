@@ -113,8 +113,9 @@ predictable under long streams, reconnects, restarts, and provider crashes.
   compaction, subscriber fanout, and persistence flush policy.
 - `web/performanceScenarios.ts`: browser fixtures for large timelines, long
   streams, large diffs, many projects, queued prompts, and reconnect recovery.
-- `scripts/perf-preflight.ts`: repeatable local performance preflight that
-  runs focused load/perf scenarios and emits comparable artifacts.
+- `bun run preflight:release`: repeatable local preflight that runs quality
+  gates, browser perf assertions, enforced synthetic load scenarios, bundle
+  budget, and desktop smoke coverage.
 
 ## Audit Progress
 
@@ -157,9 +158,13 @@ predictable under long streams, reconnects, restarts, and provider crashes.
 - Completed: browser perf assertions now cover large timeline mount/streaming
   rerender, large inline diff rendering, large composer changed-file summaries,
   and sidebar project/thread derivation.
-- Next due item: make release preflight performance-aware.
-- Remaining work should focus on measured hardening and explicit operational
-  signals before UI polish or broad refactors.
+- Completed: release and CI preflight now include enforced synthetic load
+  scenarios, web bundle budget checks, and desktop smoke coverage alongside
+  format, lint, typecheck, Vitest, browser tests, desktop build, and preload
+  verification. `bun run preflight:release` captures the same local gate.
+- Backlog status: cleared for this audit.
+- Remaining work should focus on residual-risk follow-up audits, not this
+  completed hardening backlog.
 
 ## Agent Handoff Expectations
 
@@ -190,15 +195,15 @@ predictable under long streams, reconnects, restarts, and provider crashes.
   user-input, checkpoint, and final-message events.
 - Open risk: adapter-local unbounded queues can accumulate before bounded
   ingestion sees backpressure.
-- Open risk: load scenarios are now repeatable and budgeted, but they are still
-  synthetic harnesses; browser/server integration gates should be added before
-  treating the budgets as release-blocking.
+- Open risk: load scenarios are now repeatable, budgeted, and release-gated,
+  but they remain synthetic harnesses; future audits should add browser/server
+  integration gates for reconnect and long-stream recovery.
 - Open risk: runtime event buffers are bounded with conservative blocking
   semantics, but coalescible/droppable event classes still use the
   must-deliver path until a measured lossy/coalescing buffer is introduced.
 - Open risk: browser perf assertions now cover the main timeline, composer,
-  sidebar, and inline diff flows, but they are not yet part of the documented
-  release preflight gate.
+  sidebar, and inline diff flows and run in CI/release browser tests, but the
+  timing budgets are still intentionally broad to avoid CI noise.
 - Open risk: large React coordination components are harder to profile and
   reason about, even when subcomponents are memoized and virtualized.
 
@@ -248,7 +253,4 @@ browser/load scenarios where timing and rendering behavior matter.
 
 ## Remaining Hardening Backlog
 
-1. Make release preflight performance-aware.
-   - Keep `bun run fmt:check`, `bun lint`, `bun typecheck`, and `bun run test`.
-   - Add browser tests, desktop smoke, bundle budget, and focused performance
-     scenarios to the documented release gate.
+Cleared for this audit.
