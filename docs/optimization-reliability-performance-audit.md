@@ -143,8 +143,12 @@ predictable under long streams, reconnects, restarts, and provider crashes.
   classes, bounded runtime queues/pubsubs for Codex, Claude, Cursor, OpenCode,
   ACP, central provider fanout, provider registry fanout, server settings,
   auth credential changes, git status, and lifecycle events.
-- Next due item: coalesce WebSocket snapshot invalidation and add
-  subscriber/load signals around snapshot reload fanout.
+- Completed: WebSocket history-sync snapshot reloads now share in-flight shell
+  and per-thread reloads, debounce repeated idle notifications, and log
+  subscriber counts plus load durations around actual reload work.
+- Next due item: add repeatable performance/load scenarios for long provider
+  streams, terminal output floods, many active sessions, reconnects, and large
+  timelines/diffs.
 - Remaining work should focus on measured hardening and explicit operational
   signals before UI polish or broad refactors.
 
@@ -177,9 +181,9 @@ predictable under long streams, reconnects, restarts, and provider crashes.
   user-input, checkpoint, and final-message events.
 - Open risk: adapter-local unbounded queues can accumulate before bounded
   ingestion sees backpressure.
-- Open risk: WebSocket thread/shell snapshot reloads can duplicate expensive
-  reads across subscribers during history sync, reconnects, or restart
-  recovery.
+- Open risk: reconnect/restart snapshot fanout now coalesces history-sync idle
+  reloads, but still needs repeatable load scenarios to set concrete latency
+  and memory budgets.
 - Open risk: runtime event buffers are bounded with conservative blocking
   semantics, but coalescible/droppable event classes still use the
   must-deliver path until a measured lossy/coalescing buffer is introduced.
@@ -234,25 +238,20 @@ browser/load scenarios where timing and rendering behavior matter.
 
 ## Remaining Hardening Backlog
 
-1. Coalesce WebSocket snapshot invalidation.
-   - Share shell/thread snapshot reloads by key.
-   - Debounce history-sync idle snapshot reloads.
-   - Add subscriber-count and snapshot-load duration telemetry.
-
-2. Add repeatable performance/load scenarios.
+1. Add repeatable performance/load scenarios.
    - Long provider stream.
    - Terminal output flood.
    - Many active sessions.
    - Many reconnecting WebSocket clients.
    - Large thread timeline and large diff rendering.
 
-3. Harden frontend persistence and rendering budgets.
+2. Harden frontend persistence and rendering budgets.
    - Track composer draft payload size and persistence duration.
    - Warn or compact when local draft state exceeds budget.
    - Add browser perf assertions for timeline, composer, sidebar, and diff
      flows.
 
-4. Make release preflight performance-aware.
+3. Make release preflight performance-aware.
    - Keep `bun run fmt:check`, `bun lint`, `bun typecheck`, and `bun run test`.
    - Add browser tests, desktop smoke, bundle budget, and focused performance
      scenarios to the documented release gate.

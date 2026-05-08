@@ -81,6 +81,7 @@ import {
   type SessionCredentialChange,
 } from "./auth/Services/SessionCredentialService.ts";
 import { respondToAuthError } from "./auth/http.ts";
+import { makeWebSocketSnapshotReloadCoordinator } from "./wsSnapshotReloadCoordinator.ts";
 
 function isThreadDetailEvent(event: OrchestrationEvent): event is Extract<
   OrchestrationEvent,
@@ -173,6 +174,7 @@ const makeWsRpcLayer = (currentSessionId: AuthSessionId) =>
       const serverAuth = yield* ServerAuth;
       const bootstrapCredentials = yield* BootstrapCredentialService;
       const sessions = yield* SessionCredentialService;
+      const snapshotReloadCoordinator = yield* makeWebSocketSnapshotReloadCoordinator();
       const serverCommandId = (tag: string) =>
         CommandId.make(`server:${tag}:${crypto.randomUUID()}`);
 
@@ -704,30 +706,43 @@ const makeWsRpcLayer = (currentSessionId: AuthSessionId) =>
                   Option.isSome(event) ? Stream.succeed(event.value) : Stream.empty,
                 ),
               );
+              const historySyncSnapshotKey = "shell";
               const historySyncSnapshotStream = Stream.callback<{
                 readonly kind: "snapshot";
                 readonly snapshot: OrchestrationShellSnapshot;
               }>((queue) =>
                 Effect.acquireRelease(
-                  subscribeHistorySyncStatus((historySync) => {
-                    if (historySync.state !== "idle") {
-                      return Effect.void;
-                    }
-                    return projectionSnapshotQuery.getShellSnapshot().pipe(
-                      Effect.flatMap((snapshot) =>
-                        Queue.offer(queue, {
-                          kind: "snapshot" as const,
-                          snapshot,
-                        }).pipe(Effect.asVoid),
-                      ),
-                      Effect.catch((cause) =>
-                        Effect.logWarning("failed to load shell snapshot after history sync", {
-                          cause,
-                        }),
-                      ),
-                    );
+                  Effect.gen(function* () {
+                    const unregisterSubscriber =
+                      yield* snapshotReloadCoordinator.registerSubscriber(historySyncSnapshotKey);
+                    const unsubscribeStatus = yield* subscribeHistorySyncStatus((historySync) => {
+                      if (historySync.state !== "idle") {
+                        return Effect.void;
+                      }
+                      return snapshotReloadCoordinator
+                        .reload(historySyncSnapshotKey, projectionSnapshotQuery.getShellSnapshot())
+                        .pipe(
+                          Effect.flatMap((snapshot) =>
+                            Option.match(snapshot, {
+                              onNone: () => Effect.void,
+                              onSome: (value) =>
+                                Queue.offer(queue, {
+                                  kind: "snapshot" as const,
+                                  snapshot: value,
+                                }).pipe(Effect.asVoid),
+                            }),
+                          ),
+                          Effect.catch((cause) =>
+                            Effect.logWarning("failed to load shell snapshot after history sync", {
+                              cause,
+                            }),
+                          ),
+                        );
+                    });
+                    return { unregisterSubscriber, unsubscribeStatus };
                   }),
-                  (unsubscribe) => Effect.sync(unsubscribe),
+                  ({ unregisterSubscriber, unsubscribeStatus }) =>
+                    Effect.sync(unsubscribeStatus).pipe(Effect.andThen(unregisterSubscriber)),
                 ),
               );
 
@@ -806,6 +821,7 @@ const makeWsRpcLayer = (currentSessionId: AuthSessionId) =>
                 ),
                 Stream.unwrap,
               );
+              const historySyncSnapshotKey = `thread:${input.threadId}`;
               const historySyncSnapshotStream = Stream.callback<{
                 readonly kind: "snapshot";
                 readonly snapshot: {
@@ -814,36 +830,51 @@ const makeWsRpcLayer = (currentSessionId: AuthSessionId) =>
                 };
               }>((queue) =>
                 Effect.acquireRelease(
-                  subscribeHistorySyncStatus((historySync) => {
-                    if (historySync.state !== "idle") {
-                      return Effect.void;
-                    }
-                    return Effect.all([
-                      projectionSnapshotQuery.getThreadDetailById(input.threadId),
-                      orchestrationEngine
-                        .getReadModel()
-                        .pipe(Effect.map((readModel) => readModel.snapshotSequence)),
-                    ]).pipe(
-                      Effect.flatMap(([nextThreadDetail, nextSnapshotSequence]) =>
-                        Option.isSome(nextThreadDetail)
-                          ? Queue.offer(queue, {
-                              kind: "snapshot" as const,
-                              snapshot: {
-                                snapshotSequence: nextSnapshotSequence,
-                                thread: nextThreadDetail.value,
-                              },
-                            }).pipe(Effect.asVoid)
-                          : Effect.void,
-                      ),
-                      Effect.catch((cause) =>
-                        Effect.logWarning("failed to load thread snapshot after history sync", {
-                          threadId: input.threadId,
-                          cause,
-                        }),
-                      ),
-                    );
+                  Effect.gen(function* () {
+                    const unregisterSubscriber =
+                      yield* snapshotReloadCoordinator.registerSubscriber(historySyncSnapshotKey);
+                    const unsubscribeStatus = yield* subscribeHistorySyncStatus((historySync) => {
+                      if (historySync.state !== "idle") {
+                        return Effect.void;
+                      }
+                      return snapshotReloadCoordinator
+                        .reload(
+                          historySyncSnapshotKey,
+                          Effect.all([
+                            projectionSnapshotQuery.getThreadDetailById(input.threadId),
+                            orchestrationEngine
+                              .getReadModel()
+                              .pipe(Effect.map((readModel) => readModel.snapshotSequence)),
+                          ]),
+                        )
+                        .pipe(
+                          Effect.flatMap((snapshot) =>
+                            Option.match(snapshot, {
+                              onNone: () => Effect.void,
+                              onSome: ([nextThreadDetail, nextSnapshotSequence]) =>
+                                Option.isSome(nextThreadDetail)
+                                  ? Queue.offer(queue, {
+                                      kind: "snapshot" as const,
+                                      snapshot: {
+                                        snapshotSequence: nextSnapshotSequence,
+                                        thread: nextThreadDetail.value,
+                                      },
+                                    }).pipe(Effect.asVoid)
+                                  : Effect.void,
+                            }),
+                          ),
+                          Effect.catch((cause) =>
+                            Effect.logWarning("failed to load thread snapshot after history sync", {
+                              threadId: input.threadId,
+                              cause,
+                            }),
+                          ),
+                        );
+                    });
+                    return { unregisterSubscriber, unsubscribeStatus };
                   }),
-                  (unsubscribe) => Effect.sync(unsubscribe),
+                  ({ unregisterSubscriber, unsubscribeStatus }) =>
+                    Effect.sync(unsubscribeStatus).pipe(Effect.andThen(unregisterSubscriber)),
                 ),
               );
 
