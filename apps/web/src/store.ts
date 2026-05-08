@@ -870,6 +870,82 @@ function compareActivities(
   return left.createdAt.localeCompare(right.createdAt) || left.id.localeCompare(right.id);
 }
 
+function activityPayloadRecord(
+  activity: OrchestrationThreadActivity,
+): Record<string, unknown> | null {
+  return activity.payload && typeof activity.payload === "object"
+    ? (activity.payload as Record<string, unknown>)
+    : null;
+}
+
+function subagentDeltaCoalesceKey(activity: OrchestrationThreadActivity): string | null {
+  if (activity.kind !== "subagent.content.delta") {
+    return null;
+  }
+  const payload = activityPayloadRecord(activity);
+  const providerThreadId = payload?.providerThreadId;
+  const itemId = payload?.itemId;
+  if (typeof providerThreadId !== "string" || providerThreadId.length === 0) {
+    return null;
+  }
+  if (typeof itemId !== "string" || itemId.length === 0) {
+    return null;
+  }
+  return `${providerThreadId}:${itemId}`;
+}
+
+function appendOrCoalesceThreadActivity(
+  activities: ReadonlyArray<OrchestrationThreadActivity>,
+  incomingActivity: OrchestrationThreadActivity,
+): OrchestrationThreadActivity[] {
+  const incomingDeltaKey = subagentDeltaCoalesceKey(incomingActivity);
+  if (!incomingDeltaKey) {
+    return [
+      ...activities.filter((activity) => activity.id !== incomingActivity.id),
+      { ...incomingActivity },
+    ];
+  }
+
+  const incomingPayload = activityPayloadRecord(incomingActivity);
+  const incomingText = incomingPayload?.text;
+  if (typeof incomingText !== "string" || incomingText.length === 0) {
+    return activities.filter((activity) => activity.id !== incomingActivity.id);
+  }
+
+  const nextActivities: OrchestrationThreadActivity[] = [];
+  let coalescedActivity: OrchestrationThreadActivity | null = null;
+  for (const activity of activities) {
+    if (activity.id === incomingActivity.id) {
+      continue;
+    }
+    if (subagentDeltaCoalesceKey(activity) !== incomingDeltaKey) {
+      nextActivities.push(activity);
+      continue;
+    }
+    const payload = activityPayloadRecord(activity);
+    const previousText = typeof payload?.text === "string" ? payload.text : "";
+    coalescedActivity = {
+      ...activity,
+      createdAt:
+        activity.createdAt <= incomingActivity.createdAt
+          ? activity.createdAt
+          : incomingActivity.createdAt,
+      payload: {
+        ...payload,
+        text: `${previousText}${incomingText}`,
+        status: incomingPayload?.status ?? payload?.status,
+      },
+      sequence:
+        activity.sequence !== undefined && incomingActivity.sequence !== undefined
+          ? Math.min(activity.sequence, incomingActivity.sequence)
+          : (activity.sequence ?? incomingActivity.sequence),
+    };
+    nextActivities.push(coalescedActivity);
+  }
+
+  return coalescedActivity ? nextActivities : [...nextActivities, { ...incomingActivity }];
+}
+
 function buildLatestTurn(params: {
   previous: Thread["latestTurn"];
   turnId: NonNullable<Thread["latestTurn"]>["turnId"];
@@ -1717,10 +1793,7 @@ function applyEnvironmentOrchestrationEvent(
 
     case "thread.activity-appended":
       return updateThreadState(state, event.payload.threadId, (thread) => {
-        const activities = [
-          ...thread.activities.filter((activity) => activity.id !== event.payload.activity.id),
-          { ...event.payload.activity },
-        ]
+        const activities = appendOrCoalesceThreadActivity(thread.activities, event.payload.activity)
           .toSorted(compareActivities)
           .slice(-MAX_THREAD_ACTIVITIES);
         return {

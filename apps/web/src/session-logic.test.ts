@@ -355,7 +355,21 @@ describe("deriveThreadSubagentTranscripts", () => {
           providerTurnId: "child-turn-1",
           itemId: "child-message-1",
           itemType: "assistant_message",
-          text: " No files edited.",
+          text: " No files edited. ",
+        },
+      }),
+      makeActivity({
+        id: "child-answer-delta-3",
+        createdAt: "2026-02-23T00:00:02.750Z",
+        kind: "subagent.content.delta",
+        summary: "Assistant message",
+        tone: "info",
+        payload: {
+          providerThreadId: "child-1",
+          providerTurnId: "child-turn-1",
+          itemId: "child-message-1",
+          itemType: "assistant_message",
+          text: " ",
         },
       }),
       makeActivity({
@@ -401,6 +415,70 @@ describe("deriveThreadSubagentTranscripts", () => {
         role: "assistant",
         text: "Inspected only. No files edited.",
         streaming: false,
+      },
+    ]);
+  });
+
+  it("preserves whitespace while subagent assistant deltas stream", () => {
+    const activities: OrchestrationThreadActivity[] = [
+      makeActivity({
+        id: "spawn-child",
+        createdAt: "2026-02-23T00:00:01.000Z",
+        kind: "tool.completed",
+        summary: "Subagent task",
+        payload: {
+          itemType: "collab_agent_tool_call",
+          data: {
+            collabTool: "spawnAgent",
+            receiverThreadIds: ["child-1"],
+            agentsStates: {
+              "child-1": { status: "running" },
+            },
+          },
+        },
+      }),
+      makeActivity({
+        id: "delta-1",
+        createdAt: "2026-02-23T00:00:02.000Z",
+        kind: "subagent.content.delta",
+        payload: {
+          providerThreadId: "child-1",
+          itemId: "message-1",
+          itemType: "assistant_message",
+          text: "No",
+        },
+      }),
+      makeActivity({
+        id: "delta-2",
+        createdAt: "2026-02-23T00:00:02.100Z",
+        kind: "subagent.content.delta",
+        payload: {
+          providerThreadId: "child-1",
+          itemId: "message-1",
+          itemType: "assistant_message",
+          text: " ",
+        },
+      }),
+      makeActivity({
+        id: "delta-3",
+        createdAt: "2026-02-23T00:00:02.200Z",
+        kind: "subagent.content.delta",
+        payload: {
+          providerThreadId: "child-1",
+          itemId: "message-1",
+          itemType: "assistant_message",
+          text: "files",
+        },
+      }),
+    ];
+
+    const [transcript] = deriveThreadSubagentTranscripts(activities);
+
+    expect(transcript?.messages).toMatchObject([
+      {
+        role: "assistant",
+        text: "No files",
+        streaming: true,
       },
     ]);
   });

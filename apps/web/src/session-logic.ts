@@ -875,7 +875,10 @@ export function deriveThreadSubagentTranscripts(
     if (providerThreadId && knownSubagentIds.has(providerThreadId)) {
       activitiesByThreadId.get(providerThreadId)?.push(activity);
       const itemType = asTrimmedString(payload?.itemType);
-      const text = asTrimmedString(payload?.text ?? payload?.detail);
+      const text =
+        activity.kind === "subagent.content.delta"
+          ? asString(payload?.text ?? payload?.detail)
+          : asTrimmedString(payload?.text ?? payload?.detail);
       const phase = asTrimmedString(payload?.phase);
       const providerTurnId = asTrimmedString(payload?.providerTurnId);
       const itemId = asTrimmedString(payload?.itemId) ?? activity.id;
@@ -936,6 +939,12 @@ export function deriveThreadSubagentTranscripts(
       const state = asRecord(agentsStates[subagent.threadId]);
       const message = asTrimmedString(state?.message);
       if (!message) {
+        continue;
+      }
+      const hasTranscriptMessage = [
+        ...(messagesByThreadId.get(subagent.threadId)?.values() ?? []),
+      ].some((entry) => entry.role === "assistant");
+      if (hasTranscriptMessage) {
         continue;
       }
       const key = `${subagent.threadId}:${message}`;
@@ -1133,6 +1142,10 @@ function asTrimmedString(value: unknown): string | null {
   }
   const trimmed = value.trim();
   return trimmed.length > 0 ? trimmed : null;
+}
+
+function asString(value: unknown): string | null {
+  return typeof value === "string" && value.length > 0 ? value : null;
 }
 
 function asNumber(value: unknown): number | null {

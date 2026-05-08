@@ -627,13 +627,18 @@ function shouldDropBufferedChildConversationNotification(
   method: CodexRpc.ServerNotificationMethod,
 ): boolean {
   return (
-    method === "item/agentMessage/delta" ||
     method === "item/commandExecution/outputDelta" ||
     method === "item/fileChange/outputDelta" ||
     method === "item/reasoning/summaryTextDelta" ||
     method === "item/reasoning/textDelta" ||
     method === "item/plan/delta"
   );
+}
+
+function shouldEmitLiveChildConversationNotification(
+  method: CodexRpc.ServerNotificationMethod,
+): boolean {
+  return method === "item/agentMessage/delta";
 }
 
 function shouldSuppressChildConversationNotification(
@@ -960,6 +965,10 @@ export const makeCodexSessionRuntime = (
         };
 
         if (childParentTurnId && providerConversationId) {
+          if (shouldEmitLiveChildConversationNotification(notification.method)) {
+            yield* emitEvent(eventInput);
+            return;
+          }
           if (shouldDropBufferedChildConversationNotification(notification.method)) {
             return;
           }

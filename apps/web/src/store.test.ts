@@ -670,6 +670,95 @@ describe("incremental orchestration updates", () => {
     ]);
   });
 
+  it("coalesces live subagent assistant deltas so activity retention stays stable", () => {
+    const thread = makeThread({
+      activities: [
+        {
+          id: EventId.make("spawn-child"),
+          createdAt: "2026-02-27T00:00:00.000Z",
+          turnId: null,
+          kind: "tool.completed",
+          summary: "Subagent task",
+          tone: "tool",
+          payload: {
+            itemType: "collab_agent_tool_call",
+            data: {
+              collabTool: "spawnAgent",
+              receiverThreadIds: ["child-1"],
+            },
+          },
+        },
+      ],
+    });
+    const state = makeState(thread);
+
+    const withFirstDelta = applyOrchestrationEvent(
+      state,
+      makeEvent(
+        "thread.activity-appended",
+        {
+          threadId: thread.id,
+          activity: {
+            id: EventId.make("delta-1"),
+            createdAt: "2026-02-27T00:00:01.000Z",
+            turnId: null,
+            kind: "subagent.content.delta",
+            summary: "Assistant message",
+            tone: "info",
+            payload: {
+              providerThreadId: "child-1",
+              itemId: "message-1",
+              itemType: "assistant_message",
+              text: "No",
+            },
+          },
+        },
+        { sequence: 1 },
+      ),
+      localEnvironmentId,
+    );
+    const withSecondDelta = applyOrchestrationEvent(
+      withFirstDelta,
+      makeEvent(
+        "thread.activity-appended",
+        {
+          threadId: thread.id,
+          activity: {
+            id: EventId.make("delta-2"),
+            createdAt: "2026-02-27T00:00:02.000Z",
+            turnId: null,
+            kind: "subagent.content.delta",
+            summary: "Assistant message",
+            tone: "info",
+            payload: {
+              providerThreadId: "child-1",
+              itemId: "message-1",
+              itemType: "assistant_message",
+              text: " files",
+            },
+          },
+        },
+        { sequence: 2 },
+      ),
+      localEnvironmentId,
+    );
+
+    const projectedThread = selectThreadByRef(
+      withSecondDelta,
+      scopeThreadRef(thread.environmentId, thread.id),
+    );
+
+    expect(projectedThread?.activities).toHaveLength(2);
+    expect(projectedThread?.activities[0]?.id).toBe("spawn-child");
+    expect(projectedThread?.activities[1]).toMatchObject({
+      id: "delta-1",
+      kind: "subagent.content.delta",
+      payload: {
+        text: "No files",
+      },
+    });
+  });
+
   it("streams proposed plan deltas and replaces them with the completed plan", () => {
     const thread = makeThread();
     const state = makeState(thread);

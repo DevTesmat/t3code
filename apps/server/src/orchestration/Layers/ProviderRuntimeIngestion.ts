@@ -889,6 +889,7 @@ function runtimeEventToSubagentTranscriptActivity(
   if (
     event.type === "content.delta" &&
     event.payload.streamKind === "assistant_text" &&
+    typeof event.payload.delta === "string" &&
     event.payload.delta.length > 0
   ) {
     const providerThreadId = providerThreadIdFromRuntimeEvent(event);
