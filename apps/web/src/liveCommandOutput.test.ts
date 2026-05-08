@@ -6,6 +6,7 @@ import {
   hydrateLiveCommandOutputSnapshot,
   readLiveCommandOutputSnapshot,
   resetLiveCommandOutputForTests,
+  sweepLiveCommandOutputForTests,
 } from "./liveCommandOutput";
 
 const environmentId = EnvironmentId.make("env-1");
@@ -93,6 +94,55 @@ describe("liveCommandOutput", () => {
       truncated: false,
       updatedAt: "2026-01-01T00:00:02.000Z",
     });
+  });
+
+  it("replaces older streamed text with newer snapshots", () => {
+    appendLiveCommandOutputDelta(environmentId, {
+      threadId,
+      turnId: TurnId.make("turn-1"),
+      toolCallId,
+      chunkId: EventId.make("chunk-1"),
+      createdAt: "2026-01-01T00:00:00.000Z",
+      delta: "partial",
+    });
+    hydrateLiveCommandOutputSnapshot(environmentId, {
+      threadId,
+      turnId: TurnId.make("turn-1"),
+      toolCallId,
+      updatedAt: "2026-01-01T00:00:01.000Z",
+      text: "final patch",
+      truncated: false,
+    });
+
+    expect(
+      readLiveCommandOutputSnapshot({
+        environmentId,
+        threadId,
+        toolCallId,
+      }).text,
+    ).toBe("final patch");
+  });
+
+  it("evicts inactive entries after retention", () => {
+    const startedAt = Date.now();
+    hydrateLiveCommandOutputSnapshot(environmentId, {
+      threadId,
+      turnId: TurnId.make("turn-1"),
+      toolCallId,
+      updatedAt: "2026-01-01T00:00:02.000Z",
+      text: "retained briefly",
+      truncated: false,
+    });
+
+    sweepLiveCommandOutputForTests(startedAt + 11 * 60_000);
+
+    expect(
+      readLiveCommandOutputSnapshot({
+        environmentId,
+        threadId,
+        toolCallId,
+      }).text,
+    ).toBe("");
   });
 
   it("keeps more than the old live line preview limit", () => {

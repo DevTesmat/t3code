@@ -87,27 +87,36 @@ function toSnapshot(entry: CommandOutputBufferEntry): OrchestrationCommandOutput
   };
 }
 
+function getOrCreateEntry(
+  input: Pick<OrchestrationCommandOutputDelta, "threadId" | "turnId" | "toolCallId">,
+  now: number,
+): CommandOutputBufferEntry {
+  const key = bufferKey(input);
+  const existing = entries.get(key);
+  if (existing) {
+    return existing;
+  }
+  const entry: CommandOutputBufferEntry = {
+    threadId: input.threadId,
+    turnId: input.turnId,
+    toolCallId: input.toolCallId,
+    text: "",
+    truncated: false,
+    updatedAt: null,
+    lastAccessedAt: now,
+    expiresAt: now + RETENTION_MS,
+    seenChunkIds: new Set(),
+    seenChunkOrder: [],
+  };
+  entries.set(key, entry);
+  return entry;
+}
+
 export const appendCommandOutputBufferDelta = (delta: OrchestrationCommandOutputDelta) =>
   Effect.sync(() => {
     const now = Date.now();
     evictExpired(now);
-    const key = bufferKey(delta);
-    let entry = entries.get(key);
-    if (!entry) {
-      entry = {
-        threadId: delta.threadId,
-        turnId: delta.turnId,
-        toolCallId: delta.toolCallId,
-        text: "",
-        truncated: false,
-        updatedAt: null,
-        lastAccessedAt: now,
-        expiresAt: now + RETENTION_MS,
-        seenChunkIds: new Set(),
-        seenChunkOrder: [],
-      };
-      entries.set(key, entry);
-    }
+    const entry = getOrCreateEntry(delta, now);
 
     const chunkId = String(delta.chunkId);
     if (entry.seenChunkIds.has(chunkId)) {
@@ -127,6 +136,28 @@ export const appendCommandOutputBufferDelta = (delta: OrchestrationCommandOutput
     entry.updatedAt = delta.createdAt;
     entry.lastAccessedAt = now;
     entry.expiresAt = now + RETENTION_MS;
+    trimEntryText(entry);
+    evictLru();
+  });
+
+export const replaceCommandOutputBufferSnapshot = (snapshot: OrchestrationCommandOutputSnapshot) =>
+  Effect.sync(() => {
+    const now = Date.now();
+    evictExpired(now);
+    const entry = getOrCreateEntry(snapshot, now);
+    if (entry.updatedAt && snapshot.updatedAt && entry.updatedAt > snapshot.updatedAt) {
+      entry.lastAccessedAt = now;
+      entry.expiresAt = now + RETENTION_MS;
+      return;
+    }
+
+    totalChars -= entry.text.length;
+    entry.text = snapshot.text;
+    entry.truncated = snapshot.truncated;
+    entry.updatedAt = snapshot.updatedAt;
+    entry.lastAccessedAt = now;
+    entry.expiresAt = now + RETENTION_MS;
+    totalChars += entry.text.length;
     trimEntryText(entry);
     evictLru();
   });

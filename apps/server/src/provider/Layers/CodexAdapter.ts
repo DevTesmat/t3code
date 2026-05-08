@@ -416,6 +416,36 @@ function contentStreamKindFromMethod(
   }
 }
 
+function formatFileChangePatchUpdatedPayload(
+  payload: EffectCodexSchema.V2FileChangePatchUpdatedNotification,
+): string {
+  return payload.changes
+    .map((change) => {
+      const path = change.path.trim();
+      const nextPath =
+        change.kind.type === "update" && change.kind.move_path
+          ? change.kind.move_path.trim()
+          : path;
+      const oldPath = change.kind.type === "add" ? "/dev/null" : `a/${path}`;
+      const newPath = change.kind.type === "delete" ? "/dev/null" : `b/${nextPath}`;
+      const rawDiff = change.diff.replace(/\r\n/g, "\n").replace(/\r/g, "\n").trimEnd();
+      if (rawDiff.startsWith("diff --git ")) {
+        return rawDiff;
+      }
+      const headers = [
+        `diff --git a/${path} b/${nextPath}`,
+        change.kind.type === "add" ? "new file mode 100644" : undefined,
+        change.kind.type === "delete" ? "deleted file mode 100644" : undefined,
+        change.kind.type === "update" && nextPath !== path ? `rename from ${path}` : undefined,
+        change.kind.type === "update" && nextPath !== path ? `rename to ${nextPath}` : undefined,
+        `--- ${oldPath}`,
+        `+++ ${newPath}`,
+      ].filter((line): line is string => line !== undefined);
+      return rawDiff.length > 0 ? `${headers.join("\n")}\n${rawDiff}` : headers.join("\n");
+    })
+    .join("\n");
+}
+
 function asRuntimeItemId(itemId: ProviderEvent["itemId"] & string): RuntimeItemId {
   return RuntimeItemId.make(itemId);
 }
@@ -853,6 +883,26 @@ function mapToRuntimeEvents(
         type: "turn.diff.updated",
         payload: {
           unifiedDiff: payload.diff,
+        },
+      },
+    ];
+  }
+
+  if (event.method === "item/fileChange/patchUpdated") {
+    const payload = readPayload(
+      EffectCodexSchema.V2FileChangePatchUpdatedNotification,
+      event.payload,
+    );
+    if (!payload || payload.changes.length === 0) {
+      return [];
+    }
+    return [
+      {
+        ...runtimeEventBase(event, canonicalThreadId),
+        type: "content.delta",
+        payload: {
+          streamKind: "file_change_output",
+          delta: formatFileChangePatchUpdatedPayload(payload),
         },
       },
     ];

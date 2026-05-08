@@ -1229,8 +1229,7 @@ interface LivePatchLine {
 function parseLivePatchLines(text: string): LivePatchLine[] {
   const normalized = text.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
   const rawLines = normalized.split("\n");
-  const completeLineCount = normalized.endsWith("\n") ? rawLines.length - 1 : rawLines.length - 1;
-  const sourceLines = completeLineCount > 0 ? rawLines.slice(0, completeLineCount) : rawLines;
+  const sourceLines = normalized.endsWith("\n") ? rawLines.slice(0, -1) : rawLines;
   const visibleLines = sourceLines.slice(-300);
 
   return visibleLines.map((line, index) => {
@@ -1261,12 +1260,15 @@ const LiveFileChangePreview = memo(function LiveFileChangePreview(props: {
   const lines = useMemo(() => parseLivePatchLines(liveOutput.text), [liveOutput.text]);
 
   if (liveOutput.text.length === 0) {
-    return <InlineDiffMessage>Waiting for file-change stream...</InlineDiffMessage>;
+    return <InlineDiffMessage minLines={3}>Waiting for file-change stream...</InlineDiffMessage>;
   }
 
   return (
     <div className="pl-7 pr-1 pb-1">
-      <div className="max-h-64 overflow-auto rounded-md border border-border/45 bg-muted/15 p-2 font-mono text-[10.5px] leading-4">
+      <div
+        className="min-h-14 max-h-72 overflow-auto rounded-md border border-border/55 bg-background/80 p-2 font-mono text-[10.5px] leading-4 shadow-xs"
+        data-testid="inline-file-change-patch"
+      >
         {liveOutput.truncated && (
           <div className="mb-1 text-muted-foreground/55">Earlier streamed edits truncated.</div>
         )}
@@ -1339,7 +1341,7 @@ const InlineChangedFilesDiffPreview = memo(function InlineChangedFilesDiffPrevie
   const ctx = use(TimelineRowCtx);
   const turnId = workEntry.turnId ?? null;
   const turnSummary = turnId ? ctx.turnDiffSummaryByTurnId.get(turnId) : undefined;
-  if ((!turnId || !turnSummary) && liveOutput && liveOutput.text.length > 0) {
+  if (liveOutput && liveOutput.text.length > 0) {
     return <LiveFileChangePreview liveOutput={liveOutput} />;
   }
 
@@ -1424,7 +1426,7 @@ const CompletedChangedFilesDiffPreview = memo(function CompletedChangedFilesDiff
   if (!turnId || !turnSummary || checkpointRange === null) {
     return (
       <InlineDiffMessage>
-        Diff unavailable for this change because the completed turn checkpoint is missing.
+        Per-call patch details are no longer retained for this change.
       </InlineDiffMessage>
     );
   }
@@ -1464,14 +1466,15 @@ const CompletedChangedFilesDiffPreview = memo(function CompletedChangedFilesDiff
   if (matchingFiles.length === 0) {
     return (
       <InlineDiffMessage>
-        Diff unavailable for {changedFiles.length === 1 ? "this file" : "these files"}.
+        Per-call patch details are no longer retained for{" "}
+        {changedFiles.length === 1 ? "this file" : "these files"}.
       </InlineDiffMessage>
     );
   }
 
   return (
     <div className="pl-7 pr-1 pb-1">
-      <div className="max-h-64 overflow-auto rounded-md border border-border/55 bg-card/25">
+      <div className="min-h-14 max-h-72 overflow-auto rounded-md border border-border/55 bg-card/25">
         {matchingFiles.map((fileDiff) => {
           const fileKey = buildFileDiffRenderKey(fileDiff);
           return (
@@ -1496,7 +1499,7 @@ const CompletedChangedFilesDiffPreview = memo(function CompletedChangedFilesDiff
         <div className="mt-1 flex flex-wrap gap-1 text-[10px] text-muted-foreground/55">
           {missingFiles.map((filePath) => (
             <span key={`${workEntry.id}:missing-diff:${filePath}`}>
-              Diff unavailable for {formatWorkspaceRelativePath(filePath, workspaceRoot)}
+              Per-call patch not retained for {formatWorkspaceRelativePath(filePath, workspaceRoot)}
             </span>
           ))}
         </div>
@@ -1505,10 +1508,15 @@ const CompletedChangedFilesDiffPreview = memo(function CompletedChangedFilesDiff
   );
 });
 
-function InlineDiffMessage({ children }: { children: ReactNode }) {
+function InlineDiffMessage({ children, minLines = 1 }: { children: ReactNode; minLines?: number }) {
   return (
     <div className="pl-7 pr-1 pb-1">
-      <div className="rounded-md border border-border/45 bg-muted/15 px-2 py-1.5 text-[11px] text-muted-foreground/70">
+      <div
+        className={cn(
+          "rounded-md border border-border/45 bg-muted/15 px-2 py-1.5 text-[11px] text-muted-foreground/70",
+          minLines >= 3 && "flex min-h-14 items-center",
+        )}
+      >
         {children}
       </div>
     </div>
@@ -1649,7 +1657,7 @@ const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
   if (hasInlineDiff || (isFileChange && hasLiveOutput)) {
     const showInlineDiffPreview = inlineDiffExpanded || defaultLivePatchExpanded;
     return (
-      <div className="group rounded-lg px-1 py-0.5 transition-colors duration-150 hover:bg-muted/20 focus-within:bg-muted/20">
+      <div className="group rounded-lg border border-border/35 bg-card/20 px-1 py-0.5 transition-colors duration-150 hover:bg-muted/20 focus-within:bg-muted/20">
         <button
           type="button"
           className="flex min-h-7 w-full min-w-0 items-center gap-2 text-left transition-[opacity,translate] duration-200 focus-visible:outline-none"

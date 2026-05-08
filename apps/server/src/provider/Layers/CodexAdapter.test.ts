@@ -599,6 +599,51 @@ lifecycleLayer("CodexAdapterLive lifecycle", (it) => {
     }),
   );
 
+  it.effect("maps file-change patch snapshots to canonical file-change output content", () =>
+    Effect.gen(function* () {
+      const { adapter, runtime } = yield* startLifecycleRuntime();
+      const firstEventFiber = yield* Stream.runHead(adapter.streamEvents).pipe(Effect.forkChild);
+
+      yield* runtime.emit({
+        id: asEventId("evt-file-patch-updated"),
+        kind: "notification",
+        provider: ProviderDriverKind.make("codex"),
+        createdAt: new Date().toISOString(),
+        method: "item/fileChange/patchUpdated",
+        threadId: asThreadId("thread-1"),
+        turnId: asTurnId("turn-1"),
+        itemId: asItemId("patch_1"),
+        payload: {
+          threadId: "thread-1",
+          turnId: "turn-1",
+          itemId: "patch_1",
+          changes: [
+            {
+              path: "src/new.ts",
+              kind: { type: "add" },
+              diff: "@@ -0,0 +1,1 @@\n+export const value = 1;",
+            },
+          ],
+        },
+      } satisfies ProviderEvent);
+
+      const firstEvent = yield* Fiber.join(firstEventFiber);
+
+      assert.equal(firstEvent._tag, "Some");
+      if (firstEvent._tag !== "Some") {
+        return;
+      }
+      assert.equal(firstEvent.value.type, "content.delta");
+      if (firstEvent.value.type !== "content.delta") {
+        return;
+      }
+      assert.equal(firstEvent.value.payload.streamKind, "file_change_output");
+      assert.match(firstEvent.value.payload.delta, /diff --git a\/src\/new\.ts b\/src\/new\.ts/u);
+      assert.match(firstEvent.value.payload.delta, /new file mode 100644/u);
+      assert.match(firstEvent.value.payload.delta, /\+export const value = 1;/u);
+    }),
+  );
+
   it.effect("preserves provider-native turn refs for child-thread notifications", () =>
     Effect.gen(function* () {
       const { adapter, runtime } = yield* startLifecycleRuntime();

@@ -7,7 +7,9 @@ import type {
 } from "@t3tools/contracts";
 
 const MAX_BUFFER_CHARS = 5 * 1024 * 1024;
+const MAX_TOTAL_CHARS = 100 * 1024 * 1024;
 const MAX_SEEN_CHUNKS = 4_000;
+const RETENTION_MS = 10 * 60_000;
 
 export interface LiveCommandOutputKey {
   environmentId: EnvironmentId;
@@ -27,6 +29,8 @@ interface LiveCommandOutputEntry extends LiveCommandOutputSnapshot {
   seenChunkIds: Set<string>;
   seenChunkOrder: string[];
   notifyQueued: boolean;
+  lastAccessedAt: number;
+  expiresAt: number;
 }
 
 const EMPTY_SNAPSHOT: LiveCommandOutputSnapshot = {
@@ -37,6 +41,8 @@ const EMPTY_SNAPSHOT: LiveCommandOutputSnapshot = {
 };
 
 const entries = new Map<string, LiveCommandOutputEntry>();
+let totalChars = 0;
+let cleanupTimer: ReturnType<typeof setTimeout> | null = null;
 
 function liveCommandOutputKey(input: LiveCommandOutputKey): string {
   return `${input.environmentId}:${input.threadId}:${input.toolCallId}`;
@@ -57,17 +63,77 @@ function trimBufferedText(text: string): { text: string; truncated: boolean } {
   return { text: nextText, truncated };
 }
 
+function evictEntry(key: string, entry: LiveCommandOutputEntry): void {
+  totalChars -= entry.text.length;
+  entries.delete(key);
+}
+
+function evictExpired(now: number): void {
+  for (const [key, entry] of entries) {
+    if (entry.subscribers.size === 0 && entry.expiresAt <= now) {
+      evictEntry(key, entry);
+    }
+  }
+}
+
+function evictLru(): void {
+  while (totalChars > MAX_TOTAL_CHARS && entries.size > 0) {
+    let oldestKey: string | null = null;
+    let oldestAccessedAt = Number.POSITIVE_INFINITY;
+    for (const [key, entry] of entries) {
+      if (entry.subscribers.size > 0) {
+        continue;
+      }
+      if (entry.lastAccessedAt < oldestAccessedAt) {
+        oldestAccessedAt = entry.lastAccessedAt;
+        oldestKey = key;
+      }
+    }
+    if (!oldestKey) {
+      return;
+    }
+    const entry = entries.get(oldestKey);
+    if (entry) {
+      evictEntry(oldestKey, entry);
+    }
+  }
+}
+
+function scheduleCleanup(): void {
+  if (cleanupTimer !== null || typeof setTimeout !== "function") return;
+  cleanupTimer = setTimeout(() => {
+    cleanupTimer = null;
+    evictExpired(Date.now());
+    if ([...entries.values()].some((entry) => entry.subscribers.size === 0)) {
+      scheduleCleanup();
+    }
+  }, RETENTION_MS);
+}
+
+function touchEntry(entry: LiveCommandOutputEntry, now: number): void {
+  entry.lastAccessedAt = now;
+  entry.expiresAt = now + RETENTION_MS;
+}
+
 function getOrCreateEntry(key: string): LiveCommandOutputEntry {
+  const now = Date.now();
+  evictExpired(now);
   const existing = entries.get(key);
-  if (existing) return existing;
+  if (existing) {
+    touchEntry(existing, now);
+    return existing;
+  }
   const entry: LiveCommandOutputEntry = {
     ...EMPTY_SNAPSHOT,
     subscribers: new Set(),
     seenChunkIds: new Set(),
     seenChunkOrder: [],
     notifyQueued: false,
+    lastAccessedAt: now,
+    expiresAt: now + RETENTION_MS,
   };
   entries.set(key, entry);
+  scheduleCleanup();
   return entry;
 }
 
@@ -108,11 +174,15 @@ export function appendLiveCommandOutputDelta(
     if (removed) entry.seenChunkIds.delete(removed);
   }
 
+  const previousLength = entry.text.length;
   const trimmed = trimBufferedText(`${entry.text}${delta.delta}`);
   entry.text = trimmed.text;
   entry.truncated = entry.truncated || trimmed.truncated;
   entry.updatedAt = delta.createdAt;
   entry.version += 1;
+  totalChars += entry.text.length - previousLength;
+  touchEntry(entry, Date.now());
+  evictLru();
   queueNotify(entry);
 }
 
@@ -132,10 +202,14 @@ export function hydrateLiveCommandOutputSnapshot(
   if (entry.updatedAt && snapshot.updatedAt && entry.updatedAt > snapshot.updatedAt) {
     return;
   }
+  const previousLength = entry.text.length;
   entry.text = snapshot.text;
   entry.truncated = snapshot.truncated;
   entry.updatedAt = snapshot.updatedAt;
   entry.version += 1;
+  totalChars += entry.text.length - previousLength;
+  touchEntry(entry, Date.now());
+  evictLru();
   queueNotify(entry);
 }
 
@@ -143,7 +217,12 @@ export function readLiveCommandOutputSnapshot(
   keyInput: LiveCommandOutputKey | null,
 ): LiveCommandOutputSnapshot {
   if (!keyInput) return EMPTY_SNAPSHOT;
-  return entries.get(liveCommandOutputKey(keyInput)) ?? EMPTY_SNAPSHOT;
+  const now = Date.now();
+  evictExpired(now);
+  const entry = entries.get(liveCommandOutputKey(keyInput));
+  if (!entry) return EMPTY_SNAPSHOT;
+  touchEntry(entry, now);
+  return entry;
 }
 
 export function subscribeLiveCommandOutput(
@@ -153,8 +232,11 @@ export function subscribeLiveCommandOutput(
   if (!keyInput) return () => undefined;
   const entry = getOrCreateEntry(liveCommandOutputKey(keyInput));
   entry.subscribers.add(subscriber);
+  touchEntry(entry, Date.now());
   return () => {
     entry.subscribers.delete(subscriber);
+    touchEntry(entry, Date.now());
+    scheduleCleanup();
   };
 }
 
@@ -170,4 +252,14 @@ export function useLiveCommandOutput(
 
 export function resetLiveCommandOutputForTests(): void {
   entries.clear();
+  totalChars = 0;
+  if (cleanupTimer !== null) {
+    clearTimeout(cleanupTimer);
+    cleanupTimer = null;
+  }
+}
+
+export function sweepLiveCommandOutputForTests(now = Date.now()): void {
+  evictExpired(now);
+  evictLru();
 }

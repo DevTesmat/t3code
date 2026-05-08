@@ -38,7 +38,10 @@ import { Keybindings } from "./keybindings.ts";
 import { Open, resolveAvailableEditors } from "./open.ts";
 import { normalizeDispatchCommand } from "./orchestration/Normalizer.ts";
 import { OrchestrationEngineService } from "./orchestration/Services/OrchestrationEngine.ts";
-import { commandOutputDeltaStream as globalCommandOutputDeltaStream } from "./orchestration/Services/CommandOutputDeltaBus.ts";
+import {
+  commandOutputDeltaStream as globalCommandOutputDeltaStream,
+  commandOutputSnapshotStream as globalCommandOutputSnapshotStream,
+} from "./orchestration/Services/CommandOutputDeltaBus.ts";
 import { readCommandOutputSnapshotsForThread } from "./orchestration/Services/CommandOutputBuffer.ts";
 import { ProjectionSnapshotQuery } from "./orchestration/Services/ProjectionSnapshotQuery.ts";
 import {
@@ -783,6 +786,13 @@ const makeWsRpcLayer = (currentSessionId: AuthSessionId) =>
                   delta,
                 })),
               );
+              const liveCommandOutputSnapshotStream = globalCommandOutputSnapshotStream.pipe(
+                Stream.filter((snapshot) => snapshot.threadId === input.threadId),
+                Stream.map((snapshot) => ({
+                  kind: "command-output-snapshot" as const,
+                  snapshot,
+                })),
+              );
               const commandOutputSnapshotStream = readCommandOutputSnapshotsForThread(
                 input.threadId,
               ).pipe(
@@ -849,7 +859,10 @@ const makeWsRpcLayer = (currentSessionId: AuthSessionId) =>
                   commandOutputSnapshotStream,
                 ),
                 Stream.merge(
-                  Stream.merge(liveStream, commandOutputDeltaStream),
+                  Stream.merge(
+                    Stream.merge(liveStream, commandOutputDeltaStream),
+                    liveCommandOutputSnapshotStream,
+                  ),
                   historySyncSnapshotStream,
                 ),
               );

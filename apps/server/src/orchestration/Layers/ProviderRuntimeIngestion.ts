@@ -33,7 +33,10 @@ import {
   type ProviderRuntimeIngestionShape,
 } from "../Services/ProviderRuntimeIngestion.ts";
 import { ServerSettingsService } from "../../serverSettings.ts";
-import { publishCommandOutputDelta } from "../Services/CommandOutputDeltaBus.ts";
+import {
+  publishCommandOutputDelta,
+  publishCommandOutputSnapshot,
+} from "../Services/CommandOutputDeltaBus.ts";
 
 const providerTurnKey = (threadId: ThreadId, turnId: TurnId) => `${threadId}:${turnId}`;
 const stableIdentityPart = (value: unknown): string =>
@@ -1820,6 +1823,10 @@ const make = Effect.gen(function* () {
       ) {
         const outputDelta = commandOutputDelta ?? fileChangeOutputDelta ?? "";
         const turnId = toTurnId(event.turnId);
+        const isFileChangePatchSnapshot =
+          fileChangeOutputDelta !== undefined &&
+          event.raw?.source === "codex.app-server.notification" &&
+          event.raw.method === "item/fileChange/patchUpdated";
         if (commandOutputDelta) {
           yield* appendCommandOutputPreview({
             threadId: thread.id,
@@ -1828,14 +1835,25 @@ const make = Effect.gen(function* () {
             delta: outputDelta,
           });
         }
-        yield* publishCommandOutputDelta({
-          threadId: thread.id,
-          turnId: turnId ?? null,
-          toolCallId: ProviderItemId.make(event.itemId),
-          chunkId: event.eventId,
-          createdAt: event.createdAt,
-          delta: outputDelta,
-        });
+        if (isFileChangePatchSnapshot) {
+          yield* publishCommandOutputSnapshot({
+            threadId: thread.id,
+            turnId: turnId ?? null,
+            toolCallId: ProviderItemId.make(event.itemId),
+            updatedAt: event.createdAt,
+            text: outputDelta,
+            truncated: false,
+          });
+        } else {
+          yield* publishCommandOutputDelta({
+            threadId: thread.id,
+            turnId: turnId ?? null,
+            toolCallId: ProviderItemId.make(event.itemId),
+            chunkId: event.eventId,
+            createdAt: event.createdAt,
+            delta: outputDelta,
+          });
+        }
       }
 
       const pauseForUserTurnId =

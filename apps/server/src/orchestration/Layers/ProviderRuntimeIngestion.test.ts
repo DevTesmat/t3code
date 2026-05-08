@@ -2989,6 +2989,71 @@ describe("ProviderRuntimeIngestion", () => {
     ).toBe(itemId);
   });
 
+  it("replaces file-change output with patchUpdated snapshots", async () => {
+    const harness = await createHarness();
+    const now = new Date().toISOString();
+    const threadId = asThreadId("thread-1");
+    const turnId = asTurnId("turn-file-change-patch-updated");
+    const itemId = asItemId("item-file-change-patch-updated");
+
+    harness.emit({
+      type: "turn.started",
+      eventId: asEventId("evt-turn-started-file-change-patch-updated"),
+      provider: ProviderDriverKind.make("codex"),
+      createdAt: now,
+      threadId,
+      turnId,
+    });
+    await waitForThread(
+      harness.engine,
+      (thread) => thread.session?.status === "running" && thread.session?.activeTurnId === turnId,
+    );
+
+    harness.emit({
+      type: "content.delta",
+      eventId: asEventId("evt-file-change-output-partial"),
+      provider: ProviderDriverKind.make("codex"),
+      createdAt: "2026-03-17T19:12:30.000Z",
+      threadId,
+      turnId,
+      itemId,
+      payload: {
+        streamKind: "file_change_output",
+        delta: "partial patch",
+      },
+    });
+    harness.emit({
+      type: "content.delta",
+      eventId: asEventId("evt-file-change-patch-snapshot"),
+      provider: ProviderDriverKind.make("codex"),
+      createdAt: "2026-03-17T19:12:31.000Z",
+      threadId,
+      turnId,
+      itemId,
+      raw: {
+        source: "codex.app-server.notification",
+        method: "item/fileChange/patchUpdated",
+        payload: {},
+      },
+      payload: {
+        streamKind: "file_change_output",
+        delta: "diff --git a/src/new.ts b/src/new.ts\n+hello\n",
+      },
+    });
+    await harness.drain();
+
+    const snapshots = await Effect.runPromise(readCommandOutputSnapshotsForThread(threadId));
+    expect(snapshots).toEqual([
+      expect.objectContaining({
+        threadId,
+        turnId,
+        toolCallId: itemId,
+        text: "diff --git a/src/new.ts b/src/new.ts\n+hello\n",
+        updatedAt: "2026-03-17T19:12:31.000Z",
+      }),
+    ]);
+  });
+
   it("spills oversized buffered deltas and still finalizes full assistant text", async () => {
     const harness = await createHarness({ serverSettings: { enableAssistantStreaming: false } });
     const now = new Date().toISOString();

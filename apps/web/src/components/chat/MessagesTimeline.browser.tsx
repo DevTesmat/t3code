@@ -4,6 +4,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import {
   EnvironmentId,
   MessageId,
+  ProviderItemId,
   ThreadId,
   TurnId,
   type EnvironmentApi,
@@ -110,6 +111,10 @@ import {
   __resetEnvironmentApiOverridesForTests,
   __setEnvironmentApiOverrideForTests,
 } from "../../environmentApi";
+import {
+  hydrateLiveCommandOutputSnapshot,
+  resetLiveCommandOutputForTests,
+} from "../../liveCommandOutput";
 
 function buildProps() {
   return {
@@ -141,6 +146,7 @@ describe("MessagesTimeline", () => {
     getStateSpy.mockClear();
     legendListPropsSpy.mockClear();
     __resetEnvironmentApiOverridesForTests();
+    resetLiveCommandOutputForTests();
     vi.restoreAllMocks();
     document.body.innerHTML = "";
   });
@@ -672,6 +678,81 @@ describe("MessagesTimeline", () => {
       expect(getTurnDiff).toHaveBeenCalledTimes(1);
     } finally {
       queryClient.clear();
+      await screen.unmount();
+    }
+  });
+
+  it("expands completed same-file changes from separate per-tool buffers", async () => {
+    const environmentId = EnvironmentId.make("environment-local");
+    const threadId = ThreadId.make("thread-1");
+    hydrateLiveCommandOutputSnapshot(environmentId, {
+      threadId,
+      turnId: TurnId.make("turn-1"),
+      toolCallId: ProviderItemId.make("patch-1"),
+      updatedAt: "2026-04-13T12:00:01.000Z",
+      text: "diff --git a/src/app.ts b/src/app.ts\n@@ -1 +1 @@\n-old\n+first\n",
+      truncated: false,
+    });
+    hydrateLiveCommandOutputSnapshot(environmentId, {
+      threadId,
+      turnId: TurnId.make("turn-1"),
+      toolCallId: ProviderItemId.make("patch-2"),
+      updatedAt: "2026-04-13T12:00:02.000Z",
+      text: "diff --git a/src/app.ts b/src/app.ts\n@@ -1 +1 @@\n-first\n+second\n",
+      truncated: false,
+    });
+
+    const screen = await render(
+      <MessagesTimeline
+        {...buildProps()}
+        activeThreadId={threadId}
+        activeThreadEnvironmentId={environmentId}
+        timelineEntries={[
+          {
+            id: "work-1",
+            kind: "work",
+            createdAt: "2026-04-13T12:00:00.000Z",
+            entry: {
+              id: "work-1",
+              turnId: TurnId.make("turn-1"),
+              createdAt: "2026-04-13T12:00:00.000Z",
+              label: "File change",
+              tone: "tool",
+              itemType: "file_change",
+              status: "completed",
+              toolCallId: "patch-1",
+              changedFiles: ["src/app.ts"],
+            },
+          },
+          {
+            id: "work-2",
+            kind: "work",
+            createdAt: "2026-04-13T12:00:02.000Z",
+            entry: {
+              id: "work-2",
+              turnId: TurnId.make("turn-1"),
+              createdAt: "2026-04-13T12:00:02.000Z",
+              label: "File change",
+              tone: "tool",
+              itemType: "file_change",
+              status: "completed",
+              toolCallId: "patch-2",
+              changedFiles: ["src/app.ts"],
+            },
+          },
+        ]}
+      />,
+    );
+
+    try {
+      const toggles = page.getByTestId("inline-diff-toggle");
+      await toggles.nth(0).click();
+      await expect.element(page.getByText("+first")).toBeInTheDocument();
+      await expect.element(page.getByText("+second")).not.toBeInTheDocument();
+
+      await toggles.nth(1).click();
+      await expect.element(page.getByText("+second")).toBeInTheDocument();
+    } finally {
       await screen.unmount();
     }
   });

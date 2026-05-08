@@ -334,6 +334,44 @@ describe("MessagesTimeline", () => {
     expect(markup).toContain("bg-destructive");
   });
 
+  it("renders partial file-change output before a newline arrives", async () => {
+    hydrateLiveCommandOutputSnapshot(ACTIVE_THREAD_ENVIRONMENT_ID, {
+      threadId: ThreadId.make("thread-1"),
+      turnId: TurnId.make("turn-1"),
+      toolCallId: ProviderItemId.make("file-change-partial"),
+      updatedAt: "2026-03-17T19:12:30.000Z",
+      text: "+const partial",
+      truncated: false,
+    });
+
+    const { MessagesTimeline } = await import("./MessagesTimeline");
+    const markup = renderToStaticMarkup(
+      <MessagesTimeline
+        {...buildProps()}
+        timelineEntries={[
+          {
+            id: "entry-1",
+            kind: "work",
+            createdAt: "2026-03-17T19:12:28.000Z",
+            entry: {
+              id: "work-1",
+              createdAt: "2026-03-17T19:12:28.000Z",
+              label: "Editing files",
+              tone: "tool",
+              itemType: "file_change",
+              status: "running",
+              toolCallId: "file-change-partial",
+              changedFiles: ["src/app.ts"],
+            },
+          },
+        ]}
+      />,
+    );
+
+    expect(markup).toContain("+const partial");
+    expect(markup).toContain("inline-file-change-patch");
+  });
+
   it("renders codebase exploration as one collapsed expandable row", async () => {
     const { MessagesTimeline } = await import("./MessagesTimeline");
     const markup = renderToStaticMarkup(
