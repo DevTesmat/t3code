@@ -6,6 +6,7 @@
 - CI and release preflight use `bun run fmt:check`; run it when checking formatting without writing changes.
 - NEVER run `bun test`. Always use `bun run test` (runs Vitest).
 - Do not pass individual test file paths to the root `bun run test` command; Turbo interprets them as task names. For a focused test, run the package-local test script from that package directory, or use the full root `bun run test`.
+- When searching thread logs, use `bun run logs:thread -- --logs <logs-dir> --thread <thread-id>` instead of manually searching with terminal commands. The script accepts the logs folder and canonical thread id, parses rotated provider logs reliably, and avoids false matches from embedded/copied log text. Use `--include-server`, `--grep <text>`, or `--around <id>` when needed.
 
 ## Planning Style
 

@@ -887,6 +887,40 @@ function runtimeEventToSubagentTranscriptActivity(
   },
 ): OrchestrationThreadActivity | null {
   if (
+    event.type === "content.delta" &&
+    event.payload.streamKind === "assistant_text" &&
+    event.payload.delta.length > 0
+  ) {
+    const providerThreadId = providerThreadIdFromRuntimeEvent(event);
+    if (!providerThreadId || providerThreadScopeFromRuntimeEvent(event, input) !== "knownChild") {
+      return null;
+    }
+    const providerTurnId = event.providerRefs?.providerTurnId;
+    return {
+      id: EventId.make(`${event.eventId}:subagent-transcript`),
+      createdAt: event.createdAt,
+      tone: "info",
+      kind: "subagent.content.delta",
+      summary: "Assistant message",
+      payload: {
+        providerThreadId,
+        itemType: "assistant_message",
+        ...(event.itemId ? { itemId: event.itemId } : {}),
+        ...(providerTurnId ? { providerTurnId } : {}),
+        status: "inProgress",
+        text: event.payload.delta,
+      },
+      turnId: toTurnId(event.turnId) ?? null,
+      ...(() => {
+        const eventWithSequence = event as ProviderRuntimeEvent & { sessionSequence?: number };
+        return eventWithSequence.sessionSequence !== undefined
+          ? { sequence: eventWithSequence.sessionSequence }
+          : {};
+      })(),
+    };
+  }
+
+  if (
     event.type !== "item.started" &&
     event.type !== "item.updated" &&
     event.type !== "item.completed"

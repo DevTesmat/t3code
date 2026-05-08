@@ -760,6 +760,7 @@ export function deriveThreadSubagents(
   activities: ReadonlyArray<OrchestrationThreadActivity>,
 ): ThreadSubagent[] {
   const subagentsByThreadId = new Map<string, ThreadSubagent>();
+  const receiverThreadIdsByToolCallId = new Map<string, string[]>();
   const ordered = [...activities].toSorted(compareActivitiesByOrder);
 
   for (const activity of ordered) {
@@ -768,7 +769,18 @@ export function deriveThreadSubagents(
       continue;
     }
     const data = asRecord(payload?.data);
-    const receiverThreadIds = extractStringArray(data?.receiverThreadIds);
+    const toolCallId = extractToolCallId(payload);
+    const agentsStates = asRecord(data?.agentsStates);
+    const explicitReceiverThreadIds = extractStringArray(data?.receiverThreadIds);
+    if (toolCallId && explicitReceiverThreadIds.length > 0) {
+      receiverThreadIdsByToolCallId.set(toolCallId, explicitReceiverThreadIds);
+    }
+    const receiverThreadIds = deriveCollabReceiverThreadIds({
+      explicitReceiverThreadIds,
+      agentsStates,
+      knownSubagentThreadIds: subagentsByThreadId.keys(),
+      rememberedReceiverThreadIds: toolCallId ? receiverThreadIdsByToolCallId.get(toolCallId) : [],
+    });
     if (receiverThreadIds.length === 0) {
       continue;
     }
@@ -777,7 +789,6 @@ export function deriveThreadSubagents(
     const lifecycleStatus =
       extractCommandStatus(payload, activity.kind, "collab_agent_tool_call") ??
       (activity.kind === "tool.completed" ? "completed" : undefined);
-    const agentsStates = asRecord(data?.agentsStates);
     const dataStatus = normalizeSubagentStatus(asTrimmedString(data?.status));
 
     for (const receiverThreadId of receiverThreadIds) {
@@ -837,14 +848,14 @@ export function deriveThreadSubagentTranscripts(
 ): ThreadSubagentTranscript[] {
   const subagents = deriveThreadSubagents(activities);
   const knownSubagentIds = new Set(subagents.map((subagent) => subagent.threadId));
-  const messagesByThreadId = new Map<string, ChatMessage[]>();
+  const messagesByThreadId = new Map<string, Map<string, ChatMessage>>();
   const activitiesByThreadId = new Map<string, OrchestrationThreadActivity[]>();
 
   for (const subagent of subagents) {
-    messagesByThreadId.set(subagent.threadId, []);
+    messagesByThreadId.set(subagent.threadId, new Map());
     activitiesByThreadId.set(subagent.threadId, []);
     if (subagent.promptPreview) {
-      messagesByThreadId.get(subagent.threadId)?.push({
+      messagesByThreadId.get(subagent.threadId)?.set("prompt", {
         id: MessageId.make(`subagent:${subagent.threadId}:prompt`),
         role: "user",
         text: subagent.promptPreview,
@@ -856,6 +867,7 @@ export function deriveThreadSubagentTranscripts(
 
   const ordered = [...activities].toSorted(compareActivitiesByOrder);
   const fallbackMessageKeys = new Set<string>();
+  const transcriptTextKeys = new Set<string>();
 
   for (const activity of ordered) {
     const payload = asRecord(activity.payload);
@@ -866,24 +878,38 @@ export function deriveThreadSubagentTranscripts(
       const text = asTrimmedString(payload?.text ?? payload?.detail);
       const phase = asTrimmedString(payload?.phase);
       const providerTurnId = asTrimmedString(payload?.providerTurnId);
-      if (activity.kind === "subagent.item.completed" && itemType === "assistant_message" && text) {
-        messagesByThreadId.get(providerThreadId)?.push({
-          id: MessageId.make(
-            `subagent:${providerThreadId}:${asTrimmedString(payload?.itemId) ?? activity.id}`,
-          ),
+      const itemId = asTrimmedString(payload?.itemId) ?? activity.id;
+      const status = asTrimmedString(payload?.status);
+      if (
+        (activity.kind === "subagent.item.started" ||
+          activity.kind === "subagent.item.updated" ||
+          activity.kind === "subagent.item.completed" ||
+          activity.kind === "subagent.content.delta") &&
+        itemType === "assistant_message" &&
+        text
+      ) {
+        const messageKey = `assistant:${itemId}`;
+        const existing = messagesByThreadId.get(providerThreadId)?.get(messageKey);
+        const nextText =
+          activity.kind === "subagent.content.delta" && existing ? `${existing.text}${text}` : text;
+        messagesByThreadId.get(providerThreadId)?.set(messageKey, {
+          ...existing,
+          id: existing?.id ?? MessageId.make(`subagent:${providerThreadId}:${itemId}`),
           role: "assistant",
-          text,
+          text: nextText,
           ...(providerTurnId ? { turnId: TurnId.make(providerTurnId) } : {}),
-          createdAt: activity.createdAt,
-          completedAt: activity.createdAt,
-          streaming: false,
+          createdAt: existing?.createdAt ?? activity.createdAt,
+          ...(activity.kind === "subagent.item.completed" || status === "completed"
+            ? { completedAt: activity.createdAt }
+            : {}),
+          streaming: activity.kind !== "subagent.item.completed" && status !== "completed",
         });
+        transcriptTextKeys.add(`${providerThreadId}:${nextText}`);
       }
       if (activity.kind === "subagent.item.completed" && itemType === "user_message" && text) {
-        messagesByThreadId.get(providerThreadId)?.push({
-          id: MessageId.make(
-            `subagent:${providerThreadId}:${asTrimmedString(payload?.itemId) ?? activity.id}`,
-          ),
+        const messageKey = `user:${itemId}`;
+        messagesByThreadId.get(providerThreadId)?.set(messageKey, {
+          id: MessageId.make(`subagent:${providerThreadId}:${itemId}`),
           role: "user",
           text,
           ...(providerTurnId ? { turnId: TurnId.make(providerTurnId) } : {}),
@@ -913,11 +939,11 @@ export function deriveThreadSubagentTranscripts(
         continue;
       }
       const key = `${subagent.threadId}:${message}`;
-      if (fallbackMessageKeys.has(key)) {
+      if (fallbackMessageKeys.has(key) || transcriptTextKeys.has(key)) {
         continue;
       }
       fallbackMessageKeys.add(key);
-      messagesByThreadId.get(subagent.threadId)?.push({
+      messagesByThreadId.get(subagent.threadId)?.set(`state:${activity.id}`, {
         id: MessageId.make(`subagent:${subagent.threadId}:state:${activity.id}`),
         role: "assistant",
         text: message,
@@ -930,8 +956,8 @@ export function deriveThreadSubagentTranscripts(
 
   return subagents.map((subagent) => ({
     subagent,
-    messages: (messagesByThreadId.get(subagent.threadId) ?? []).toSorted((left, right) =>
-      left.createdAt.localeCompare(right.createdAt),
+    messages: [...(messagesByThreadId.get(subagent.threadId)?.values() ?? [])].toSorted(
+      (left, right) => left.createdAt.localeCompare(right.createdAt),
     ),
     activities: activitiesByThreadId.get(subagent.threadId) ?? [],
   }));
@@ -1565,6 +1591,32 @@ function extractCollabReceiverThreadIds(payload: Record<string, unknown> | null)
   return extractStringArray(data?.receiverThreadIds);
 }
 
+function deriveCollabReceiverThreadIds(input: {
+  explicitReceiverThreadIds: ReadonlyArray<string>;
+  agentsStates: Record<string, unknown> | null;
+  knownSubagentThreadIds: Iterable<string>;
+  rememberedReceiverThreadIds: ReadonlyArray<string> | undefined;
+}): string[] {
+  const receiverThreadIds = new Set<string>();
+  for (const receiverThreadId of input.explicitReceiverThreadIds) {
+    receiverThreadIds.add(receiverThreadId);
+  }
+  for (const receiverThreadId of Object.keys(input.agentsStates ?? {})) {
+    receiverThreadIds.add(receiverThreadId);
+  }
+  for (const receiverThreadId of input.rememberedReceiverThreadIds ?? []) {
+    receiverThreadIds.add(receiverThreadId);
+  }
+  if (receiverThreadIds.size === 0 && input.agentsStates) {
+    for (const receiverThreadId of input.knownSubagentThreadIds) {
+      if (input.agentsStates[receiverThreadId] !== undefined) {
+        receiverThreadIds.add(receiverThreadId);
+      }
+    }
+  }
+  return [...receiverThreadIds];
+}
+
 function collabAgentStatuses(payload: Record<string, unknown> | null): ThreadSubagentStatus[] {
   const data = asRecord(payload?.data);
   const agentsStates = asRecord(data?.agentsStates);
@@ -1613,6 +1665,8 @@ function normalizeSubagentStatus(value: string | null): ThreadSubagentStatus | n
     case "active":
     case "inprogress":
     case "in_progress":
+    case "pendinginit":
+    case "pending_init":
     case "pending":
       return "running";
     case "completed":
@@ -1654,6 +1708,9 @@ function resolveSubagentStatus({
   }
   if (collabTool === "spawnAgent" && lifecycleStatus === "completed") {
     return previousStatus ?? "running";
+  }
+  if (collabTool === "wait" && lifecycleStatus === "completed") {
+    return "completed";
   }
   return previousStatus ?? (lifecycleStatus === "completed" ? "completed" : "running");
 }

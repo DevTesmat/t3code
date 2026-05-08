@@ -1265,7 +1265,20 @@ describe("ProviderRuntimeIngestion", () => {
       thread.activities.filter((activity: ProviderRuntimeTestActivity) =>
         activity.kind.startsWith("subagent."),
       ),
-    ).toHaveLength(2);
+    ).toHaveLength(3);
+    const childAssistantDelta = thread.activities.find(
+      (activity: ProviderRuntimeTestActivity) =>
+        activity.id === "evt-child-assistant-delta:subagent-transcript",
+    );
+    expect(childAssistantDelta?.kind).toBe("subagent.content.delta");
+    expect(childAssistantDelta?.payload).toMatchObject({
+      providerThreadId: "child-a",
+      providerTurnId: "child-a-turn",
+      itemId: "child-a-msg",
+      itemType: "assistant_message",
+      text: "Leaked child streaming text.",
+      status: "inProgress",
+    });
     const childAssistant = thread.activities.find(
       (activity: ProviderRuntimeTestActivity) =>
         activity.id === "evt-child-assistant-completed-after-spawn:subagent-transcript",

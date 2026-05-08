@@ -175,6 +175,85 @@ describe("deriveThreadSubagents", () => {
       },
     ]);
   });
+
+  it("uses remembered wait receivers and agent state keys when wait completion omits receiver ids", () => {
+    const activities: OrchestrationThreadActivity[] = [
+      makeActivity({
+        id: "spawn-child-1",
+        createdAt: "2026-02-23T00:00:01.000Z",
+        kind: "tool.completed",
+        payload: {
+          itemType: "collab_agent_tool_call",
+          data: {
+            collabTool: "spawnAgent",
+            receiverThreadIds: ["child-1"],
+            agentsStates: { "child-1": { status: "pendingInit" } },
+          },
+        },
+      }),
+      makeActivity({
+        id: "spawn-child-2",
+        createdAt: "2026-02-23T00:00:02.000Z",
+        kind: "tool.completed",
+        payload: {
+          itemType: "collab_agent_tool_call",
+          data: {
+            collabTool: "spawnAgent",
+            receiverThreadIds: ["child-2"],
+            agentsStates: { "child-2": { status: "pendingInit" } },
+          },
+        },
+      }),
+      makeActivity({
+        id: "wait-started",
+        createdAt: "2026-02-23T00:00:03.000Z",
+        kind: "tool.started",
+        payload: {
+          itemType: "collab_agent_tool_call",
+          data: {
+            toolCallId: "wait-1",
+            collabTool: "wait",
+            receiverThreadIds: ["child-1", "child-2"],
+          },
+        },
+      }),
+      makeActivity({
+        id: "wait-completed-missing-receivers",
+        createdAt: "2026-02-23T00:00:04.000Z",
+        kind: "tool.completed",
+        payload: {
+          itemType: "collab_agent_tool_call",
+          data: {
+            toolCallId: "wait-1",
+            collabTool: "wait",
+            receiverThreadIds: [],
+            agentsStates: {},
+          },
+        },
+      }),
+      makeActivity({
+        id: "wait-child-2-completed",
+        createdAt: "2026-02-23T00:00:05.000Z",
+        kind: "tool.completed",
+        payload: {
+          itemType: "collab_agent_tool_call",
+          data: {
+            toolCallId: "wait-2",
+            collabTool: "wait",
+            receiverThreadIds: [],
+            agentsStates: {
+              "child-2": { status: "completed", message: "done" },
+            },
+          },
+        },
+      }),
+    ];
+
+    expect(deriveThreadSubagents(activities).map((subagent) => subagent.status)).toEqual([
+      "completed",
+      "completed",
+    ]);
+  });
 });
 
 describe("deriveThreadSubagentTranscripts", () => {
@@ -231,6 +310,99 @@ describe("deriveThreadSubagentTranscripts", () => {
       },
     ]);
     expect(transcripts[0]?.activities.map((activity) => activity.id)).toEqual(["child-answer"]);
+  });
+
+  it("upserts streaming subagent assistant rows and suppresses duplicate wait fallback messages", () => {
+    const activities: OrchestrationThreadActivity[] = [
+      makeActivity({
+        id: "spawn-child",
+        createdAt: "2026-02-23T00:00:01.000Z",
+        kind: "tool.completed",
+        summary: "Subagent task",
+        payload: {
+          itemType: "collab_agent_tool_call",
+          data: {
+            collabTool: "spawnAgent",
+            receiverThreadIds: ["child-1"],
+            agentsStates: {
+              "child-1": { status: "running" },
+            },
+          },
+        },
+      }),
+      makeActivity({
+        id: "child-answer-delta-1",
+        createdAt: "2026-02-23T00:00:02.000Z",
+        kind: "subagent.content.delta",
+        summary: "Assistant message",
+        tone: "info",
+        payload: {
+          providerThreadId: "child-1",
+          providerTurnId: "child-turn-1",
+          itemId: "child-message-1",
+          itemType: "assistant_message",
+          text: "Inspected only.",
+        },
+      }),
+      makeActivity({
+        id: "child-answer-delta-2",
+        createdAt: "2026-02-23T00:00:02.500Z",
+        kind: "subagent.content.delta",
+        summary: "Assistant message",
+        tone: "info",
+        payload: {
+          providerThreadId: "child-1",
+          providerTurnId: "child-turn-1",
+          itemId: "child-message-1",
+          itemType: "assistant_message",
+          text: " No files edited.",
+        },
+      }),
+      makeActivity({
+        id: "child-answer-complete",
+        createdAt: "2026-02-23T00:00:03.000Z",
+        kind: "subagent.item.completed",
+        summary: "Assistant message",
+        tone: "info",
+        payload: {
+          providerThreadId: "child-1",
+          providerTurnId: "child-turn-1",
+          itemId: "child-message-1",
+          itemType: "assistant_message",
+          text: "Inspected only. No files edited.",
+          phase: "final_answer",
+        },
+      }),
+      makeActivity({
+        id: "wait-child",
+        createdAt: "2026-02-23T00:00:04.000Z",
+        kind: "tool.completed",
+        summary: "Subagent task",
+        payload: {
+          itemType: "collab_agent_tool_call",
+          data: {
+            collabTool: "wait",
+            receiverThreadIds: ["child-1"],
+            agentsStates: {
+              "child-1": {
+                status: "completed",
+                message: "Inspected only. No files edited.",
+              },
+            },
+          },
+        },
+      }),
+    ];
+
+    const [transcript] = deriveThreadSubagentTranscripts(activities);
+
+    expect(transcript?.messages).toMatchObject([
+      {
+        role: "assistant",
+        text: "Inspected only. No files edited.",
+        streaming: false,
+      },
+    ]);
   });
 });
 

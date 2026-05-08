@@ -14,7 +14,7 @@ import {
   type ResolvedKeybindingsConfig,
   type ScopedThreadRef,
   type ThreadId,
-  type TurnId,
+  TurnId,
   type KeybindingCommand,
   OrchestrationThreadActivity,
   ProviderInteractionMode,
@@ -1591,6 +1591,59 @@ export default function ChatView(props: ChatViewProps) {
         : [],
     [selectedSubagentTranscript],
   );
+  const selectedSubagentIsWorking =
+    selectedSubagentTranscript?.subagent.running === true ||
+    selectedSubagentTranscript?.messages.some((message) => message.streaming) === true;
+  const selectedSubagentActiveTurnId = useMemo(() => {
+    if (!selectedSubagentTranscript) {
+      return null;
+    }
+    for (let index = selectedSubagentTranscript.messages.length - 1; index >= 0; index -= 1) {
+      const message = selectedSubagentTranscript.messages[index];
+      if (message?.streaming && message.turnId) {
+        return message.turnId;
+      }
+    }
+    for (let index = selectedSubagentTranscript.activities.length - 1; index >= 0; index -= 1) {
+      const payload = selectedSubagentTranscript.activities[index]?.payload;
+      const providerTurnId =
+        payload && typeof payload === "object" && "providerTurnId" in payload
+          ? payload.providerTurnId
+          : undefined;
+      if (typeof providerTurnId === "string" && providerTurnId.length > 0) {
+        return TurnId.make(providerTurnId);
+      }
+    }
+    return null;
+  }, [selectedSubagentTranscript]);
+  const selectedSubagentActiveStartedAt = useMemo(() => {
+    if (!selectedSubagentTranscript || !selectedSubagentActiveTurnId) {
+      return null;
+    }
+    return (
+      selectedSubagentTranscript.activities.find((activity) => {
+        const payload = activity.payload;
+        const providerTurnId =
+          payload && typeof payload === "object" && "providerTurnId" in payload
+            ? payload.providerTurnId
+            : undefined;
+        return providerTurnId === selectedSubagentActiveTurnId;
+      })?.createdAt ??
+      selectedSubagentTranscript.messages.find(
+        (message) => message.turnId === selectedSubagentActiveTurnId,
+      )?.createdAt ??
+      selectedSubagentTranscript.subagent.createdAt
+    );
+  }, [selectedSubagentActiveTurnId, selectedSubagentTranscript]);
+  const selectedSubagentActivityState = useMemo(() => {
+    if (!selectedSubagentTranscript || !selectedSubagentIsWorking) {
+      return undefined;
+    }
+    if (selectedSubagentTranscript.messages.some((message) => message.streaming)) {
+      return { kind: "streamingAssistant" as const, label: "Streaming response" };
+    }
+    return { kind: "waitingForModel" as const, label: "Waiting for subagent" };
+  }, [selectedSubagentIsWorking, selectedSubagentTranscript]);
   const { turnDiffSummaries, inferredCheckpointTurnCountByTurnId } =
     useTurnDiffSummaries(activeThread);
   const latestChangedFilesSummary = useMemo(() => {
@@ -4128,14 +4181,22 @@ export default function ChatView(props: ChatViewProps) {
                   ? `${activeThread.id}:subagent:${selectedSubagentTranscript.subagent.threadId}`
                   : activeThread.id
               }
-              isWorking={selectedSubagentTranscript ? false : isWorking}
+              isWorking={selectedSubagentTranscript ? selectedSubagentIsWorking : isWorking}
               activeTurnInProgress={
-                selectedSubagentTranscript ? false : isWorking || !latestTurnSettled
+                selectedSubagentTranscript
+                  ? selectedSubagentIsWorking
+                  : isWorking || !latestTurnSettled
               }
-              activeTurnId={selectedSubagentTranscript ? null : (activeLatestTurn?.turnId ?? null)}
-              activeTurnStartedAt={selectedSubagentTranscript ? null : activeWorkStartedAt}
+              activeTurnId={
+                selectedSubagentTranscript
+                  ? selectedSubagentActiveTurnId
+                  : (activeLatestTurn?.turnId ?? null)
+              }
+              activeTurnStartedAt={
+                selectedSubagentTranscript ? selectedSubagentActiveStartedAt : activeWorkStartedAt
+              }
               activeTurnActivityState={
-                selectedSubagentTranscript ? undefined : activeTurnActivityState
+                selectedSubagentTranscript ? selectedSubagentActivityState : activeTurnActivityState
               }
               listRef={legendListRef}
               timelineEntries={
