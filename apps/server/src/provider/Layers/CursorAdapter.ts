@@ -48,6 +48,7 @@ import {
   ProviderAdapterSessionNotFoundError,
   ProviderAdapterValidationError,
 } from "../Errors.ts";
+import { PROVIDER_RUNTIME_EVENT_BUFFER_CAPACITY } from "../RuntimeBackpressure.ts";
 import { acpPermissionOutcome, mapAcpToAdapterError } from "../acp/AcpAdapterSupport.ts";
 import { type AcpSessionRuntimeShape } from "../acp/AcpSessionRuntime.ts";
 import {
@@ -320,7 +321,9 @@ export function makeCursorAdapter(
 
     const sessions = new Map<ThreadId, CursorSessionContext>();
     const threadLocksRef = yield* SynchronizedRef.make(new Map<string, Semaphore.Semaphore>());
-    const runtimeEventPubSub = yield* PubSub.unbounded<ProviderRuntimeEvent>();
+    const runtimeEventPubSub = yield* PubSub.bounded<ProviderRuntimeEvent>(
+      PROVIDER_RUNTIME_EVENT_BUFFER_CAPACITY,
+    );
 
     const nowIso = Effect.map(DateTime.now, DateTime.formatIso);
     const nextEventId = Effect.map(Random.nextUUIDv4, (id) => EventId.make(id));

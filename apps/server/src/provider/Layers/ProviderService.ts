@@ -47,6 +47,10 @@ import {
 import { type EventNdjsonLogger } from "./EventNdjsonLogger.ts";
 import { ProviderEventLoggers } from "./ProviderEventLoggers.ts";
 import { AnalyticsService } from "../../telemetry/Services/AnalyticsService.ts";
+import {
+  classifyProviderRuntimeEvent,
+  PROVIDER_RUNTIME_EVENT_BUFFER_CAPACITY,
+} from "../RuntimeBackpressure.ts";
 
 /**
  * Hook for tests that want to override the canonical event logger pulled
@@ -198,10 +202,21 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
 
   const registry = yield* ProviderAdapterRegistry;
   const directory = yield* ProviderSessionDirectory;
-  const runtimeEventPubSub = yield* PubSub.unbounded<ProviderRuntimeEvent>();
+  const runtimeEventPubSub = yield* PubSub.bounded<ProviderRuntimeEvent>(
+    PROVIDER_RUNTIME_EVENT_BUFFER_CAPACITY,
+  );
 
   const publishRuntimeEvent = (event: ProviderRuntimeEvent): Effect.Effect<void> =>
     Effect.succeed(event).pipe(
+      Effect.tap((canonicalEvent) =>
+        classifyProviderRuntimeEvent(canonicalEvent) === "droppable"
+          ? Effect.logDebug("publishing droppable provider runtime event via blocking path", {
+              eventType: canonicalEvent.type,
+              threadId: canonicalEvent.threadId,
+              provider: canonicalEvent.provider,
+            })
+          : Effect.void,
+      ),
       Effect.tap((canonicalEvent) =>
         canonicalEventLogger
           ? canonicalEventLogger.write(canonicalEvent, canonicalEvent.threadId)

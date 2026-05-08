@@ -16,6 +16,7 @@ import {
   type AcpSessionModeState,
   type AcpToolCallState,
 } from "./AcpRuntimeModel.ts";
+import { PROVIDER_RUNTIME_EVENT_BUFFER_CAPACITY } from "../RuntimeBackpressure.ts";
 
 export interface AcpSpawnInput {
   readonly command: string;
@@ -146,7 +147,9 @@ const makeAcpSessionRuntime = (
   Effect.gen(function* () {
     const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
     const runtimeScope = yield* Scope.Scope;
-    const eventQueue = yield* Queue.unbounded<AcpParsedSessionEvent>();
+    const eventQueue = yield* Queue.bounded<AcpParsedSessionEvent>(
+      PROVIDER_RUNTIME_EVENT_BUFFER_CAPACITY,
+    );
     const modeStateRef = yield* Ref.make<AcpSessionModeState | undefined>(undefined);
     const toolCallsRef = yield* Ref.make(new Map<string, AcpToolCallState>());
     const assistantSegmentRef = yield* Ref.make<AcpAssistantSegmentState>({ nextSegmentIndex: 0 });

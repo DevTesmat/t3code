@@ -43,6 +43,7 @@ import {
   type ProviderAdapterError,
 } from "../Errors.ts";
 import { type CodexAdapterShape } from "../Services/CodexAdapter.ts";
+import { PROVIDER_RUNTIME_EVENT_BUFFER_CAPACITY } from "../RuntimeBackpressure.ts";
 import { resolveAttachmentPath } from "../../attachmentStore.ts";
 import { ServerConfig } from "../../config.ts";
 import {
@@ -1508,7 +1509,9 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
       : undefined);
   const managedNativeEventLogger =
     options?.nativeEventLogger === undefined ? nativeEventLogger : undefined;
-  const runtimeEventQueue = yield* Queue.unbounded<ProviderRuntimeEvent>();
+  const runtimeEventQueue = yield* Queue.bounded<ProviderRuntimeEvent>(
+    PROVIDER_RUNTIME_EVENT_BUFFER_CAPACITY,
+  );
   const sessions = new Map<ThreadId, CodexAdapterSessionContext>();
   const pendingPatchFailureByThread = new Map<ThreadId, PendingApplyPatchVerificationFailure>();
 

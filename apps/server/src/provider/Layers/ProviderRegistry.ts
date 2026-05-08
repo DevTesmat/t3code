@@ -43,6 +43,7 @@ import {
   writeProviderStatusCache,
 } from "../providerStatusCache.ts";
 import type { ProviderInstance } from "../ProviderDriver.ts";
+import { PROVIDER_REGISTRY_CHANGES_BUFFER_CAPACITY } from "../RuntimeBackpressure.ts";
 import type { ProviderSnapshotSource } from "../builtInProviderCatalog.ts";
 
 const loadProviders = (
@@ -155,7 +156,7 @@ export const ProviderRegistryLive = Layer.effect(
     // Aggregator PubSub — consumers (WS gateway, etc.) subscribe here for
     // coalesced updates across every instance.
     const changesPubSub = yield* Effect.acquireRelease(
-      PubSub.unbounded<ReadonlyArray<ServerProvider>>(),
+      PubSub.bounded<ReadonlyArray<ServerProvider>>(PROVIDER_REGISTRY_CHANGES_BUFFER_CAPACITY),
       PubSub.shutdown,
     );
 

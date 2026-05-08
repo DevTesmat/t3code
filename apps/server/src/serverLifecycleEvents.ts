@@ -1,6 +1,8 @@
 import type { ServerLifecycleStreamEvent } from "@t3tools/contracts";
 import { Effect, Layer, PubSub, Ref, Context, Stream } from "effect";
 
+const SERVER_LIFECYCLE_EVENTS_BUFFER_CAPACITY = 256;
+
 type LifecycleEventInput =
   | Omit<Extract<ServerLifecycleStreamEvent, { type: "welcome" }>, "sequence">
   | Omit<Extract<ServerLifecycleStreamEvent, { type: "ready" }>, "sequence">;
@@ -24,7 +26,9 @@ export class ServerLifecycleEvents extends Context.Service<
 export const ServerLifecycleEventsLive = Layer.effect(
   ServerLifecycleEvents,
   Effect.gen(function* () {
-    const pubsub = yield* PubSub.unbounded<ServerLifecycleStreamEvent>();
+    const pubsub = yield* PubSub.bounded<ServerLifecycleStreamEvent>(
+      SERVER_LIFECYCLE_EVENTS_BUFFER_CAPACITY,
+    );
     const state = yield* Ref.make<SnapshotState>({
       sequence: 0,
       events: [],

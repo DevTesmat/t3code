@@ -22,6 +22,7 @@ import {
   timingSafeEqualBase64Url,
 } from "../utils.ts";
 
+const SESSION_CREDENTIAL_CHANGES_BUFFER_CAPACITY = 256;
 const SIGNING_SECRET_NAME = "server-signing-key";
 const DEFAULT_SESSION_TTL = Duration.days(30);
 const DEFAULT_WEBSOCKET_TOKEN_TTL = Duration.minutes(5);
@@ -87,7 +88,9 @@ export const makeSessionCredentialService = Effect.gen(function* () {
   const authSessions = yield* AuthSessionRepository;
   const signingSecret = yield* secretStore.getOrCreateRandom(SIGNING_SECRET_NAME, 32);
   const connectedSessionsRef = yield* Ref.make(new Map<string, number>());
-  const changesPubSub = yield* PubSub.unbounded<SessionCredentialChange>();
+  const changesPubSub = yield* PubSub.bounded<SessionCredentialChange>(
+    SESSION_CREDENTIAL_CHANGES_BUFFER_CAPACITY,
+  );
   const cookieName = resolveSessionCookieName({
     mode: serverConfig.mode,
     port: serverConfig.port,

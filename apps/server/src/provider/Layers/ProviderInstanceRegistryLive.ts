@@ -47,6 +47,7 @@ import {
   ProviderInstanceRegistry,
   type ProviderInstanceRegistryShape,
 } from "../Services/ProviderInstanceRegistry.ts";
+import { PROVIDER_REGISTRY_CHANGES_BUFFER_CAPACITY } from "../RuntimeBackpressure.ts";
 import {
   ProviderInstanceRegistryMutator,
   type ProviderInstanceRegistryMutatorShape,
@@ -348,7 +349,7 @@ export const makeProviderInstanceRegistry = <R>(input: {
 
     const entries = yield* Ref.make<ReadonlyMap<ProviderInstanceId, LiveEntry>>(new Map());
     const unavailable = yield* Ref.make<ReadonlyMap<ProviderInstanceId, ServerProvider>>(new Map());
-    const changes = yield* PubSub.unbounded<void>();
+    const changes = yield* PubSub.bounded<void>(PROVIDER_REGISTRY_CHANGES_BUFFER_CAPACITY);
     yield* Effect.addFinalizer(() => PubSub.shutdown(changes));
 
     const state: RegistryState = { entries, unavailable, changes };

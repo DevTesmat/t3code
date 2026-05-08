@@ -84,9 +84,11 @@ import {
   type ProviderAdapterError,
 } from "../Errors.ts";
 import { type ClaudeAdapterShape } from "../Services/ClaudeAdapter.ts";
+import { PROVIDER_RUNTIME_EVENT_BUFFER_CAPACITY } from "../RuntimeBackpressure.ts";
 import { type EventNdjsonLogger, makeEventNdjsonLogger } from "./EventNdjsonLogger.ts";
 
 const PROVIDER = ProviderDriverKind.make("claudeAgent");
+const CLAUDE_PROMPT_QUEUE_CAPACITY = 1_000;
 type ClaudeTextStreamKind = Extract<RuntimeContentStreamKind, "assistant_text" | "reasoning_text">;
 type ClaudeToolResultStreamKind = Extract<
   RuntimeContentStreamKind,
@@ -1003,7 +1005,9 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
       }) as ClaudeQueryRuntime);
 
   const sessions = new Map<ThreadId, ClaudeSessionContext>();
-  const runtimeEventQueue = yield* Queue.unbounded<ProviderRuntimeEvent>();
+  const runtimeEventQueue = yield* Queue.bounded<ProviderRuntimeEvent>(
+    PROVIDER_RUNTIME_EVENT_BUFFER_CAPACITY,
+  );
 
   const nowIso = Effect.map(DateTime.now, DateTime.formatIso);
   const nextEventId = Effect.map(Random.nextUUIDv4, (id) => EventId.make(id));
@@ -2532,7 +2536,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
       const runFork = Effect.runForkWith(runtimeContext);
       const runPromise = Effect.runPromiseWith(runtimeContext);
 
-      const promptQueue = yield* Queue.unbounded<PromptQueueItem>();
+      const promptQueue = yield* Queue.bounded<PromptQueueItem>(CLAUDE_PROMPT_QUEUE_CAPACITY);
       const prompt = Stream.fromQueue(promptQueue).pipe(
         Stream.filter((item) => item.type === "message"),
         Stream.map((item) => item.message),

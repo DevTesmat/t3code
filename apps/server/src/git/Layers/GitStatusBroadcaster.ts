@@ -26,6 +26,7 @@ import {
 } from "../Services/GitStatusBroadcaster.ts";
 import { GitManager } from "../Services/GitManager.ts";
 
+const GIT_STATUS_CHANGES_BUFFER_CAPACITY = 1_000;
 const GIT_STATUS_REFRESH_INTERVAL = Duration.seconds(30);
 
 interface GitStatusChange {
@@ -65,7 +66,7 @@ export const GitStatusBroadcasterLive = Layer.effect(
   Effect.gen(function* () {
     const gitManager = yield* GitManager;
     const changesPubSub = yield* Effect.acquireRelease(
-      PubSub.unbounded<GitStatusChange>(),
+      PubSub.bounded<GitStatusChange>(GIT_STATUS_CHANGES_BUFFER_CAPACITY),
       (pubsub) => PubSub.shutdown(pubsub),
     );
     const broadcasterScope = yield* Effect.acquireRelease(Scope.make(), (scope) =>

@@ -40,6 +40,7 @@ import {
   toOpenCodeQuestionAnswers,
   type OpenCodeServerConnection,
 } from "../opencodeRuntime.ts";
+import { PROVIDER_RUNTIME_EVENT_BUFFER_CAPACITY } from "../RuntimeBackpressure.ts";
 
 const PROVIDER = ProviderDriverKind.make("opencode");
 
@@ -466,7 +467,9 @@ export function makeOpenCodeAdapter(
     // `options.nativeEventLogger`, they own its lifecycle.
     const managedNativeEventLogger =
       options?.nativeEventLogger === undefined ? nativeEventLogger : undefined;
-    const runtimeEvents = yield* Queue.unbounded<ProviderRuntimeEvent>();
+    const runtimeEvents = yield* Queue.bounded<ProviderRuntimeEvent>(
+      PROVIDER_RUNTIME_EVENT_BUFFER_CAPACITY,
+    );
     const sessions = new Map<ThreadId, OpenCodeSessionContext>();
 
     // Layer-level finalizer: when the adapter layer shuts down, stop every

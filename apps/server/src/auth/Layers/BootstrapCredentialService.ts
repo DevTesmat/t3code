@@ -30,6 +30,7 @@ type ConsumeResult =
     };
 
 const DEFAULT_ONE_TIME_TOKEN_TTL_MINUTES = Duration.minutes(5);
+const BOOTSTRAP_CREDENTIAL_CHANGES_BUFFER_CAPACITY = 256;
 const PAIRING_TOKEN_ALPHABET = "23456789ABCDEFGHJKLMNPQRSTUVWXYZ";
 const PAIRING_TOKEN_LENGTH = 12;
 
@@ -43,7 +44,9 @@ export const makeBootstrapCredentialService = Effect.gen(function* () {
   const config = yield* ServerConfig;
   const pairingLinks = yield* AuthPairingLinkRepository;
   const seededGrantsRef = yield* Ref.make(new Map<string, StoredBootstrapGrant>());
-  const changesPubSub = yield* PubSub.unbounded<BootstrapCredentialChange>();
+  const changesPubSub = yield* PubSub.bounded<BootstrapCredentialChange>(
+    BOOTSTRAP_CREDENTIAL_CHANGES_BUFFER_CAPACITY,
+  );
 
   const invalidBootstrapCredentialError = (message: string) =>
     new BootstrapCredentialError({

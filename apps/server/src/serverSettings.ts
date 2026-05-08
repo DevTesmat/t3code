@@ -52,6 +52,8 @@ import { applyServerSettingsPatch } from "@t3tools/shared/serverSettings";
 import { ServerSecretStoreLive } from "./auth/Layers/ServerSecretStore.ts";
 import { ServerSecretStore } from "./auth/Services/ServerSecretStore.ts";
 
+const SERVER_SETTINGS_CHANGES_BUFFER_CAPACITY = 256;
+
 const textEncoder = new TextEncoder();
 const textDecoder = new TextDecoder();
 
@@ -245,7 +247,9 @@ const makeServerSettings = Effect.gen(function* () {
   const secretStore = yield* ServerSecretStore;
   const writeSemaphore = yield* Semaphore.make(1);
   const cacheKey = "settings" as const;
-  const changesPubSub = yield* PubSub.unbounded<ServerSettings>();
+  const changesPubSub = yield* PubSub.bounded<ServerSettings>(
+    SERVER_SETTINGS_CHANGES_BUFFER_CAPACITY,
+  );
   const startedRef = yield* Ref.make(false);
   const startedDeferred = yield* Deferred.make<void, ServerSettingsError>();
   const watcherScope = yield* Scope.make("sequential");

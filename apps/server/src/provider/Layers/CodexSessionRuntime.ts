@@ -31,6 +31,7 @@ import {
   CODEX_DEFAULT_MODE_DEVELOPER_INSTRUCTIONS,
   CODEX_PLAN_MODE_DEVELOPER_INSTRUCTIONS,
 } from "../CodexDeveloperInstructions.ts";
+import { PROVIDER_RUNTIME_EVENT_BUFFER_CAPACITY } from "../RuntimeBackpressure.ts";
 
 const PROVIDER = ProviderDriverKind.make("codex");
 
@@ -742,7 +743,7 @@ export const makeCodexSessionRuntime = (
   Effect.gen(function* () {
     const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
     const runtimeScope = yield* Scope.Scope;
-    const events = yield* Queue.unbounded<ProviderEvent>();
+    const events = yield* Queue.bounded<ProviderEvent>(PROVIDER_RUNTIME_EVENT_BUFFER_CAPACITY);
     const pendingApprovalsRef = yield* Ref.make(new Map<ApprovalRequestId, PendingApproval>());
     const approvalCorrelationsRef = yield* Ref.make(new Map<string, ApprovalCorrelation>());
     const pendingUserInputsRef = yield* Ref.make(new Map<ApprovalRequestId, PendingUserInput>());
@@ -788,7 +789,9 @@ export const makeCodexSessionRuntime = (
     const client = yield* Effect.service(CodexClient.CodexAppServerClient).pipe(
       Effect.provide(clientContext),
     );
-    const serverNotifications = yield* Queue.unbounded<CodexServerNotification>();
+    const serverNotifications = yield* Queue.bounded<CodexServerNotification>(
+      PROVIDER_RUNTIME_EVENT_BUFFER_CAPACITY,
+    );
 
     const initialSession = {
       provider: PROVIDER,

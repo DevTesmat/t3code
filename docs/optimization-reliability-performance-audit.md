@@ -139,8 +139,12 @@ predictable under long streams, reconnects, restarts, and provider crashes.
   low-cost health snapshots, and operational health surfaces provider
   ingestion, command reactor, checkpoint reactor, thread deletion, terminal
   persistence, and startup command-gate pressure.
-- Next due item: bound provider adapter queues and pubsubs with explicit
-  must-deliver, coalescible, and droppable event policies.
+- Completed: provider runtime event backpressure now has explicit event
+  classes, bounded runtime queues/pubsubs for Codex, Claude, Cursor, OpenCode,
+  ACP, central provider fanout, provider registry fanout, server settings,
+  auth credential changes, git status, and lifecycle events.
+- Next due item: coalesce WebSocket snapshot invalidation and add
+  subscriber/load signals around snapshot reload fanout.
 - Remaining work should focus on measured hardening and explicit operational
   signals before UI polish or broad refactors.
 
@@ -176,9 +180,9 @@ predictable under long streams, reconnects, restarts, and provider crashes.
 - Open risk: WebSocket thread/shell snapshot reloads can duplicate expensive
   reads across subscribers during history sync, reconnects, or restart
   recovery.
-- Open risk: operational health now reports core worker pressure, but adapter
-  local queues/pubsubs still need explicit capacity, drop/coalesce policy, and
-  slow-subscriber accounting.
+- Open risk: runtime event buffers are bounded with conservative blocking
+  semantics, but coalescible/droppable event classes still use the
+  must-deliver path until a measured lossy/coalescing buffer is introduced.
 - Open risk: local-storage draft persistence can become main-thread work when
   draft payloads or attachment metadata grow.
 - Open risk: large React coordination components are harder to profile and
@@ -230,31 +234,25 @@ browser/load scenarios where timing and rendering behavior matter.
 
 ## Remaining Hardening Backlog
 
-1. Bound provider adapter queues and pubsubs.
-   - Classify events as must-deliver, coalescible, or droppable.
-   - Apply explicit capacity/backpressure policy to Codex, Claude, Cursor,
-     OpenCode, ACP, provider registry, settings, auth, git, and lifecycle
-     streams.
-
-2. Coalesce WebSocket snapshot invalidation.
+1. Coalesce WebSocket snapshot invalidation.
    - Share shell/thread snapshot reloads by key.
    - Debounce history-sync idle snapshot reloads.
    - Add subscriber-count and snapshot-load duration telemetry.
 
-3. Add repeatable performance/load scenarios.
+2. Add repeatable performance/load scenarios.
    - Long provider stream.
    - Terminal output flood.
    - Many active sessions.
    - Many reconnecting WebSocket clients.
    - Large thread timeline and large diff rendering.
 
-4. Harden frontend persistence and rendering budgets.
+3. Harden frontend persistence and rendering budgets.
    - Track composer draft payload size and persistence duration.
    - Warn or compact when local draft state exceeds budget.
    - Add browser perf assertions for timeline, composer, sidebar, and diff
      flows.
 
-5. Make release preflight performance-aware.
+4. Make release preflight performance-aware.
    - Keep `bun run fmt:check`, `bun lint`, `bun typecheck`, and `bun run test`.
    - Add browser tests, desktop smoke, bundle budget, and focused performance
      scenarios to the documented release gate.

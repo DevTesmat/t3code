@@ -4,6 +4,7 @@ import * as Semaphore from "effect/Semaphore";
 
 import type { ServerProviderShape } from "./Services/ServerProvider.ts";
 import { ServerSettingsError } from "@t3tools/contracts";
+import { PROVIDER_REGISTRY_CHANGES_BUFFER_CAPACITY } from "./RuntimeBackpressure.ts";
 
 interface ProviderSnapshotState {
   readonly snapshot: ServerProvider;
@@ -28,7 +29,7 @@ export const makeManagedServerProvider = Effect.fn("makeManagedServerProvider")(
 }): Effect.fn.Return<ServerProviderShape, ServerSettingsError, Scope.Scope> {
   const refreshSemaphore = yield* Semaphore.make(1);
   const changesPubSub = yield* Effect.acquireRelease(
-    PubSub.unbounded<ServerProvider>(),
+    PubSub.bounded<ServerProvider>(PROVIDER_REGISTRY_CHANGES_BUFFER_CAPACITY),
     PubSub.shutdown,
   );
   const initialSettings = yield* input.getSettings;
