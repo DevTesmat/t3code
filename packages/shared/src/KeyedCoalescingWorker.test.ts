@@ -34,6 +34,7 @@ describe("makeKeyedCoalescingWorker", () => {
 
         yield* worker.enqueue("terminal-1", "first");
         yield* Deferred.await(firstStarted);
+        expect((yield* worker.health).active).toBe(1);
 
         const drained = yield* Deferred.make<void>();
         yield* Effect.forkChild(
@@ -43,6 +44,9 @@ describe("makeKeyedCoalescingWorker", () => {
         );
 
         yield* worker.enqueue("terminal-1", "second");
+        const coalescedHealth = yield* worker.health;
+        expect(coalescedHealth.backlog).toBe(1);
+        expect(coalescedHealth.coalesced).toBe(0);
         yield* Deferred.succeed(releaseFirst, undefined);
         yield* Deferred.await(secondStarted);
 
@@ -52,6 +56,9 @@ describe("makeKeyedCoalescingWorker", () => {
         yield* Deferred.await(drained);
 
         expect(processed).toEqual(["terminal-1:first", "terminal-1:second"]);
+        const health = yield* worker.health;
+        expect(health.backlog).toBe(0);
+        expect(health.processed).toBe(2);
       }),
     ),
   );
@@ -76,7 +83,7 @@ describe("makeKeyedCoalescingWorker", () => {
                 yield* Effect.fail("boom");
               }
 
-              if (value === "second") {
+              if (value === "second" || value === "third") {
                 yield* Deferred.succeed(secondProcessed, undefined).pipe(Effect.orDie);
               }
             }),
@@ -85,11 +92,16 @@ describe("makeKeyedCoalescingWorker", () => {
         yield* worker.enqueue("terminal-1", "first");
         yield* Deferred.await(firstStarted);
         yield* worker.enqueue("terminal-1", "second");
+        yield* worker.enqueue("terminal-1", "third");
+        expect((yield* worker.health).coalesced).toBe(1);
         yield* Deferred.succeed(releaseFailure, undefined);
         yield* Deferred.await(secondProcessed);
         yield* worker.drainKey("terminal-1");
 
-        expect(processed).toEqual(["terminal-1:first", "terminal-1:second"]);
+        expect(processed).toEqual(["terminal-1:first", "terminal-1:third"]);
+        const health = yield* worker.health;
+        expect(health.failed).toBe(1);
+        expect(health.processed).toBe(1);
       }),
     ),
   );

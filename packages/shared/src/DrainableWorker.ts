@@ -9,7 +9,9 @@
  * @module DrainableWorker
  */
 import type { Scope } from "effect";
-import { Effect, TxQueue, TxRef } from "effect";
+import { Effect, Exit, TxQueue, TxRef } from "effect";
+
+import type { WorkerHealthSnapshot } from "./WorkerHealth.ts";
 
 export interface DrainableWorkerOptions {
   /**
@@ -34,10 +36,29 @@ export interface DrainableWorker<A> {
   readonly backlog: Effect.Effect<number>;
 
   /**
+   * Low-cost runtime health snapshot for operational diagnostics.
+   */
+  readonly health: Effect.Effect<WorkerHealthSnapshot>;
+
+  /**
    * Resolves when the queue is empty and the worker is idle (not processing).
    */
   readonly drain: Effect.Effect<void>;
 }
+
+interface DrainableWorkerState {
+  readonly queuedAtMs: ReadonlyArray<number>;
+  readonly activeStartedAtMs: number | null;
+  readonly processed: number;
+  readonly failed: number;
+}
+
+const initialState: DrainableWorkerState = {
+  queuedAtMs: [],
+  activeStartedAtMs: null,
+  processed: 0,
+  failed: 0,
+};
 
 /**
  * Create a drainable worker that processes items from an unbounded queue.
@@ -59,31 +80,83 @@ export const makeDrainableWorker = <A, E, R>(
         : TxQueue.unbounded<A>(),
       TxQueue.shutdown,
     );
-    const outstanding = yield* TxRef.make(0);
+    const stateRef = yield* TxRef.make<DrainableWorkerState>(initialState);
 
     yield* TxQueue.take(queue).pipe(
       Effect.tap((a) =>
-        Effect.ensuring(
-          process(a),
-          TxRef.update(outstanding, (n) => n - 1),
+        TxRef.update(stateRef, (state) => ({
+          ...state,
+          queuedAtMs: state.queuedAtMs.slice(1),
+          activeStartedAtMs: Date.now(),
+        })).pipe(
+          Effect.tx,
+          Effect.andThen(process(a).pipe(Effect.exit)),
+          Effect.flatMap((exit) =>
+            TxRef.update(stateRef, (state) => ({
+              ...state,
+              activeStartedAtMs: null,
+              processed: Exit.isSuccess(exit) ? state.processed + 1 : state.processed,
+              failed: Exit.isFailure(exit) ? state.failed + 1 : state.failed,
+            })).pipe(
+              Effect.tx,
+              Effect.andThen(Exit.isSuccess(exit) ? Effect.void : Effect.failCause(exit.cause)),
+            ),
+          ),
         ),
       ),
       Effect.forever,
       Effect.forkScoped,
     );
 
-    const drain: DrainableWorker<A>["drain"] = TxRef.get(outstanding).pipe(
-      Effect.tap((n) => (n > 0 ? Effect.txRetry : Effect.void)),
+    const backlog: DrainableWorker<A>["backlog"] = TxRef.get(stateRef).pipe(
+      Effect.map((state) => state.queuedAtMs.length + (state.activeStartedAtMs === null ? 0 : 1)),
+      Effect.tx,
+    );
+
+    const drain: DrainableWorker<A>["drain"] = TxRef.get(stateRef).pipe(
+      Effect.tap((state) =>
+        state.queuedAtMs.length > 0 || state.activeStartedAtMs !== null
+          ? Effect.txRetry
+          : Effect.void,
+      ),
+      Effect.asVoid,
       Effect.tx,
     );
 
     const enqueue = (element: A): Effect.Effect<boolean, never, never> =>
       TxQueue.offer(queue, element).pipe(
-        Effect.tap(() => TxRef.update(outstanding, (n) => n + 1)),
+        Effect.tap(() =>
+          TxRef.update(stateRef, (state) => ({
+            ...state,
+            queuedAtMs: [...state.queuedAtMs, Date.now()],
+          })),
+        ),
         Effect.tx,
       );
 
-    const backlog: DrainableWorker<A>["backlog"] = TxRef.get(outstanding).pipe(Effect.tx);
+    const health: DrainableWorker<A>["health"] = TxRef.get(stateRef).pipe(
+      Effect.map((state) => {
+        const now = Date.now();
+        const active = state.activeStartedAtMs === null ? 0 : 1;
+        const oldestItemAt =
+          state.activeStartedAtMs === null
+            ? state.queuedAtMs[0]
+            : Math.min(state.activeStartedAtMs, state.queuedAtMs[0] ?? state.activeStartedAtMs);
 
-    return { enqueue, drain, backlog } satisfies DrainableWorker<A>;
+        return {
+          capacity: options.capacity ?? null,
+          backlog: state.queuedAtMs.length + active,
+          queued: state.queuedAtMs.length,
+          active,
+          oldestItemAgeMs: oldestItemAt === undefined ? null : Math.max(0, now - oldestItemAt),
+          processed: state.processed,
+          failed: state.failed,
+          dropped: 0,
+          coalesced: 0,
+        } satisfies WorkerHealthSnapshot;
+      }),
+      Effect.tx,
+    );
+
+    return { enqueue, drain, backlog, health } satisfies DrainableWorker<A>;
   });

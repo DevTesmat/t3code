@@ -22,6 +22,7 @@ import {
   TerminalSessionStatus,
   TerminalWriteInput,
 } from "@t3tools/contracts";
+import type { WorkerHealthSnapshot } from "@t3tools/shared/WorkerHealth";
 import type { PtyProcess } from "./PTY.ts";
 import { Effect, Context } from "effect";
 
@@ -117,6 +118,11 @@ export interface TerminalManagerShape {
   readonly subscribe: (
     listener: (event: TerminalEvent) => Effect.Effect<void>,
   ) => Effect.Effect<() => void>;
+
+  /**
+   * Terminal history persistence worker pressure.
+   */
+  readonly historyPersistenceHealth: Effect.Effect<WorkerHealthSnapshot>;
 }
 
 /**

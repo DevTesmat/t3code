@@ -1,6 +1,23 @@
 import { Context, Data, Effect, Layer, Option } from "effect";
 
 import type { ProviderDriverKind, ProviderInstanceId } from "@t3tools/contracts";
+import type { WorkerHealthSnapshot } from "@t3tools/shared/WorkerHealth";
+import {
+  CheckpointReactor,
+  type CheckpointReactorShape,
+} from "./orchestration/Services/CheckpointReactor.ts";
+import {
+  ProviderCommandReactor,
+  type ProviderCommandReactorShape,
+} from "./orchestration/Services/ProviderCommandReactor.ts";
+import {
+  ProviderRuntimeIngestionService,
+  type ProviderRuntimeIngestionShape,
+} from "./orchestration/Services/ProviderRuntimeIngestion.ts";
+import {
+  ThreadDeletionReactor,
+  type ThreadDeletionReactorShape,
+} from "./orchestration/Services/ThreadDeletionReactor.ts";
 import {
   OrchestrationEventStore,
   type OrchestrationEventStoreShape,
@@ -11,6 +28,8 @@ import {
 } from "./persistence/Services/ProjectionState.ts";
 import { ProviderService } from "./provider/Services/ProviderService.ts";
 import { ServerLifecycleEvents, type ServerLifecycleEventsShape } from "./serverLifecycleEvents.ts";
+import { ServerRuntimeStartup, type ServerRuntimeStartupShape } from "./serverRuntimeStartup.ts";
+import { TerminalManager, type TerminalManagerShape } from "./terminal/Services/Manager.ts";
 import type { ProviderServiceShape } from "./provider/Services/ProviderService.ts";
 
 export interface OperationalProjectionLagSnapshot {
@@ -40,8 +59,12 @@ export interface OperationalStartupSnapshot {
 }
 
 export interface OperationalQueueSnapshot {
-  readonly orchestrationCommandBacklog: null;
-  readonly projectionBacklog: null;
+  readonly providerRuntimeIngestion: WorkerHealthSnapshot | null;
+  readonly providerCommandReactor: WorkerHealthSnapshot | null;
+  readonly checkpointReactor: WorkerHealthSnapshot | null;
+  readonly threadDeletionReactor: WorkerHealthSnapshot | null;
+  readonly terminalHistoryPersistence: WorkerHealthSnapshot | null;
+  readonly startupCommandGate: WorkerHealthSnapshot | null;
 }
 
 export interface OperationalHealthSnapshot {
@@ -75,15 +98,40 @@ const collectOperationalHealthFrom = (services: {
   readonly projectionStateRepository: ProjectionStateRepositoryShape;
   readonly providerService: ProviderServiceShape;
   readonly lifecycleEvents: ServerLifecycleEventsShape;
+  readonly providerRuntimeIngestion: Option.Option<ProviderRuntimeIngestionShape>;
+  readonly providerCommandReactor: Option.Option<ProviderCommandReactorShape>;
+  readonly checkpointReactor: Option.Option<CheckpointReactorShape>;
+  readonly threadDeletionReactor: Option.Option<ThreadDeletionReactorShape>;
+  readonly terminalManager: Option.Option<TerminalManagerShape>;
+  readonly serverRuntimeStartup: Option.Option<ServerRuntimeStartupShape>;
 }) =>
   Effect.gen(function* () {
-    const [maxEventSequence, projectionStates, activeSessions, lifecycleSnapshot] =
-      yield* Effect.all([
-        services.eventStore.getMaxSequence(),
-        services.projectionStateRepository.listAll(),
-        services.providerService.listSessions(),
-        services.lifecycleEvents.snapshot,
-      ]);
+    const [
+      maxEventSequence,
+      projectionStates,
+      activeSessions,
+      lifecycleSnapshot,
+      providerRuntimeIngestion,
+      providerCommandReactor,
+      checkpointReactor,
+      threadDeletionReactor,
+      terminalHistoryPersistence,
+      startupCommandGate,
+    ] = yield* Effect.all([
+      services.eventStore.getMaxSequence(),
+      services.projectionStateRepository.listAll(),
+      services.providerService.listSessions(),
+      services.lifecycleEvents.snapshot,
+      collectOptionalHealth(services.providerRuntimeIngestion, (service) => service.health),
+      collectOptionalHealth(services.providerCommandReactor, (service) => service.health),
+      collectOptionalHealth(services.checkpointReactor, (service) => service.health),
+      collectOptionalHealth(services.threadDeletionReactor, (service) => service.health),
+      collectOptionalHealth(
+        services.terminalManager,
+        (service) => service.historyPersistenceHealth,
+      ),
+      collectOptionalHealth(services.serverRuntimeStartup, (service) => service.commandQueueHealth),
+    ]);
 
     const minAppliedSequence =
       projectionStates.length === 0
@@ -132,10 +180,23 @@ const collectOperationalHealthFrom = (services: {
         latestEventTypes: lifecycleSnapshot.events.map((event) => event.type),
       },
       queues: {
-        orchestrationCommandBacklog: null,
-        projectionBacklog: null,
+        providerRuntimeIngestion,
+        providerCommandReactor,
+        checkpointReactor,
+        threadDeletionReactor,
+        terminalHistoryPersistence,
+        startupCommandGate,
       },
     } satisfies OperationalHealthSnapshot;
+  });
+
+const collectOptionalHealth = <A>(
+  service: Option.Option<A>,
+  health: (service: A) => Effect.Effect<WorkerHealthSnapshot>,
+) =>
+  Option.match(service, {
+    onNone: () => Effect.succeed(null),
+    onSome: (value) => health(value).pipe(Effect.map((snapshot) => snapshot)),
   });
 
 export const collectOperationalHealth = Effect.gen(function* () {
@@ -143,12 +204,24 @@ export const collectOperationalHealth = Effect.gen(function* () {
   const projectionStateRepository = yield* ProjectionStateRepository;
   const providerService = yield* ProviderService;
   const lifecycleEvents = yield* ServerLifecycleEvents;
+  const providerRuntimeIngestion = yield* Effect.serviceOption(ProviderRuntimeIngestionService);
+  const providerCommandReactor = yield* Effect.serviceOption(ProviderCommandReactor);
+  const checkpointReactor = yield* Effect.serviceOption(CheckpointReactor);
+  const threadDeletionReactor = yield* Effect.serviceOption(ThreadDeletionReactor);
+  const terminalManager = yield* Effect.serviceOption(TerminalManager);
+  const serverRuntimeStartup = yield* Effect.serviceOption(ServerRuntimeStartup);
 
   return yield* collectOperationalHealthFrom({
     eventStore,
     projectionStateRepository,
     providerService,
     lifecycleEvents,
+    providerRuntimeIngestion,
+    providerCommandReactor,
+    checkpointReactor,
+    threadDeletionReactor,
+    terminalManager,
+    serverRuntimeStartup,
   });
 });
 
@@ -179,12 +252,24 @@ export const OperationalHealthLive = Layer.succeed(OperationalHealthService, {
       "ServerLifecycleEvents",
       yield* Effect.serviceOption(ServerLifecycleEvents),
     );
+    const providerRuntimeIngestion = yield* Effect.serviceOption(ProviderRuntimeIngestionService);
+    const providerCommandReactor = yield* Effect.serviceOption(ProviderCommandReactor);
+    const checkpointReactor = yield* Effect.serviceOption(CheckpointReactor);
+    const threadDeletionReactor = yield* Effect.serviceOption(ThreadDeletionReactor);
+    const terminalManager = yield* Effect.serviceOption(TerminalManager);
+    const serverRuntimeStartup = yield* Effect.serviceOption(ServerRuntimeStartup);
 
     return yield* collectOperationalHealthFrom({
       eventStore,
       projectionStateRepository,
       providerService,
       lifecycleEvents,
+      providerRuntimeIngestion,
+      providerCommandReactor,
+      checkpointReactor,
+      threadDeletionReactor,
+      terminalManager,
+      serverRuntimeStartup,
     }).pipe(Effect.mapError((cause) => new OperationalHealthError({ cause })));
   }),
 } satisfies OperationalHealthServiceShape);

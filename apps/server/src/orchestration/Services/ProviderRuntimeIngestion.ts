@@ -8,6 +8,7 @@
  */
 import { Context } from "effect";
 import type { Effect, Scope } from "effect";
+import type { WorkerHealthSnapshot } from "@t3tools/shared/WorkerHealth";
 
 /**
  * ProviderRuntimeIngestionShape - Service API for runtime ingestion lifecycle.
@@ -29,6 +30,11 @@ export interface ProviderRuntimeIngestionShape {
    * Intended for test use to replace timing-sensitive sleeps.
    */
   readonly drain: Effect.Effect<void>;
+
+  /**
+   * Current worker pressure snapshot for operational health.
+   */
+  readonly health: Effect.Effect<WorkerHealthSnapshot>;
 }
 
 /**

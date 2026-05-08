@@ -8,6 +8,7 @@ import {
   type OrchestrationEvent,
   type OrchestrationThread,
 } from "@t3tools/contracts";
+import { emptyWorkerHealthSnapshot } from "@t3tools/shared/WorkerHealth";
 import {
   Effect,
   Exit,
@@ -356,6 +357,7 @@ export const makeOrchestrationIntegrationHarness = (
         Layer.succeed(ThreadDeletionReactor, {
           start: () => Effect.void,
           drain: Effect.void,
+          health: Effect.succeed(emptyWorkerHealthSnapshot()),
         }),
       ),
     );

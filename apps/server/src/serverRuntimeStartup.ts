@@ -42,6 +42,7 @@ import {
   isWildcardHost,
   issueHeadlessServeAccessInfo,
 } from "./startupAccess.ts";
+import type { WorkerHealthSnapshot } from "@t3tools/shared/WorkerHealth";
 
 export class ServerRuntimeStartupError extends Data.TaggedError("ServerRuntimeStartupError")<{
   readonly message: string;
@@ -54,6 +55,7 @@ export interface ServerRuntimeStartupShape {
   readonly enqueueCommand: <A, E>(
     effect: Effect.Effect<A, E>,
   ) => Effect.Effect<A, E | ServerRuntimeStartupError>;
+  readonly commandQueueHealth: Effect.Effect<WorkerHealthSnapshot>;
 }
 
 export class ServerRuntimeStartup extends Context.Service<
@@ -74,6 +76,7 @@ interface CommandGate {
   readonly enqueueCommand: <A, E>(
     effect: Effect.Effect<A, E>,
   ) => Effect.Effect<A, E | ServerRuntimeStartupError>;
+  readonly health: Effect.Effect<WorkerHealthSnapshot>;
 }
 
 const settleQueuedCommand = <A, E>(deferred: Deferred.Deferred<A, E>, exit: Exit.Exit<A, E>) =>
@@ -85,6 +88,7 @@ export const makeCommandGate = Effect.gen(function* () {
   const commandReady = yield* Deferred.make<void, ServerRuntimeStartupError>();
   const commandQueue = yield* Queue.unbounded<QueuedCommand>();
   const commandReadinessState = yield* Ref.make<CommandReadinessState>("pending");
+  const commandBacklog = yield* Ref.make(0);
 
   const commandWorker = Effect.forever(
     Queue.take(commandQueue).pipe(Effect.flatMap((command) => command.run)),
@@ -113,15 +117,35 @@ export const makeCommandGate = Effect.gen(function* () {
         }
 
         const result = yield* Deferred.make<A, E | ServerRuntimeStartupError>();
+        yield* Ref.update(commandBacklog, (count) => count + 1);
         yield* Queue.offer(commandQueue, {
           run: Deferred.await(commandReady).pipe(
             Effect.flatMap(() => effect),
             Effect.exit,
-            Effect.flatMap((exit) => settleQueuedCommand(result, exit)),
+            Effect.flatMap((exit) =>
+              Ref.update(commandBacklog, (count) => Math.max(0, count - 1)).pipe(
+                Effect.andThen(settleQueuedCommand(result, exit)),
+              ),
+            ),
           ),
         });
         return yield* Deferred.await(result);
       }),
+    health: Ref.get(commandBacklog).pipe(
+      Effect.map(
+        (backlog): WorkerHealthSnapshot => ({
+          capacity: null,
+          backlog,
+          queued: backlog,
+          active: 0,
+          oldestItemAgeMs: null,
+          processed: 0,
+          failed: 0,
+          dropped: 0,
+          coalesced: 0,
+        }),
+      ),
+    ),
   } satisfies CommandGate;
 });
 
@@ -471,6 +495,7 @@ export const makeServerRuntimeStartup = Effect.gen(function* () {
     awaitCommandReady: commandGate.awaitCommandReady,
     markHttpListening: Deferred.succeed(httpListening, undefined),
     enqueueCommand: commandGate.enqueueCommand,
+    commandQueueHealth: commandGate.health,
   } satisfies ServerRuntimeStartupShape;
 });
 

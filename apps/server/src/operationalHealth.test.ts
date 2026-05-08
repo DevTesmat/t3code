@@ -120,8 +120,12 @@ it.effect("collects projection lag, active provider sessions, and startup readin
     assert.equal(snapshot.providerSessions.byProviderInstance[ProviderInstanceId.make("codex")], 2);
     assert.equal(snapshot.providerSessions.activeTurnCount, 1);
     assert.deepStrictEqual(snapshot.queues, {
-      orchestrationCommandBacklog: null,
-      projectionBacklog: null,
+      providerRuntimeIngestion: null,
+      providerCommandReactor: null,
+      checkpointReactor: null,
+      threadDeletionReactor: null,
+      terminalHistoryPersistence: null,
+      startupCommandGate: null,
     });
     assert.equal(snapshot.startup.ready, true);
     assert.equal(snapshot.startup.readyAt, "2026-05-05T10:02:00.000Z");

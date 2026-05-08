@@ -38,12 +38,14 @@ it.effect("enqueueCommand waits for readiness and then drains queued work", () =
 
       yield* Effect.yieldNow;
       assert.equal(yield* Ref.get(executionCount), 0);
+      assert.equal((yield* commandGate.health).backlog, 1);
 
       yield* commandGate.signalCommandReady;
 
       const result = yield* Fiber.join(queuedCommandFiber);
       assert.equal(result, 1);
       assert.equal(yield* Ref.get(executionCount), 1);
+      assert.equal((yield* commandGate.health).backlog, 0);
     }),
   ),
 );

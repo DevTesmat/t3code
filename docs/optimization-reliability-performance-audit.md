@@ -135,8 +135,12 @@ predictable under long streams, reconnects, restarts, and provider crashes.
 - Completed: history sync pushed-receipt and sync-state commits now rely on
   `sql.withTransaction` instead of manual receipt restoration on state-write
   failure.
-- Next due item: add shared worker/queue health instrumentation and surface
-  live backlog/pressure in operational health.
+- Completed: shared `DrainableWorker` and `KeyedCoalescingWorker` now expose
+  low-cost health snapshots, and operational health surfaces provider
+  ingestion, command reactor, checkpoint reactor, thread deletion, terminal
+  persistence, and startup command-gate pressure.
+- Next due item: bound provider adapter queues and pubsubs with explicit
+  must-deliver, coalescible, and droppable event policies.
 - Remaining work should focus on measured hardening and explicit operational
   signals before UI polish or broad refactors.
 
@@ -172,8 +176,9 @@ predictable under long streams, reconnects, restarts, and provider crashes.
 - Open risk: WebSocket thread/shell snapshot reloads can duplicate expensive
   reads across subscribers during history sync, reconnects, or restart
   recovery.
-- Open risk: operational health currently reports projection lag but not enough
-  live queue or runtime pressure to diagnose saturation quickly.
+- Open risk: operational health now reports core worker pressure, but adapter
+  local queues/pubsubs still need explicit capacity, drop/coalesce policy, and
+  slow-subscriber accounting.
 - Open risk: local-storage draft persistence can become main-thread work when
   draft payloads or attachment metadata grow.
 - Open risk: large React coordination components are harder to profile and
@@ -225,37 +230,31 @@ browser/load scenarios where timing and rendering behavior matter.
 
 ## Remaining Hardening Backlog
 
-1. Add shared worker/queue health instrumentation.
-   - Extend `DrainableWorker` and keyed/coalescing workers with health
-     snapshots.
-   - Surface provider ingestion, command reactor, checkpoint reactor, terminal
-     persistence, and startup command gate backlog in operational health.
-
-2. Bound provider adapter queues and pubsubs.
+1. Bound provider adapter queues and pubsubs.
    - Classify events as must-deliver, coalescible, or droppable.
    - Apply explicit capacity/backpressure policy to Codex, Claude, Cursor,
      OpenCode, ACP, provider registry, settings, auth, git, and lifecycle
      streams.
 
-3. Coalesce WebSocket snapshot invalidation.
+2. Coalesce WebSocket snapshot invalidation.
    - Share shell/thread snapshot reloads by key.
    - Debounce history-sync idle snapshot reloads.
    - Add subscriber-count and snapshot-load duration telemetry.
 
-4. Add repeatable performance/load scenarios.
+3. Add repeatable performance/load scenarios.
    - Long provider stream.
    - Terminal output flood.
    - Many active sessions.
    - Many reconnecting WebSocket clients.
    - Large thread timeline and large diff rendering.
 
-5. Harden frontend persistence and rendering budgets.
+4. Harden frontend persistence and rendering budgets.
    - Track composer draft payload size and persistence duration.
    - Warn or compact when local draft state exceeds budget.
    - Add browser perf assertions for timeline, composer, sidebar, and diff
      flows.
 
-6. Make release preflight performance-aware.
+5. Make release preflight performance-aware.
    - Keep `bun run fmt:check`, `bun lint`, `bun typecheck`, and `bun run test`.
    - Add browser tests, desktop smoke, bundle budget, and focused performance
      scenarios to the documented release gate.

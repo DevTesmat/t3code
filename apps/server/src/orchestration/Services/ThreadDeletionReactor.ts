@@ -8,6 +8,7 @@
  */
 import { Context } from "effect";
 import type { Effect, Scope } from "effect";
+import type { WorkerHealthSnapshot } from "@t3tools/shared/WorkerHealth";
 
 /**
  * ThreadDeletionReactorShape - Service API for thread deletion cleanup.
@@ -26,6 +27,11 @@ export interface ThreadDeletionReactorShape {
    * Intended for test use to replace timing-sensitive sleeps.
    */
   readonly drain: Effect.Effect<void>;
+
+  /**
+   * Current worker pressure snapshot for operational health.
+   */
+  readonly health: Effect.Effect<WorkerHealthSnapshot>;
 }
 
 /**

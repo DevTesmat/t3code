@@ -10,15 +10,23 @@
 import type { Scope } from "effect";
 import { Effect, TxQueue, TxRef } from "effect";
 
+import type { WorkerHealthSnapshot } from "./WorkerHealth.ts";
+
 export interface KeyedCoalescingWorker<K, V> {
   readonly enqueue: (key: K, value: V) => Effect.Effect<void>;
   readonly drainKey: (key: K) => Effect.Effect<void>;
+  readonly health: Effect.Effect<WorkerHealthSnapshot>;
 }
 
 interface KeyedCoalescingWorkerState<K, V> {
   readonly latestByKey: Map<K, V>;
   readonly queuedKeys: Set<K>;
   readonly activeKeys: Set<K>;
+  readonly queuedAtByKey: Map<K, number>;
+  readonly activeStartedAtByKey: Map<K, number>;
+  readonly processed: number;
+  readonly failed: number;
+  readonly coalesced: number;
 }
 
 export const makeKeyedCoalescingWorker = <K, V, E, R>(options: {
@@ -31,6 +39,11 @@ export const makeKeyedCoalescingWorker = <K, V, E, R>(options: {
       latestByKey: new Map(),
       queuedKeys: new Set(),
       activeKeys: new Set(),
+      queuedAtByKey: new Map(),
+      activeStartedAtByKey: new Map(),
+      processed: 0,
+      failed: 0,
+      coalesced: 0,
     });
 
     const processKey = (key: K, value: V): Effect.Effect<void, E, R> =>
@@ -41,12 +54,22 @@ export const makeKeyedCoalescingWorker = <K, V, E, R>(options: {
             if (nextValue === undefined) {
               const activeKeys = new Set(state.activeKeys);
               activeKeys.delete(key);
-              return [null, { ...state, activeKeys }] as const;
+              const activeStartedAtByKey = new Map(state.activeStartedAtByKey);
+              activeStartedAtByKey.delete(key);
+              return [
+                null,
+                {
+                  ...state,
+                  activeKeys,
+                  activeStartedAtByKey,
+                  processed: state.processed + 1,
+                },
+              ] as const;
             }
 
             const latestByKey = new Map(state.latestByKey);
             latestByKey.delete(key);
-            return [nextValue, { ...state, latestByKey }] as const;
+            return [nextValue, { ...state, latestByKey, processed: state.processed + 1 }] as const;
           }).pipe(Effect.tx),
         ),
         Effect.flatMap((nextValue) =>
@@ -58,14 +81,31 @@ export const makeKeyedCoalescingWorker = <K, V, E, R>(options: {
       TxRef.modify(stateRef, (state) => {
         const activeKeys = new Set(state.activeKeys);
         activeKeys.delete(key);
+        const activeStartedAtByKey = new Map(state.activeStartedAtByKey);
+        activeStartedAtByKey.delete(key);
 
         if (state.latestByKey.has(key) && !state.queuedKeys.has(key)) {
           const queuedKeys = new Set(state.queuedKeys);
           queuedKeys.add(key);
-          return [true, { ...state, activeKeys, queuedKeys }] as const;
+          const queuedAtByKey = new Map(state.queuedAtByKey);
+          queuedAtByKey.set(key, Date.now());
+          return [
+            true,
+            {
+              ...state,
+              activeKeys,
+              activeStartedAtByKey,
+              queuedKeys,
+              queuedAtByKey,
+              failed: state.failed + 1,
+            },
+          ] as const;
         }
 
-        return [false, { ...state, activeKeys }] as const;
+        return [
+          false,
+          { ...state, activeKeys, activeStartedAtByKey, failed: state.failed + 1 },
+        ] as const;
       }).pipe(
         Effect.tx,
         Effect.flatMap((shouldRequeue) =>
@@ -78,20 +118,31 @@ export const makeKeyedCoalescingWorker = <K, V, E, R>(options: {
         TxRef.modify(stateRef, (state) => {
           const queuedKeys = new Set(state.queuedKeys);
           queuedKeys.delete(key);
+          const queuedAtByKey = new Map(state.queuedAtByKey);
+          queuedAtByKey.delete(key);
 
           const value = state.latestByKey.get(key);
           if (value === undefined) {
-            return [null, { ...state, queuedKeys }] as const;
+            return [null, { ...state, queuedKeys, queuedAtByKey }] as const;
           }
 
           const latestByKey = new Map(state.latestByKey);
           latestByKey.delete(key);
           const activeKeys = new Set(state.activeKeys);
           activeKeys.add(key);
+          const activeStartedAtByKey = new Map(state.activeStartedAtByKey);
+          activeStartedAtByKey.set(key, Date.now());
 
           return [
             { key, value } as const,
-            { ...state, latestByKey, queuedKeys, activeKeys },
+            {
+              ...state,
+              latestByKey,
+              queuedKeys,
+              activeKeys,
+              queuedAtByKey,
+              activeStartedAtByKey,
+            },
           ] as const;
         }).pipe(Effect.tx),
       ),
@@ -111,14 +162,17 @@ export const makeKeyedCoalescingWorker = <K, V, E, R>(options: {
         const latestByKey = new Map(state.latestByKey);
         const existing = latestByKey.get(key);
         latestByKey.set(key, existing === undefined ? value : options.merge(existing, value));
+        const coalesced = existing === undefined ? state.coalesced : state.coalesced + 1;
 
         if (state.queuedKeys.has(key) || state.activeKeys.has(key)) {
-          return [false, { ...state, latestByKey }] as const;
+          return [false, { ...state, latestByKey, coalesced }] as const;
         }
 
         const queuedKeys = new Set(state.queuedKeys);
         queuedKeys.add(key);
-        return [true, { ...state, latestByKey, queuedKeys }] as const;
+        const queuedAtByKey = new Map(state.queuedAtByKey);
+        queuedAtByKey.set(key, Date.now());
+        return [true, { ...state, latestByKey, queuedKeys, queuedAtByKey, coalesced }] as const;
       }).pipe(
         Effect.flatMap((shouldOffer) => (shouldOffer ? TxQueue.offer(queue, key) : Effect.void)),
         Effect.tx,
@@ -136,5 +190,36 @@ export const makeKeyedCoalescingWorker = <K, V, E, R>(options: {
         Effect.tx,
       );
 
-    return { enqueue, drainKey } satisfies KeyedCoalescingWorker<K, V>;
+    const health: KeyedCoalescingWorker<K, V>["health"] = TxRef.get(stateRef).pipe(
+      Effect.map((state) => {
+        const now = Date.now();
+        const keys = new Set<K>([
+          ...state.latestByKey.keys(),
+          ...state.queuedKeys,
+          ...state.activeKeys,
+        ]);
+        const oldestItemAt = [
+          ...state.queuedAtByKey.values(),
+          ...state.activeStartedAtByKey.values(),
+        ].reduce<number | null>(
+          (oldest, timestamp) => (oldest === null ? timestamp : Math.min(oldest, timestamp)),
+          null,
+        );
+
+        return {
+          capacity: null,
+          backlog: keys.size,
+          queued: state.queuedKeys.size,
+          active: state.activeKeys.size,
+          oldestItemAgeMs: oldestItemAt === null ? null : Math.max(0, now - oldestItemAt),
+          processed: state.processed,
+          failed: state.failed,
+          dropped: 0,
+          coalesced: state.coalesced,
+        } satisfies WorkerHealthSnapshot;
+      }),
+      Effect.tx,
+    );
+
+    return { enqueue, drainKey, health } satisfies KeyedCoalescingWorker<K, V>;
   });

@@ -1908,6 +1908,7 @@ export const makeTerminalManagerWithOptions = Effect.fn("makeTerminalManagerWith
             terminalEventListeners.delete(listener);
           };
         }),
+      historyPersistenceHealth: persistWorker.health,
     } satisfies TerminalManagerShape;
   },
 );

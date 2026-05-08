@@ -1,4 +1,5 @@
 import { Effect, Exit, Layer, ManagedRuntime, Scope } from "effect";
+import { emptyWorkerHealthSnapshot } from "@t3tools/shared/WorkerHealth";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { CheckpointReactor } from "../Services/CheckpointReactor.ts";
@@ -30,6 +31,7 @@ describe("OrchestrationReactor", () => {
               return Effect.void;
             },
             drain: Effect.void,
+            health: Effect.succeed(emptyWorkerHealthSnapshot()),
           }),
         ),
         Layer.provideMerge(
@@ -39,6 +41,7 @@ describe("OrchestrationReactor", () => {
               return Effect.void;
             },
             drain: Effect.void,
+            health: Effect.succeed(emptyWorkerHealthSnapshot()),
           }),
         ),
         Layer.provideMerge(
@@ -48,6 +51,7 @@ describe("OrchestrationReactor", () => {
               return Effect.void;
             },
             drain: Effect.void,
+            health: Effect.succeed(emptyWorkerHealthSnapshot()),
           }),
         ),
         Layer.provideMerge(
@@ -57,6 +61,7 @@ describe("OrchestrationReactor", () => {
               return Effect.void;
             },
             drain: Effect.void,
+            health: Effect.succeed(emptyWorkerHealthSnapshot()),
           }),
         ),
       ),

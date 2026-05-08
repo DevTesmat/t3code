@@ -8,6 +8,7 @@
  */
 import { Context } from "effect";
 import type { Effect, Scope } from "effect";
+import type { WorkerHealthSnapshot } from "@t3tools/shared/WorkerHealth";
 
 /**
  * CheckpointReactorShape - Service API for checkpoint reactor lifecycle.
@@ -29,6 +30,11 @@ export interface CheckpointReactorShape {
    * Intended for test use to replace timing-sensitive sleeps.
    */
   readonly drain: Effect.Effect<void>;
+
+  /**
+   * Current worker pressure snapshot for operational health.
+   */
+  readonly health: Effect.Effect<WorkerHealthSnapshot>;
 }
 
 /**

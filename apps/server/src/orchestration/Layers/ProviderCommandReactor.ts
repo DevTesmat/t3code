@@ -1046,6 +1046,7 @@ const make = Effect.gen(function* () {
   return {
     start,
     drain: worker.drain,
+    health: worker.health,
   } satisfies ProviderCommandReactorShape;
 });
 

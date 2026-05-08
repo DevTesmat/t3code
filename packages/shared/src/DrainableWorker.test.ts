@@ -32,7 +32,9 @@ describe("makeDrainableWorker", () => {
 
         yield* worker.enqueue("first");
         expect(yield* worker.backlog).toBe(1);
+        expect((yield* worker.health).backlog).toBe(1);
         yield* Deferred.await(firstStarted);
+        expect((yield* worker.health).active).toBe(1);
 
         const drained = yield* Deferred.make<void>();
         yield* Effect.forkChild(
@@ -52,6 +54,9 @@ describe("makeDrainableWorker", () => {
 
         expect(processed).toEqual(["first", "second"]);
         expect(yield* worker.backlog).toBe(0);
+        const health = yield* worker.health;
+        expect(health.backlog).toBe(0);
+        expect(health.processed).toBe(2);
       }),
     ),
   );
@@ -64,6 +69,9 @@ describe("makeDrainableWorker", () => {
 
         yield* worker.enqueue("first");
         yield* worker.enqueue("second");
+        const busyHealth = yield* worker.health;
+        expect(busyHealth.capacity).toBe(1);
+        expect(busyHealth.backlog).toBe(2);
 
         const thirdEnqueued = yield* Deferred.make<void>();
         yield* Effect.forkChild(

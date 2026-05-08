@@ -25,6 +25,7 @@ import {
   WsRpcGroup,
   EditorId,
 } from "@t3tools/contracts";
+import { emptyWorkerHealthSnapshot } from "@t3tools/shared/WorkerHealth";
 import { assert, it } from "@effect/vitest";
 import { assertFailure, assertInclude, assertTrue } from "@effect/vitest/utils";
 import {
@@ -443,6 +444,7 @@ const buildAppUnderTest = (options?: {
       ),
       Layer.provide(
         Layer.mock(TerminalManager)({
+          historyPersistenceHealth: Effect.succeed(emptyWorkerHealthSnapshot()),
           ...options?.layers?.terminalManager,
         }),
       ),
@@ -516,6 +518,7 @@ const buildAppUnderTest = (options?: {
           awaitCommandReady: Effect.void,
           markHttpListening: Effect.void,
           enqueueCommand: (effect) => effect,
+          commandQueueHealth: Effect.succeed(emptyWorkerHealthSnapshot()),
           ...options?.layers?.serverRuntimeStartup,
         }),
       ),
