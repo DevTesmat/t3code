@@ -1232,7 +1232,7 @@ const ToolOutputPreview = memo(function ToolOutputPreview(props: {
         ref={scrollerRef}
         onScroll={handleScroll}
         className={cn(
-          "h-24 max-w-full overflow-auto rounded-md border px-2 py-1 font-mono text-[11px] leading-4 whitespace-pre",
+          "h-28 max-w-full overflow-auto rounded-md border px-2 py-1 font-mono text-[11px] leading-4 whitespace-pre [scrollbar-width:thin] [&::-webkit-scrollbar]:h-1.5 [&::-webkit-scrollbar]:w-1.5",
           outputIsError
             ? "border-destructive/25 bg-destructive/5 text-destructive/85"
             : "border-border/45 bg-muted/20 text-muted-foreground/85",
@@ -1476,8 +1476,8 @@ const LiveFileChangePreview = memo(function LiveFileChangePreview(props: {
         ref={scrollerRef}
         onScroll={handleScroll}
         className={cn(
-          "min-h-14 overflow-auto rounded-md border border-border/55 bg-background/80 p-2 font-mono text-[10.5px] leading-4 shadow-xs",
-          expanded ? "max-h-36" : "max-h-[4.75rem]",
+          "min-h-14 overflow-auto rounded-md border border-border/55 bg-background/80 p-2 font-mono text-[10.5px] leading-4 shadow-xs [scrollbar-width:thin] [&::-webkit-scrollbar]:h-1.5 [&::-webkit-scrollbar]:w-1.5",
+          expanded ? "max-h-36" : "max-h-[5.75rem]",
         )}
         data-testid="inline-file-change-patch"
       >
@@ -1672,8 +1672,8 @@ const CompletedChangedFilesDiffPreview = memo(function CompletedChangedFilesDiff
       <div className="pl-7 pr-1 pb-1">
         <div
           className={cn(
-            "overflow-auto rounded-md border border-border/50 bg-muted/20 p-2",
-            expanded ? "max-h-36" : "max-h-[4.75rem]",
+            "overflow-auto rounded-md border border-border/50 bg-muted/20 p-2 [scrollbar-width:thin] [&::-webkit-scrollbar]:h-1.5 [&::-webkit-scrollbar]:w-1.5",
+            expanded ? "max-h-36" : "max-h-[5.75rem]",
           )}
         >
           <p className="mb-1 text-[10px] text-muted-foreground/65">{renderablePatch.reason}</p>
@@ -1703,8 +1703,8 @@ const CompletedChangedFilesDiffPreview = memo(function CompletedChangedFilesDiff
     <div className="pl-7 pr-1 pb-1">
       <div
         className={cn(
-          "min-h-14 overflow-auto rounded-md border border-border/55 bg-card/25",
-          expanded ? "max-h-36" : "max-h-[4.75rem]",
+          "min-h-14 overflow-auto rounded-md border border-border/55 bg-card/25 [scrollbar-width:thin] [&::-webkit-scrollbar]:h-1.5 [&::-webkit-scrollbar]:w-1.5",
+          expanded ? "max-h-36" : "max-h-[5.75rem]",
         )}
       >
         {matchingFiles.map((fileDiff) => {
