@@ -1277,6 +1277,7 @@ type LivePatchLineKind = "addition" | "deletion" | "header" | "context";
 interface LivePatchLine {
   readonly id: string;
   readonly kind: LivePatchLineKind;
+  readonly lineNumber: number;
   readonly text: string;
 }
 
@@ -1401,6 +1402,7 @@ function parseLivePatchLines(text: string): LivePatchLine[] {
   const rawLines = normalized.split("\n");
   const sourceLines = normalized.endsWith("\n") ? rawLines.slice(0, -1) : rawLines;
   const visibleLines = sourceLines.slice(-300);
+  const firstVisibleLineNumber = sourceLines.length - visibleLines.length + 1;
 
   return visibleLines.map((line, index) => {
     const kind: LivePatchLineKind =
@@ -1418,6 +1420,7 @@ function parseLivePatchLines(text: string): LivePatchLine[] {
     return {
       id: `${index}:${line}`,
       kind,
+      lineNumber: firstVisibleLineNumber + index,
       text: line.length > 0 ? line : " ",
     };
   });
@@ -1489,14 +1492,24 @@ const LiveFileChangePreview = memo(function LiveFileChangePreview(props: {
             <div
               key={line.id}
               className={cn(
-                line.kind === "addition" &&
-                  "bg-success/8 text-success-foreground dark:text-success",
-                line.kind === "deletion" && "bg-destructive/8 text-destructive",
-                line.kind === "header" && "text-muted-foreground/65",
-                line.kind === "context" && "text-muted-foreground/85",
+                "grid grid-cols-[3.25rem_auto]",
+                line.kind === "addition" && "bg-success/8",
+                line.kind === "deletion" && "bg-destructive/8",
               )}
             >
-              {line.text}
+              <span className="select-none pr-3 text-right text-muted-foreground/40">
+                {line.lineNumber}
+              </span>
+              <span
+                className={cn(
+                  line.kind === "addition" && "text-success-foreground dark:text-success",
+                  line.kind === "deletion" && "text-destructive",
+                  line.kind === "header" && "text-muted-foreground/65",
+                  line.kind === "context" && "text-muted-foreground/85",
+                )}
+              >
+                {line.text}
+              </span>
             </div>
           ))}
         </pre>
