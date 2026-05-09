@@ -8,8 +8,29 @@ export const DISABLED_HISTORY_SYNC_STATUS: HistorySyncStatus = {
 
 let latestHistorySyncStatus: HistorySyncStatus = DISABLED_HISTORY_SYNC_STATUS;
 const historySyncStatusSubscribers = new Set<(status: HistorySyncStatus) => Effect.Effect<void>>();
+let lastLoggedStatusKey: string | null = null;
+
+function statusLogKey(status: HistorySyncStatus): string {
+  if (status.state === "syncing") {
+    return JSON.stringify({
+      state: status.state,
+      startedAt: status.startedAt,
+      lane: status.lane ?? null,
+      phase: status.progress?.phase ?? null,
+      label: status.progress?.label ?? null,
+      current: status.progress?.current ?? null,
+      total: status.progress?.total ?? null,
+    });
+  }
+  return JSON.stringify(status);
+}
 
 function logHistorySyncStatus(status: HistorySyncStatus): void {
+  const key = statusLogKey(status);
+  if (key === lastLoggedStatusKey) {
+    return;
+  }
+  lastLoggedStatusKey = key;
   switch (status.state) {
     case "disabled":
       console.info("[history-sync] disabled", { configured: status.configured });
@@ -24,6 +45,9 @@ function logHistorySyncStatus(status: HistorySyncStatus): void {
       console.info("[history-sync] syncing", {
         startedAt: status.startedAt,
         lastSyncedAt: status.lastSyncedAt,
+        lane: status.lane ?? "legacy",
+        progress: status.progress ?? null,
+        partial: status.partial ?? null,
       });
       return;
     case "retrying":

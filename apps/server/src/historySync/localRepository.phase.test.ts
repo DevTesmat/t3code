@@ -17,7 +17,7 @@ layer("history sync local repository phase helpers", (it) => {
   it.effect("sets, fails, and clears initial sync phase metadata", () =>
     Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient;
-      yield* runMigrations({ toMigrationInclusive: 36 });
+      yield* runMigrations({ toMigrationInclusive: 37 });
 
       yield* setInitialSyncPhase(sql, {
         phase: "backup",

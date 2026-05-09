@@ -57,7 +57,7 @@ layer("history sync local repository commits", (it) => {
   it.effect("commits pushed receipts and sync state together", () =>
     Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient;
-      yield* runMigrations({ toMigrationInclusive: 36 });
+      yield* runMigrations({ toMigrationInclusive: 37 });
       yield* sql`DELETE FROM history_sync_pushed_events`;
       yield* sql`DELETE FROM history_sync_state`;
 
@@ -81,7 +81,7 @@ layer("history sync local repository commits", (it) => {
   it.effect("rolls back receipts when the local commit fails", () =>
     Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient;
-      yield* runMigrations({ toMigrationInclusive: 36 });
+      yield* runMigrations({ toMigrationInclusive: 37 });
       yield* sql`DELETE FROM history_sync_pushed_events`;
       yield* sql`DELETE FROM history_sync_state`;
       yield* sql`
@@ -114,7 +114,7 @@ layer("history sync local repository commits", (it) => {
   it.effect("rolls back mixed old and new receipt rows when the transaction fails", () =>
     Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient;
-      yield* runMigrations({ toMigrationInclusive: 36 });
+      yield* runMigrations({ toMigrationInclusive: 37 });
       yield* commitPushedEventReceiptsAndState(sql, {
         events: [event(1, "old-event-1"), event(3, "old-event-3")],
         pushedAt: "2026-05-01T00:00:00.000Z",
@@ -164,7 +164,7 @@ layer("history sync local repository commits", (it) => {
   it.effect("tolerates empty receipt commits while writing state", () =>
     Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient;
-      yield* runMigrations({ toMigrationInclusive: 36 });
+      yield* runMigrations({ toMigrationInclusive: 37 });
       yield* sql`DELETE FROM history_sync_pushed_events`;
       yield* sql`DELETE FROM history_sync_state`;
 
@@ -186,7 +186,7 @@ layer("history sync local repository commits", (it) => {
   it.effect("state-only commits preserve client id", () =>
     Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient;
-      yield* runMigrations({ toMigrationInclusive: 36 });
+      yield* runMigrations({ toMigrationInclusive: 37 });
       yield* sql`DROP TRIGGER IF EXISTS fail_history_sync_state_insert`;
       const clientId = yield* ensureClientId(sql);
 
@@ -205,7 +205,7 @@ layer("history sync local repository commits", (it) => {
   it.effect("state commits preserve client id and recovery fields until phase is cleared", () =>
     Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient;
-      yield* runMigrations({ toMigrationInclusive: 36 });
+      yield* runMigrations({ toMigrationInclusive: 37 });
       const clientId = yield* ensureClientId(sql);
       yield* setInitialSyncPhase(sql, {
         phase: "push-local",

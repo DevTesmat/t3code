@@ -33,7 +33,10 @@ import {
   isRetryableHistorySyncConnectionFailure,
   pushRemoteEventsBatched,
   readRemoteEvents,
+  readRemoteEventsForThreadIds,
   readRemoteMaxSequence,
+  readRemoteLatestThreadShells,
+  readRemoteProjectEventsForProjectIds,
 } from "./remoteStore.ts";
 import { createHistorySyncRestoreController } from "./restoreController.ts";
 import { DISABLED_HISTORY_SYNC_STATUS, publishHistorySyncStatus } from "./statusBus.ts";
@@ -42,6 +45,7 @@ import { createHistorySyncRunner } from "./syncRunner.ts";
 export interface HistorySyncServiceShape {
   readonly start: Effect.Effect<void, never, Scope.Scope>;
   readonly syncNow: Effect.Effect<void>;
+  readonly prioritizeThreadSync: (threadId: string) => Effect.Effect<void>;
   readonly runSync: Effect.Effect<HistorySyncConfig, HistorySyncConfigError | ServerSettingsError>;
   readonly getStatus: Effect.Effect<HistorySyncStatus>;
   readonly getConfig: Effect.Effect<HistorySyncConfig, ServerSettingsError>;
@@ -130,6 +134,12 @@ export const HistorySyncServiceLive = Layer.effect(
     ) => LocalHistoryRepository.seedPushedEventReceiptsForCompletedSync(sql, events, input);
 
     const readLocalProjectionCounts = LocalHistoryRepository.readLocalProjectionCounts(sql);
+
+    const readHistorySyncThreadStateCounts =
+      LocalHistoryRepository.readHistorySyncThreadStateCounts(sql);
+
+    const readHistorySyncThreadState = (threadId: string) =>
+      LocalHistoryRepository.readHistorySyncThreadState(sql, threadId);
 
     const readState = LocalHistoryRepository.readState(sql);
 
@@ -226,6 +236,9 @@ export const HistorySyncServiceLive = Layer.effect(
       seedPushedEventReceiptsForCompletedSync,
       readRemoteEvents,
       readRemoteMaxSequence,
+      readRemoteLatestThreadShells,
+      readRemoteEventsForThreadIds,
+      readRemoteProjectEventsForProjectIds,
       pushRemoteEventsBatched,
       isRetryableConnectionFailure: isRetryableHistorySyncConnectionFailure,
       readProjectMappings: ProjectMappings.readValidProjectMappings(sql),
@@ -233,8 +246,56 @@ export const HistorySyncServiceLive = Layer.effect(
         ProjectMappings.buildProjectMappingPlanFromEvents(sql, input),
       autoPersistExactProjectMappings: (plan) =>
         ProjectMappings.autoPersistExactProjectMappings(sql, plan),
+      upsertHistorySyncThreadStates: (rows) =>
+        LocalHistoryRepository.upsertHistorySyncThreadStates(sql, rows),
+      readHistorySyncThreadStateCounts,
+      readHistorySyncThreadState,
+      updateHistorySyncLatestFirstState: (input) =>
+        LocalHistoryRepository.updateHistorySyncLatestFirstState(sql, input),
+      markHistorySyncThreadPriority: (input) =>
+        LocalHistoryRepository.markHistorySyncThreadPriority(sql, input),
+      deferHistorySyncThreadPriority: (input) =>
+        LocalHistoryRepository.deferHistorySyncThreadPriority(sql, input),
     });
-    const { performSync } = syncRunner;
+    const { performSync, runPriorityThreadImport } = syncRunner;
+    const priorityThreadSyncInFlight = yield* Ref.make<ReadonlySet<string>>(new Set());
+    const prioritizeThreadSync = (threadId: string) =>
+      Effect.gen(function* () {
+        const status = yield* Ref.get(statusRef);
+        if (status.state === "syncing" || status.state === "retrying") {
+          console.info("[history-sync] priority-thread", {
+            phase: "skip",
+            threadId,
+            reason: "sync-active",
+            activeState: status.state,
+            lane: status.state === "syncing" ? status.lane : undefined,
+          });
+          return;
+        }
+        const acquired = yield* Ref.modify(priorityThreadSyncInFlight, (current) => {
+          if (current.size > 0 || current.has(threadId)) {
+            return [false, current] as const;
+          }
+          return [true, new Set(current).add(threadId)] as const;
+        });
+        if (!acquired) {
+          console.info("[history-sync] priority-thread", {
+            phase: "skip",
+            threadId,
+            reason: "priority-sync-active",
+          });
+          return;
+        }
+        yield* runPriorityThreadImport(threadId).pipe(
+          Effect.ensuring(
+            Ref.update(priorityThreadSyncInFlight, (current) => {
+              const next = new Set(current);
+              next.delete(threadId);
+              return next;
+            }),
+          ),
+        );
+      });
 
     const lifecycle = yield* createHistorySyncLifecycleController({
       statusPubSub,
@@ -249,6 +310,15 @@ export const HistorySyncServiceLive = Layer.effect(
       shouldScheduleAutosaveForDomainEvent,
     });
     const { start, syncNow, runSync, startInitialSync, restoreBackup } = lifecycle;
+    const recoverStaleThreadStates = LocalHistoryRepository.recoverStaleHistorySyncThreadStates(
+      sql,
+      new Date().toISOString(),
+    ).pipe(
+      Effect.tapError((cause) =>
+        Effect.logWarning("history sync thread-state recovery failed", { cause }),
+      ),
+      Effect.ignore,
+    );
     syncNowEffect = syncNow;
     clearStoppedEffect = lifecycle.clearStopped;
 
@@ -272,6 +342,7 @@ export const HistorySyncServiceLive = Layer.effect(
       getConfig: toConfig,
       updateConfig,
       runSync,
+      prioritizeThreadSync,
       startInitialSync,
       restoreBackup,
       testConnection,
@@ -280,9 +351,10 @@ export const HistorySyncServiceLive = Layer.effect(
     });
 
     return {
-      start,
+      start: recoverStaleThreadStates.pipe(Effect.andThen(start)),
       syncNow,
       runSync,
+      prioritizeThreadSync,
       getStatus: Ref.get(statusRef),
       getConfig: toConfig,
       updateConfig,

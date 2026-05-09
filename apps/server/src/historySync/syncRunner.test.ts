@@ -132,6 +132,9 @@ function makeRunner(overrides: Partial<HistorySyncRunnerDependencies> = {}, call
         Effect.sync(() => calls.push("seedReceipts")).pipe(Effect.asVoid),
       readRemoteEvents: () => Effect.succeed([]),
       readRemoteMaxSequence: () => Effect.succeed(0),
+      readRemoteLatestThreadShells: () => Effect.succeed([]),
+      readRemoteEventsForThreadIds: () => Effect.succeed([]),
+      readRemoteProjectEventsForProjectIds: () => Effect.succeed([]),
       pushRemoteEventsBatched: () => Effect.sync(() => calls.push("push")).pipe(Effect.asVoid),
       isRetryableConnectionFailure: () => false,
       readProjectMappings: Effect.succeed([]),
@@ -144,6 +147,26 @@ function makeRunner(overrides: Partial<HistorySyncRunnerDependencies> = {}, call
         }),
       autoPersistExactProjectMappings: () =>
         Effect.sync(() => calls.push("autoMap")).pipe(Effect.asVoid),
+      upsertHistorySyncThreadStates: () =>
+        Effect.sync(() => calls.push("upsertThreadState")).pipe(Effect.asVoid),
+      readHistorySyncThreadStateCounts: Effect.succeed({
+        loadedThreadCount: 0,
+        totalThreadCount: 0,
+      }),
+      readHistorySyncThreadState: () =>
+        Effect.succeed({
+          latestRemoteSequence: 2,
+          importedThroughSequence: 1,
+          isShellLoaded: 1,
+          isFullLoaded: 0,
+          lastRequestedAt: null,
+        }),
+      updateHistorySyncLatestFirstState: () =>
+        Effect.sync(() => calls.push("latestFirstState")).pipe(Effect.asVoid),
+      markHistorySyncThreadPriority: () =>
+        Effect.sync(() => calls.push("markThreadPriority")).pipe(Effect.asVoid),
+      deferHistorySyncThreadPriority: () =>
+        Effect.sync(() => calls.push("deferThreadPriority")).pipe(Effect.asVoid),
       ...overrides,
     };
     return { runner: createHistorySyncRunner(deps), statuses };
@@ -218,6 +241,69 @@ describe("history sync runner", () => {
       remoteDeltaEventCount: 5,
       unknownRemoteEventCount: 2,
     });
+  });
+
+  test("skips priority thread sync for marker-only thread state", async () => {
+    const calls: string[] = [];
+    const { runner, statuses } = await Effect.runPromise(
+      makeRunner(
+        {
+          readState: Effect.succeed({
+            hasCompletedInitialSync: 1,
+            lastSyncedRemoteSequence: 1,
+            lastSuccessfulSyncAt: "2026-05-01T00:00:00.000Z",
+          }),
+          readHistorySyncThreadState: () =>
+            Effect.succeed({
+              latestRemoteSequence: 0,
+              importedThroughSequence: 0,
+              isShellLoaded: 0,
+              isFullLoaded: 0,
+              lastRequestedAt: null,
+            }),
+          readRemoteEventsForThreadIds: () =>
+            Effect.sync(() => calls.push("readRemoteThread")).pipe(Effect.as([])),
+        },
+        calls,
+      ),
+    );
+
+    await Effect.runPromise(runner.runPriorityThreadImport("thread-marker-only"));
+
+    expect(calls).not.toContain("markThreadPriority");
+    expect(calls).not.toContain("readRemoteThread");
+    expect(statuses).toEqual([]);
+  });
+
+  test("skips priority thread sync when thread is already fully imported", async () => {
+    const calls: string[] = [];
+    const { runner } = await Effect.runPromise(
+      makeRunner(
+        {
+          readState: Effect.succeed({
+            hasCompletedInitialSync: 1,
+            lastSyncedRemoteSequence: 1,
+            lastSuccessfulSyncAt: "2026-05-01T00:00:00.000Z",
+          }),
+          readHistorySyncThreadState: () =>
+            Effect.succeed({
+              latestRemoteSequence: 10,
+              importedThroughSequence: 10,
+              isShellLoaded: 1,
+              isFullLoaded: 1,
+              lastRequestedAt: null,
+            }),
+          readRemoteEventsForThreadIds: () =>
+            Effect.sync(() => calls.push("readRemoteThread")).pipe(Effect.as([])),
+        },
+        calls,
+      ),
+    );
+
+    await Effect.runPromise(runner.runPriorityThreadImport("thread-full"));
+
+    expect(calls).not.toContain("markThreadPriority");
+    expect(calls).not.toContain("readRemoteThread");
   });
 
   test("autosave pauses on unknown remote events without pushing local history", async () => {

@@ -133,6 +133,9 @@ export function getHistorySyncStatusText(status: HistorySyncConfig["status"] | n
       status.unresolvedProjectCount === 1 ? "" : "s"
     } needed`;
   }
+  if (status.state === "syncing") {
+    return status.progress?.label ?? "Syncing history";
+  }
   if (status.state === "needs-initial-sync") return "Ready to start";
   return status.state;
 }

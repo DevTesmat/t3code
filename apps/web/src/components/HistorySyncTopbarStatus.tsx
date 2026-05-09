@@ -68,7 +68,12 @@ export function getHistorySyncTopbarStatusSummary(status: HistorySyncStatus): {
   switch (status.state) {
     case "syncing":
       return {
-        label: "History sync running",
+        label:
+          status.lane === "latest-bootstrap"
+            ? "Loading recent threads"
+            : status.lane === "priority-thread"
+              ? "Syncing opened thread"
+              : "History sync running",
         detail: status.progress?.label ?? "Syncing history",
         tone: "active",
         Icon: LoaderIcon,
@@ -253,6 +258,14 @@ export const HistorySyncTopbarStatus = memo(function HistorySyncTopbarStatus() {
                 <span className="min-w-0 truncate text-foreground">
                   {formatDateTime(status.startedAt)}
                 </span>
+                {status.partial ? (
+                  <>
+                    <span className="text-muted-foreground">Threads</span>
+                    <span className="min-w-0 truncate text-foreground">
+                      {status.partial.loadedThreadCount}/{status.partial.totalThreadCount} loaded
+                    </span>
+                  </>
+                ) : null}
               </>
             ) : null}
             {status.state === "retrying" ? (

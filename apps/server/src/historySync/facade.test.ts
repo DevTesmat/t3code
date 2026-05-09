@@ -34,6 +34,7 @@ function makeControl(overrides: Partial<HistorySyncFacadeControl> = {}): History
     getConfig: Effect.succeed(config),
     updateConfig: () => Effect.succeed(config),
     runSync: Effect.succeed(config),
+    prioritizeThreadSync: () => Effect.void,
     startInitialSync: Effect.succeed(config),
     restoreBackup: Effect.succeed(config),
     testConnection: () => Effect.succeed({ success: true }),

@@ -24,6 +24,7 @@ export interface HistorySyncFacadeControl {
     input: HistorySyncUpdateConfigInput,
   ) => Effect.Effect<HistorySyncConfig, HistorySyncConfigError | ServerSettingsError>;
   readonly runSync: Effect.Effect<HistorySyncConfig, HistorySyncConfigError | ServerSettingsError>;
+  readonly prioritizeThreadSync: (threadId: string) => Effect.Effect<void>;
   readonly startInitialSync: Effect.Effect<
     HistorySyncConfig,
     HistorySyncConfigError | ServerSettingsError
@@ -86,6 +87,13 @@ export const startHistorySyncInitialImport = Effect.suspend(() =>
 export const runHistorySync = Effect.suspend(() =>
   latestHistorySyncControl ? latestHistorySyncControl.runSync : Effect.fail(serviceNotReady()),
 );
+
+export const prioritizeHistorySyncThread = (threadId: string) =>
+  Effect.suspend(() =>
+    latestHistorySyncControl
+      ? latestHistorySyncControl.prioritizeThreadSync(threadId)
+      : Effect.fail(serviceNotReady()),
+  );
 
 export const restoreHistorySyncBackup = Effect.suspend(() =>
   latestHistorySyncControl

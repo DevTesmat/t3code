@@ -81,6 +81,7 @@ export function isProjectMappingValidForLocalProjects(
   localProjects: readonly LocalProjectRow[],
 ): boolean {
   if (mapping.status === "skipped") return true;
+  if (mapping.localWorkspaceRoot.trim().length > 0) return true;
   const localProject = localProjects.find(
     (project) => project.projectId === mapping.localProjectId,
   );
@@ -251,7 +252,7 @@ export const buildProjectMappingPlanFromEvents = Effect.fn(
             suggestionReason: suggestion.reason,
           }
         : {}),
-      status: suggestion?.reason === "exact-path" ? "mapped" : "unresolved",
+      status: "unresolved",
     });
   }
 
@@ -271,31 +272,8 @@ export const buildProjectMappingPlanFromEvents = Effect.fn(
 
 export const autoPersistExactProjectMappings = Effect.fn(
   "HistorySync.autoPersistExactProjectMappings",
-)(function* (sql: SqlClient.SqlClient, plan: HistorySyncProjectMappingPlan) {
-  const now = new Date().toISOString();
-  yield* Effect.forEach(
-    plan.candidates,
-    (candidate) => {
-      if (
-        candidate.status !== "mapped" ||
-        candidate.suggestionReason !== "exact-path" ||
-        !candidate.suggestedLocalProjectId ||
-        !candidate.suggestedLocalWorkspaceRoot
-      ) {
-        return Effect.void;
-      }
-      return writeProjectMapping(sql, {
-        remoteProjectId: candidate.remoteProjectId,
-        localProjectId: candidate.suggestedLocalProjectId,
-        localWorkspaceRoot: candidate.suggestedLocalWorkspaceRoot,
-        remoteWorkspaceRoot: candidate.remoteWorkspaceRoot,
-        remoteTitle: candidate.remoteTitle,
-        status: "mapped",
-        now,
-      });
-    },
-    { concurrency: 1 },
-  );
+)(function* (_sql: SqlClient.SqlClient, _plan: HistorySyncProjectMappingPlan) {
+  yield* Effect.void;
 });
 
 export function applyMappingAction(

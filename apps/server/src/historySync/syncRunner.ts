@@ -9,6 +9,7 @@ import type {
   HistorySyncEventRow,
   HistorySyncProjectMappingRow,
 } from "./planner.ts";
+import type { HistorySyncRemoteThreadShellRow } from "./remoteStore.ts";
 import {
   collectProjectCandidates,
   countActiveThreadCreates,
@@ -146,6 +147,18 @@ export interface HistorySyncRunnerDependencies {
     sequenceExclusive?: number,
   ) => Effect.Effect<readonly HistorySyncEventRow[], object>;
   readonly readRemoteMaxSequence: (connectionString: string) => Effect.Effect<number, object>;
+  readonly readRemoteLatestThreadShells: (
+    connectionString: string,
+    input: { readonly limit: number; readonly offset?: number },
+  ) => Effect.Effect<readonly HistorySyncRemoteThreadShellRow[], object>;
+  readonly readRemoteEventsForThreadIds: (
+    connectionString: string,
+    threadIds: readonly string[],
+  ) => Effect.Effect<readonly HistorySyncEventRow[], object>;
+  readonly readRemoteProjectEventsForProjectIds: (
+    connectionString: string,
+    projectIds: readonly string[],
+  ) => Effect.Effect<readonly HistorySyncEventRow[], object>;
   readonly pushRemoteEventsBatched: (
     connectionString: string,
     events: readonly HistorySyncEventRow[],
@@ -159,6 +172,50 @@ export interface HistorySyncRunnerDependencies {
   readonly autoPersistExactProjectMappings: (
     plan: HistorySyncProjectMappingPlan,
   ) => Effect.Effect<void, object>;
+  readonly upsertHistorySyncThreadStates: (
+    rows: readonly {
+      readonly threadId: string;
+      readonly remoteProjectId?: string | null;
+      readonly localProjectId?: string | null;
+      readonly latestRemoteSequence: number;
+      readonly importedThroughSequence?: number;
+      readonly isShellLoaded?: boolean;
+      readonly isFullLoaded?: boolean;
+      readonly priority?: number;
+      readonly lastRequestedAt?: string | null;
+      readonly now: string;
+    }[],
+  ) => Effect.Effect<void, object>;
+  readonly readHistorySyncThreadStateCounts: Effect.Effect<
+    { readonly loadedThreadCount: number; readonly totalThreadCount: number },
+    object
+  >;
+  readonly readHistorySyncThreadState: (threadId: string) => Effect.Effect<
+    {
+      readonly latestRemoteSequence: number;
+      readonly importedThroughSequence: number;
+      readonly isShellLoaded: number;
+      readonly isFullLoaded: number;
+      readonly lastRequestedAt: string | null;
+    } | null,
+    object
+  >;
+  readonly updateHistorySyncLatestFirstState: (input: {
+    readonly remoteAppliedSequence: number;
+    readonly remoteKnownMaxSequence: number;
+    readonly liveAppendEnabled: boolean;
+    readonly latestBootstrapCompletedAt?: string | null;
+    readonly backfillCursorUpdatedAt?: string | null;
+  }) => Effect.Effect<void, object>;
+  readonly markHistorySyncThreadPriority: (input: {
+    readonly threadId: string;
+    readonly priority: number;
+    readonly requestedAt: string;
+  }) => Effect.Effect<void, object>;
+  readonly deferHistorySyncThreadPriority: (input: {
+    readonly threadId: string;
+    readonly requestedAt: string;
+  }) => Effect.Effect<void, object>;
 }
 
 export interface HistorySyncRunnerOptions {
@@ -167,6 +224,46 @@ export interface HistorySyncRunnerOptions {
   readonly markStopped: Effect.Effect<void>;
   readonly retryAttempt?: number;
   readonly retryContext?: HistorySyncRetryContext;
+}
+
+const HISTORY_SYNC_PRIORITY_RETRY_BACKOFF_MS = 5 * 60_000;
+
+function summarizeHistorySyncUnknownError(error: unknown): Record<string, unknown> {
+  if (typeof error !== "object" || error === null) {
+    return { message: String(error) };
+  }
+  const record = error as Record<string | symbol, unknown>;
+  const summary: Record<string, unknown> = {};
+  if (error instanceof Error) {
+    summary.name = error.name;
+    summary.message = error.message;
+  }
+  for (const key of ["_tag", "operation", "code", "errno", "sqlState", "sqlMessage"] as const) {
+    const value = record[key];
+    if (value !== undefined) summary[key] = value;
+  }
+  const sql = record.sql;
+  if (typeof sql === "string") {
+    summary.sql = sql.length > 500 ? `${sql.slice(0, 500)}...` : sql;
+  }
+  const reason = record.reason ?? record.cause;
+  if (reason !== undefined && reason !== error) {
+    summary.reason = summarizeHistorySyncUnknownError(reason);
+  }
+  for (const symbol of Object.getOwnPropertySymbols(error)) {
+    const value = record[symbol];
+    if (value !== undefined && value !== reason && value !== error) {
+      summary[String(symbol)] = summarizeHistorySyncUnknownError(value);
+    }
+  }
+  return summary;
+}
+
+function logPriorityThreadDecision(
+  phase: "skip" | "start" | "remote-read" | "mapping" | "import" | "complete" | "fail",
+  details: Record<string, unknown>,
+) {
+  console.info("[history-sync] priority-thread", { phase, ...details });
 }
 
 export function nextHistorySyncRetryDelayMs(attempt: number): number | null {
@@ -262,6 +359,171 @@ export function createHistorySyncRunner(input: HistorySyncRunnerDependencies) {
       });
     });
 
+  const publishLatestFirstProgress = (
+    context: {
+      readonly startedAt: string;
+      readonly lastSyncedAt: string | null;
+    },
+    progress: HistorySyncProgress,
+    inputOptions: { readonly liveAppendEnabled: boolean },
+  ) =>
+    Effect.gen(function* () {
+      const counts = yield* input.readHistorySyncThreadStateCounts;
+      yield* input.publishStatus({
+        state: "syncing",
+        configured: true,
+        startedAt: context.startedAt,
+        lastSyncedAt: context.lastSyncedAt,
+        lane: "latest-bootstrap",
+        progress: clampHistorySyncProgress(progress),
+        partial: {
+          ...counts,
+          liveAppendEnabled: inputOptions.liveAppendEnabled,
+        },
+      });
+    });
+
+  const runLatestFirstBootstrap = (bootstrapInput: {
+    readonly connectionString: string;
+    readonly remoteMaxSequence: number;
+    readonly projectMappings: readonly HistorySyncProjectMappingRow[];
+    readonly liveAppendEnabled: boolean;
+    readonly context: {
+      readonly startedAt: string;
+      readonly lastSyncedAt: string | null;
+    };
+  }) =>
+    Effect.gen(function* () {
+      const pageSize = 50;
+      let offset = 0;
+      let importedThroughSequence = 0;
+      let importedThreadCount = 0;
+      yield* publishLatestFirstProgress(
+        bootstrapInput.context,
+        {
+          phase: "latest-bootstrap",
+          label: "Loading recent threads",
+          current: 0,
+          total: 3,
+        },
+        { liveAppendEnabled: bootstrapInput.liveAppendEnabled },
+      );
+
+      while (true) {
+        const latestThreads = yield* input.readRemoteLatestThreadShells(
+          bootstrapInput.connectionString,
+          { limit: pageSize, offset },
+        );
+        if (latestThreads.length === 0) break;
+
+        const now = new Date().toISOString();
+        yield* input.upsertHistorySyncThreadStates(
+          latestThreads.map((thread) => ({
+            threadId: thread.threadId,
+            remoteProjectId: thread.projectId,
+            latestRemoteSequence: thread.latestEventSequence,
+            isShellLoaded: true,
+            now,
+          })),
+        );
+        yield* publishLatestFirstProgress(
+          bootstrapInput.context,
+          {
+            phase: "latest-bootstrap",
+            label: offset === 0 ? "Loading recent thread events" : "Loading older thread events",
+            current: importedThreadCount + latestThreads.length,
+            total: Math.max(importedThreadCount + latestThreads.length, pageSize),
+          },
+          { liveAppendEnabled: bootstrapInput.liveAppendEnabled },
+        );
+
+        const threadEvents = yield* input.readRemoteEventsForThreadIds(
+          bootstrapInput.connectionString,
+          latestThreads.map((thread) => thread.threadId),
+        );
+        const projectIds = latestThreads.flatMap((thread) =>
+          thread.projectId === null ? [] : [thread.projectId],
+        );
+        const projectEvents = yield* input.readRemoteProjectEventsForProjectIds(
+          bootstrapInput.connectionString,
+          projectIds,
+        );
+        const remoteEvents = [...projectEvents, ...threadEvents].toSorted(
+          (left, right) => left.sequence - right.sequence,
+        );
+        if (remoteEvents.length > 0) {
+          const remoteEventsForLocal = rewriteRemoteEventsForLocalMappings(
+            normalizeRemoteEventsForLocalImport(remoteEvents),
+            bootstrapInput.projectMappings,
+          );
+          const localEvents = yield* input.readLocalEvents();
+          const remoteEventsToImport = filterAlreadyImportedRemoteDeltaEvents(
+            remoteEventsForLocal,
+            localEvents,
+          );
+          if (remoteEventsToImport.length > 0) {
+            yield* publishLatestFirstProgress(
+              bootstrapInput.context,
+              {
+                phase: "latest-bootstrap",
+                label: offset === 0 ? "Projecting recent threads" : "Projecting older threads",
+                current: importedThreadCount,
+                total: Math.max(importedThreadCount + latestThreads.length, pageSize),
+              },
+              { liveAppendEnabled: bootstrapInput.liveAppendEnabled },
+            );
+            yield* runImport(remoteEventsToImport, bootstrapInput.context, { mode: "delta" });
+            importedThroughSequence = Math.max(
+              importedThroughSequence,
+              maxHistoryEventSequence(remoteEvents),
+            );
+          }
+        }
+
+        const completedAt = new Date().toISOString();
+        yield* input.upsertHistorySyncThreadStates(
+          latestThreads.map((thread) => ({
+            threadId: thread.threadId,
+            remoteProjectId: thread.projectId,
+            latestRemoteSequence: thread.latestEventSequence,
+            importedThroughSequence: thread.latestEventSequence,
+            isShellLoaded: true,
+            isFullLoaded: true,
+            now: completedAt,
+          })),
+        );
+        importedThreadCount += latestThreads.length;
+        offset += latestThreads.length;
+        yield* input.updateHistorySyncLatestFirstState({
+          remoteAppliedSequence: importedThroughSequence,
+          remoteKnownMaxSequence: bootstrapInput.remoteMaxSequence,
+          latestBootstrapCompletedAt: offset === latestThreads.length ? completedAt : null,
+          backfillCursorUpdatedAt: offset > latestThreads.length ? completedAt : null,
+          liveAppendEnabled: bootstrapInput.liveAppendEnabled,
+        });
+        if (latestThreads.length < pageSize) break;
+        yield* Effect.sleep(25);
+      }
+      if (importedThreadCount === 0) return;
+      const completedAt = new Date().toISOString();
+      yield* input.updateHistorySyncLatestFirstState({
+        remoteAppliedSequence: importedThroughSequence,
+        remoteKnownMaxSequence: bootstrapInput.remoteMaxSequence,
+        backfillCursorUpdatedAt: completedAt,
+        liveAppendEnabled: bootstrapInput.liveAppendEnabled,
+      });
+      yield* publishLatestFirstProgress(
+        bootstrapInput.context,
+        {
+          phase: "latest-bootstrap",
+          label: "Thread history ready",
+          current: importedThreadCount,
+          total: importedThreadCount,
+        },
+        { liveAppendEnabled: bootstrapInput.liveAppendEnabled },
+      );
+    });
+
   const recordInitialSyncPhase = (
     phase: HistorySyncInitialSyncPhase,
     inputContext: { readonly startedAt: string },
@@ -342,7 +604,7 @@ export function createHistorySyncRunner(input: HistorySyncRunnerDependencies) {
       });
 
       console.info("[history-sync] reading local history", { mode: options.mode });
-      const localEvents = yield* input.readLocalEvents();
+      let localEvents = yield* input.readLocalEvents();
       const localProjectionCounts = yield* input.readLocalProjectionCounts;
       const localMaxSequence = maxHistoryEventSequence(localEvents);
       const lastSyncedRemoteSequence = state?.lastSyncedRemoteSequence ?? 0;
@@ -529,10 +791,7 @@ export function createHistorySyncRunner(input: HistorySyncRunnerDependencies) {
         remoteEvents: remoteEvents.length,
         remoteMaxSequence,
       });
-      const remoteEventsForMapping =
-        hasCompletedInitialSync && remoteEvents.length > 0
-          ? yield* input.readRemoteEvents(connectionString)
-          : remoteEvents;
+      const remoteEventsForMapping = remoteEvents;
       const mappingPlan = yield* input.buildProjectMappingPlanFromEvents({
         remoteEvents: remoteEventsForMapping,
         remoteMaxSequence,
@@ -556,10 +815,45 @@ export function createHistorySyncRunner(input: HistorySyncRunnerDependencies) {
         return;
       }
       const projectMappings = yield* input.readProjectMappings;
+      if (hasCompletedInitialSync && remoteMaxSequence > lastSyncedRemoteSequence) {
+        yield* runLatestFirstBootstrap({
+          connectionString,
+          remoteMaxSequence,
+          projectMappings,
+          liveAppendEnabled: true,
+          context: syncContext,
+        }).pipe(
+          Effect.catch((cause) =>
+            Effect.logWarning("latest-first history bootstrap failed; continuing full sync", {
+              cause,
+            }),
+          ),
+        );
+        localEvents = yield* input.readLocalEvents();
+      }
       const remoteEventsForLocal = rewriteRemoteEventsForLocalMappings(
         normalizeRemoteEventsForLocalImport(remoteEvents),
         projectMappings,
       );
+      if (!hasCompletedInitialSync && localEvents.length === 0 && remoteMaxSequence > 0) {
+        yield* runLatestFirstBootstrap({
+          connectionString,
+          remoteMaxSequence,
+          projectMappings,
+          liveAppendEnabled: false,
+          context: syncContext,
+        }).pipe(
+          Effect.catch((cause) =>
+            Effect.logWarning(
+              "latest-first initial history bootstrap failed; continuing initial sync",
+              {
+                cause,
+              },
+            ),
+          ),
+        );
+        localEvents = yield* input.readLocalEvents();
+      }
       const remoteProjectCount = collectProjectCandidates(remoteEventsForLocal).length;
       const remoteActiveThreadCount = countActiveThreadCreates(remoteEventsForLocal);
       const localEventsForRemote = rewriteLocalEventsForRemoteMappings(
@@ -937,5 +1231,212 @@ export function createHistorySyncRunner(input: HistorySyncRunnerDependencies) {
       ),
     );
 
-  return { performSync, runImport };
+  const runPriorityThreadImport = (threadId: string): Effect.Effect<void> =>
+    Effect.gen(function* () {
+      const settings = yield* input.getSettings;
+      const connectionString = yield* input.getConnectionString;
+      const state = yield* input.readState;
+      if (
+        connectionString === null ||
+        !settings.historySync.enabled ||
+        state?.hasCompletedInitialSync !== 1
+      ) {
+        return;
+      }
+      const threadState = yield* input.readHistorySyncThreadState(threadId);
+      if (threadState === null) {
+        logPriorityThreadDecision("skip", { threadId, reason: "no-thread-state" });
+        return;
+      }
+      if (threadState.isShellLoaded !== 1) {
+        logPriorityThreadDecision("skip", {
+          threadId,
+          reason: "marker-only",
+          latestRemoteSequence: threadState.latestRemoteSequence,
+          importedThroughSequence: threadState.importedThroughSequence,
+          isShellLoaded: threadState.isShellLoaded,
+          isFullLoaded: threadState.isFullLoaded,
+          lastRequestedAt: threadState.lastRequestedAt,
+        });
+        return;
+      }
+      if (threadState.isFullLoaded === 1) {
+        logPriorityThreadDecision("skip", {
+          threadId,
+          reason: "already-full",
+          latestRemoteSequence: threadState.latestRemoteSequence,
+          importedThroughSequence: threadState.importedThroughSequence,
+          lastRequestedAt: threadState.lastRequestedAt,
+        });
+        return;
+      }
+      if (threadState.latestRemoteSequence <= threadState.importedThroughSequence) {
+        logPriorityThreadDecision("skip", {
+          threadId,
+          reason: "already-imported-through-remote",
+          latestRemoteSequence: threadState.latestRemoteSequence,
+          importedThroughSequence: threadState.importedThroughSequence,
+          lastRequestedAt: threadState.lastRequestedAt,
+        });
+        return;
+      }
+      const previousRequestedAtMs =
+        threadState.lastRequestedAt === null ? 0 : Date.parse(threadState.lastRequestedAt);
+      if (
+        Number.isFinite(previousRequestedAtMs) &&
+        Date.now() - previousRequestedAtMs < HISTORY_SYNC_PRIORITY_RETRY_BACKOFF_MS
+      ) {
+        logPriorityThreadDecision("skip", {
+          threadId,
+          reason: "recent-attempt-backoff",
+          latestRemoteSequence: threadState.latestRemoteSequence,
+          importedThroughSequence: threadState.importedThroughSequence,
+          lastRequestedAt: threadState.lastRequestedAt,
+        });
+        return;
+      }
+
+      const requestedAt = new Date().toISOString();
+      logPriorityThreadDecision("start", {
+        threadId,
+        latestRemoteSequence: threadState.latestRemoteSequence,
+        importedThroughSequence: threadState.importedThroughSequence,
+        requestedAt,
+      });
+      yield* input.markHistorySyncThreadPriority({
+        threadId,
+        priority: 100,
+        requestedAt,
+      });
+      const previousStatus = yield* Ref.get(input.statusRef);
+      const lastSyncedAt =
+        previousStatus.state === "idle" ||
+        previousStatus.state === "syncing" ||
+        previousStatus.state === "error" ||
+        previousStatus.state === "needs-project-mapping" ||
+        previousStatus.state === "needs-initial-sync"
+          ? previousStatus.lastSyncedAt
+          : null;
+      const context = { startedAt: requestedAt, lastSyncedAt };
+
+      const threadEvents = yield* input.readRemoteEventsForThreadIds(connectionString, [threadId]);
+      logPriorityThreadDecision("remote-read", {
+        threadId,
+        threadEvents: threadEvents.length,
+      });
+      if (threadEvents.length === 0) {
+        logPriorityThreadDecision("skip", { threadId, reason: "remote-thread-empty" });
+        return;
+      }
+      const projectIds = collectProjectCandidates(threadEvents).map((project) => project.projectId);
+      const projectEvents = yield* input.readRemoteProjectEventsForProjectIds(
+        connectionString,
+        projectIds,
+      );
+      logPriorityThreadDecision("remote-read", {
+        threadId,
+        projectIds: projectIds.length,
+        projectEvents: projectEvents.length,
+      });
+      const remoteEvents = [...projectEvents, ...threadEvents].toSorted(
+        (left, right) => left.sequence - right.sequence,
+      );
+      const remoteMaxSequence = yield* input.readRemoteMaxSequence(connectionString);
+      const mappingPlan = yield* input.buildProjectMappingPlanFromEvents({
+        remoteEvents,
+        remoteMaxSequence,
+      });
+      const unresolvedProjectCount = mappingPlan.candidates.filter(
+        (candidate) => candidate.status === "unresolved",
+      ).length;
+      if (unresolvedProjectCount > 0) {
+        logPriorityThreadDecision("mapping", {
+          threadId,
+          remoteMaxSequence,
+          unresolvedProjectCount,
+        });
+        yield* input.publishStatus({
+          state: "needs-project-mapping",
+          configured: true,
+          remoteMaxSequence,
+          unresolvedProjectCount,
+          lastSyncedAt,
+        });
+        return;
+      }
+      const projectMappings = yield* input.readProjectMappings;
+      const remoteEventsForLocal = rewriteRemoteEventsForLocalMappings(
+        normalizeRemoteEventsForLocalImport(remoteEvents),
+        projectMappings,
+      );
+      yield* input.publishStatus({
+        state: "syncing",
+        configured: true,
+        startedAt: requestedAt,
+        lastSyncedAt,
+        lane: "priority-thread",
+        progress: {
+          phase: "priority-thread",
+          label: "Syncing opened thread",
+          current: 1,
+          total: 2,
+        },
+      });
+      logPriorityThreadDecision("import", {
+        threadId,
+        remoteEvents: remoteEvents.length,
+        rewrittenRemoteEvents: remoteEventsForLocal.length,
+        remoteMaxSequence,
+      });
+      yield* runImport(remoteEventsForLocal, context, { mode: "delta" });
+      const importedThroughSequence = maxHistoryEventSequence(remoteEvents);
+      const completedAt = new Date().toISOString();
+      yield* input.upsertHistorySyncThreadStates([
+        {
+          threadId,
+          latestRemoteSequence: importedThroughSequence,
+          importedThroughSequence,
+          isShellLoaded: true,
+          isFullLoaded: true,
+          priority: 100,
+          lastRequestedAt: requestedAt,
+          now: completedAt,
+        },
+      ]);
+      yield* input.updateHistorySyncLatestFirstState({
+        remoteAppliedSequence: importedThroughSequence,
+        remoteKnownMaxSequence: remoteMaxSequence,
+        liveAppendEnabled: true,
+        backfillCursorUpdatedAt: completedAt,
+      });
+      yield* input.publishStatus({
+        state: "idle",
+        configured: true,
+        lastSyncedAt: completedAt,
+      });
+      logPriorityThreadDecision("complete", {
+        threadId,
+        importedThroughSequence,
+        completedAt,
+      });
+    }).pipe(
+      Effect.catch((cause) =>
+        Effect.gen(function* () {
+          const deferredAt = new Date().toISOString();
+          yield* input
+            .deferHistorySyncThreadPriority({ threadId, requestedAt: deferredAt })
+            .pipe(Effect.ignoreCause({ log: true }));
+          logPriorityThreadDecision("fail", {
+            threadId,
+            deferredAt,
+            message: cause instanceof Error ? cause.message : String(cause),
+            error: summarizeHistorySyncUnknownError(cause),
+            cause,
+          });
+          yield* Effect.logWarning("priority thread history sync failed", { threadId, cause });
+        }),
+      ),
+    );
+
+  return { performSync, runImport, runPriorityThreadImport };
 }

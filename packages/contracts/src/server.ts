@@ -195,6 +195,23 @@ export const HistorySyncStatus = Schema.Union([
         total: NonNegativeInt,
       }),
     ),
+    lane: Schema.optionalKey(
+      Schema.Literals([
+        "preflight",
+        "latest-bootstrap",
+        "priority-thread",
+        "backfill",
+        "append",
+        "legacy",
+      ]),
+    ),
+    partial: Schema.optionalKey(
+      Schema.Struct({
+        loadedThreadCount: NonNegativeInt,
+        totalThreadCount: NonNegativeInt,
+        liveAppendEnabled: Schema.Boolean,
+      }),
+    ),
   }),
   Schema.Struct({
     state: Schema.Literal("retrying"),

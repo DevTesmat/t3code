@@ -30,11 +30,43 @@ export interface HistorySyncStateRow {
   readonly initialSyncPhase?: HistorySyncInitialSyncPhase | null;
   readonly initialSyncStartedAt?: string | null;
   readonly initialSyncError?: string | null;
+  readonly remoteAppliedSequence?: number | null;
+  readonly remoteKnownMaxSequence?: number | null;
+  readonly latestBootstrapCompletedAt?: string | null;
+  readonly backfillCursorUpdatedAt?: string | null;
+  readonly liveAppendEnabled?: number | null;
 }
 
 export interface HistorySyncLocalProjectionCounts {
   readonly projectCount: number;
   readonly threadCount: number;
+}
+
+export interface HistorySyncThreadStateRow {
+  readonly threadId: string;
+  readonly remoteProjectId: string | null;
+  readonly localProjectId: string | null;
+  readonly latestRemoteSequence: number;
+  readonly importedThroughSequence: number;
+  readonly isShellLoaded: number;
+  readonly isFullLoaded: number;
+  readonly priority: number;
+  readonly lastRequestedAt: string | null;
+  readonly createdAt: string;
+  readonly updatedAt: string;
+}
+
+export interface UpsertHistorySyncThreadStateInput {
+  readonly threadId: string;
+  readonly remoteProjectId?: string | null;
+  readonly localProjectId?: string | null;
+  readonly latestRemoteSequence: number;
+  readonly importedThroughSequence?: number;
+  readonly isShellLoaded?: boolean;
+  readonly isFullLoaded?: boolean;
+  readonly priority?: number;
+  readonly lastRequestedAt?: string | null;
+  readonly now: string;
 }
 
 export interface WriteHistorySyncStateInput {
@@ -199,14 +231,212 @@ export function readState(sql: SqlClient.SqlClient) {
         last_synced_remote_sequence AS "lastSyncedRemoteSequence",
         last_successful_sync_at AS "lastSuccessfulSyncAt",
         client_id AS "clientId",
-        initial_sync_phase AS "initialSyncPhase",
-        initial_sync_started_at AS "initialSyncStartedAt",
-        initial_sync_error AS "initialSyncError"
+      initial_sync_phase AS "initialSyncPhase",
+      initial_sync_started_at AS "initialSyncStartedAt",
+      initial_sync_error AS "initialSyncError",
+      remote_applied_sequence AS "remoteAppliedSequence",
+      remote_known_max_sequence AS "remoteKnownMaxSequence",
+      latest_bootstrap_completed_at AS "latestBootstrapCompletedAt",
+      backfill_cursor_updated_at AS "backfillCursorUpdatedAt",
+      live_append_enabled AS "liveAppendEnabled"
       FROM history_sync_state
       WHERE id = 1
       LIMIT 1
     `;
     return rows[0] ?? null;
+  });
+}
+
+export function upsertHistorySyncThreadStates(
+  sql: SqlClient.SqlClient,
+  inputs: readonly UpsertHistorySyncThreadStateInput[],
+) {
+  return Effect.gen(function* () {
+    if (inputs.length === 0) return;
+    yield* sql`
+      INSERT INTO history_sync_thread_state ${sql.insert(
+        inputs.map((input) => ({
+          thread_id: input.threadId,
+          remote_project_id: input.remoteProjectId ?? null,
+          local_project_id: input.localProjectId ?? null,
+          latest_remote_sequence: input.latestRemoteSequence,
+          imported_through_sequence: input.importedThroughSequence ?? 0,
+          is_shell_loaded: input.isShellLoaded === true ? 1 : 0,
+          is_full_loaded: input.isFullLoaded === true ? 1 : 0,
+          priority: input.priority ?? 0,
+          last_requested_at: input.lastRequestedAt ?? null,
+          created_at: input.now,
+          updated_at: input.now,
+        })),
+      )}
+      ON CONFLICT (thread_id) DO UPDATE SET
+        remote_project_id = COALESCE(excluded.remote_project_id, history_sync_thread_state.remote_project_id),
+        local_project_id = COALESCE(excluded.local_project_id, history_sync_thread_state.local_project_id),
+        latest_remote_sequence = MAX(history_sync_thread_state.latest_remote_sequence, excluded.latest_remote_sequence),
+        imported_through_sequence = MAX(history_sync_thread_state.imported_through_sequence, excluded.imported_through_sequence),
+        is_shell_loaded = MAX(history_sync_thread_state.is_shell_loaded, excluded.is_shell_loaded),
+        is_full_loaded = MAX(history_sync_thread_state.is_full_loaded, excluded.is_full_loaded),
+        priority = MAX(history_sync_thread_state.priority, excluded.priority),
+        last_requested_at = COALESCE(excluded.last_requested_at, history_sync_thread_state.last_requested_at),
+        updated_at = excluded.updated_at
+    `;
+  });
+}
+
+export function markHistorySyncThreadPriority(
+  sql: SqlClient.SqlClient,
+  input: {
+    readonly threadId: string;
+    readonly priority: number;
+    readonly requestedAt: string;
+  },
+) {
+  return sql`
+    INSERT INTO history_sync_thread_state (
+      thread_id,
+      latest_remote_sequence,
+      imported_through_sequence,
+      is_shell_loaded,
+      is_full_loaded,
+      priority,
+      last_requested_at,
+      created_at,
+      updated_at
+    )
+    VALUES (
+      ${input.threadId},
+      0,
+      0,
+      0,
+      0,
+      ${input.priority},
+      ${input.requestedAt},
+      ${input.requestedAt},
+      ${input.requestedAt}
+    )
+    ON CONFLICT (thread_id) DO UPDATE SET
+      priority = MAX(history_sync_thread_state.priority, excluded.priority),
+      last_requested_at = excluded.last_requested_at,
+      updated_at = excluded.updated_at
+  `;
+}
+
+export function deferHistorySyncThreadPriority(
+  sql: SqlClient.SqlClient,
+  input: {
+    readonly threadId: string;
+    readonly requestedAt: string;
+  },
+) {
+  return sql`
+    UPDATE history_sync_thread_state
+    SET
+      priority = 0,
+      last_requested_at = ${input.requestedAt},
+      updated_at = ${input.requestedAt}
+    WHERE thread_id = ${input.threadId}
+  `;
+}
+
+export function recoverStaleHistorySyncThreadStates(sql: SqlClient.SqlClient, now: string) {
+  return sql`
+    UPDATE history_sync_thread_state
+    SET
+      priority = 0,
+      updated_at = ${now}
+    WHERE is_shell_loaded = 0
+      AND is_full_loaded = 0
+      AND latest_remote_sequence = 0
+      AND imported_through_sequence = 0
+      AND priority > 0
+  `;
+}
+
+export function readHistorySyncThreadStateCounts(sql: SqlClient.SqlClient) {
+  return Effect.gen(function* () {
+    const rows = yield* sql<{
+      readonly loadedThreadCount: number;
+      readonly totalThreadCount: number;
+    }>`
+      SELECT
+        COALESCE(SUM(CASE WHEN is_shell_loaded = 1 THEN 1 ELSE 0 END), 0) AS "loadedThreadCount",
+        COUNT(*) AS "totalThreadCount"
+      FROM history_sync_thread_state
+    `;
+    return {
+      loadedThreadCount: Number(rows[0]?.loadedThreadCount ?? 0),
+      totalThreadCount: Number(rows[0]?.totalThreadCount ?? 0),
+    };
+  });
+}
+
+export function readHistorySyncThreadState(sql: SqlClient.SqlClient, threadId: string) {
+  return Effect.gen(function* () {
+    const rows = yield* sql<HistorySyncThreadStateRow>`
+      SELECT
+        thread_id AS "threadId",
+        remote_project_id AS "remoteProjectId",
+        local_project_id AS "localProjectId",
+        latest_remote_sequence AS "latestRemoteSequence",
+        imported_through_sequence AS "importedThroughSequence",
+        is_shell_loaded AS "isShellLoaded",
+        is_full_loaded AS "isFullLoaded",
+        priority,
+        last_requested_at AS "lastRequestedAt",
+        created_at AS "createdAt",
+        updated_at AS "updatedAt"
+      FROM history_sync_thread_state
+      WHERE thread_id = ${threadId}
+      LIMIT 1
+    `;
+    return rows[0] ?? null;
+  });
+}
+
+export function updateHistorySyncLatestFirstState(
+  sql: SqlClient.SqlClient,
+  input: {
+    readonly remoteAppliedSequence: number;
+    readonly remoteKnownMaxSequence: number;
+    readonly liveAppendEnabled: boolean;
+    readonly latestBootstrapCompletedAt?: string | null;
+    readonly backfillCursorUpdatedAt?: string | null;
+  },
+) {
+  return Effect.gen(function* () {
+    const clientId = yield* ensureClientId(sql);
+    yield* sql`
+      INSERT INTO history_sync_state (
+        id,
+        client_id,
+        has_completed_initial_sync,
+        last_synced_remote_sequence,
+        last_successful_sync_at,
+        remote_applied_sequence,
+        remote_known_max_sequence,
+        latest_bootstrap_completed_at,
+        backfill_cursor_updated_at,
+        live_append_enabled
+      )
+      VALUES (
+        1,
+        ${clientId},
+        0,
+        0,
+        NULL,
+        ${input.remoteAppliedSequence},
+        ${input.remoteKnownMaxSequence},
+        ${input.latestBootstrapCompletedAt ?? null},
+        ${input.backfillCursorUpdatedAt ?? null},
+        ${input.liveAppendEnabled ? 1 : 0}
+      )
+      ON CONFLICT (id) DO UPDATE SET
+        remote_applied_sequence = MAX(history_sync_state.remote_applied_sequence, excluded.remote_applied_sequence),
+        remote_known_max_sequence = MAX(history_sync_state.remote_known_max_sequence, excluded.remote_known_max_sequence),
+        latest_bootstrap_completed_at = COALESCE(excluded.latest_bootstrap_completed_at, history_sync_state.latest_bootstrap_completed_at),
+        backfill_cursor_updated_at = COALESCE(excluded.backfill_cursor_updated_at, history_sync_state.backfill_cursor_updated_at),
+        live_append_enabled = excluded.live_append_enabled
+    `;
   });
 }
 
@@ -375,6 +605,7 @@ export function failInitialSyncPhase(
 export function insertLocalEvents(
   sql: SqlClient.SqlClient,
   events: readonly HistorySyncEventRow[],
+  options: { readonly ignoreConflicts?: boolean } = {},
 ) {
   return Effect.gen(function* () {
     if (events.length === 0) return;
@@ -382,25 +613,24 @@ export function insertLocalEvents(
     yield* Effect.forEach(
       batches,
       (batch) => {
-        return sql`
-          INSERT INTO orchestration_events ${sql.insert(
-            batch.map((event) => ({
-              sequence: event.sequence,
-              event_id: event.eventId,
-              aggregate_kind: event.aggregateKind,
-              stream_id: event.streamId,
-              stream_version: event.streamVersion,
-              event_type: event.eventType,
-              occurred_at: event.occurredAt,
-              command_id: event.commandId,
-              causation_event_id: event.causationEventId,
-              correlation_id: event.correlationId,
-              actor_kind: event.actorKind,
-              payload_json: event.payloadJson,
-              metadata_json: event.metadataJson,
-            })),
-          )}
-        `;
+        const rows = batch.map((event) => ({
+          sequence: event.sequence,
+          event_id: event.eventId,
+          aggregate_kind: event.aggregateKind,
+          stream_id: event.streamId,
+          stream_version: event.streamVersion,
+          event_type: event.eventType,
+          occurred_at: event.occurredAt,
+          command_id: event.commandId,
+          causation_event_id: event.causationEventId,
+          correlation_id: event.correlationId,
+          actor_kind: event.actorKind,
+          payload_json: event.payloadJson,
+          metadata_json: event.metadataJson,
+        }));
+        return options.ignoreConflicts === true
+          ? sql`INSERT OR IGNORE INTO orchestration_events ${sql.insert(rows)}`
+          : sql`INSERT INTO orchestration_events ${sql.insert(rows)}`;
       },
       { concurrency: 1 },
     );
@@ -430,5 +660,5 @@ export function importRemoteDeltaEvents(
   sql: SqlClient.SqlClient,
   events: readonly HistorySyncEventRow[],
 ) {
-  return sql.withTransaction(insertLocalEvents(sql, events));
+  return sql.withTransaction(insertLocalEvents(sql, events, { ignoreConflicts: true }));
 }

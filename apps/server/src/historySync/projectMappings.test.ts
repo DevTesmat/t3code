@@ -132,7 +132,7 @@ describe("history sync project mappings", () => {
     ).toBeNull();
   });
 
-  test("keeps skipped mappings and filters mapped rows with missing or changed local projects", () => {
+  test("keeps confirmed mappings durable even when local projections drift", () => {
     expect(
       filterValidProjectMappings(
         [
@@ -148,7 +148,7 @@ describe("history sync project mappings", () => {
         ],
         localProjects,
       ).map((row) => row.remoteProjectId),
-    ).toEqual(["remote-project", "skipped"]);
+    ).toEqual(["remote-project", "missing", "changed", "skipped"]);
   });
 });
 
@@ -185,10 +185,10 @@ function insertLocalProject(
 }
 
 layer("history sync project mapping repository", (it) => {
-  it.effect("reads only drift-valid mappings", () =>
+  it.effect("reads durable confirmed mappings even when projection rows are deleted", () =>
     Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient;
-      yield* runMigrations({ toMigrationInclusive: 36 });
+      yield* runMigrations({ toMigrationInclusive: 37 });
       yield* insertLocalProject(sql, {
         projectId: "local-valid",
         workspaceRoot: "/local/valid",
@@ -228,15 +228,15 @@ layer("history sync project mapping repository", (it) => {
 
       assert.deepStrictEqual(
         (yield* readValidProjectMappings(sql)).map((row) => row.remoteProjectId),
-        ["remote-skipped", "remote-valid"],
+        ["remote-deleted", "remote-skipped", "remote-valid"],
       );
     }),
   );
 
-  it.effect("ignores stale saved mappings and re-suggests exact path matches", () =>
+  it.effect("keeps saved mappings and leaves exact path matches as confirmation suggestions", () =>
     Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient;
-      yield* runMigrations({ toMigrationInclusive: 36 });
+      yield* runMigrations({ toMigrationInclusive: 37 });
       yield* insertLocalProject(sql, {
         projectId: "local-new",
         workspaceRoot: "/remote/app",
@@ -259,8 +259,7 @@ layer("history sync project mapping repository", (it) => {
         remoteMaxSequence: 2,
       });
 
-      assert.strictEqual(plan.candidates[0]?.suggestedLocalProjectId, "local-new");
-      assert.strictEqual(plan.candidates[0]?.suggestionReason, "exact-path");
+      assert.strictEqual(plan.candidates[0]?.suggestedLocalProjectId, "local-old");
       assert.strictEqual(plan.candidates[0]?.status, "mapped");
     }),
   );
@@ -268,7 +267,7 @@ layer("history sync project mapping repository", (it) => {
   it.effect("keeps basename suggestions unresolved and does not auto-persist them", () =>
     Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient;
-      yield* runMigrations({ toMigrationInclusive: 36 });
+      yield* runMigrations({ toMigrationInclusive: 37 });
       yield* insertLocalProject(sql, {
         projectId: "local-api",
         workspaceRoot: "/Users/me/api",
@@ -295,7 +294,7 @@ layer("history sync project mapping repository", (it) => {
   it.effect("invalidates mapping apply sync id when local projects drift", () =>
     Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient;
-      yield* runMigrations({ toMigrationInclusive: 36 });
+      yield* runMigrations({ toMigrationInclusive: 37 });
       yield* insertLocalProject(sql, {
         projectId: "local-a",
         workspaceRoot: "/local/a",

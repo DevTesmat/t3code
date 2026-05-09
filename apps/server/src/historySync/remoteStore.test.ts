@@ -4,6 +4,7 @@ import type { HistorySyncMysqlFields } from "@t3tools/contracts";
 
 import {
   buildMysqlConnectionString,
+  isHistorySyncMysqlAccessDenied,
   isRetryableHistorySyncConnectionFailure,
   toConnectionSummary,
   validateMysqlFields,
@@ -81,5 +82,25 @@ describe("history sync remote store", () => {
       ),
     ).toBe(false);
     expect(isRetryableHistorySyncConnectionFailure(new Error("unknown remote events"))).toBe(false);
+  });
+
+  test("classifies mysql table access failures", () => {
+    const wrapped = {
+      _tag: "HistorySyncMysqlError",
+      cause: Object.assign(new Error("UPDATE command denied"), {
+        code: "ER_TABLEACCESS_DENIED_ERROR",
+        errno: 1142,
+      }),
+    };
+
+    expect(isHistorySyncMysqlAccessDenied(wrapped)).toBe(true);
+    expect(
+      isHistorySyncMysqlAccessDenied(
+        Object.assign(new Error("bad sql"), {
+          code: "ER_PARSE_ERROR",
+          errno: 1064,
+        }),
+      ),
+    ).toBe(false);
   });
 });

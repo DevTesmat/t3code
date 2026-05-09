@@ -8,6 +8,7 @@ export {
   applyHistorySyncProjectMappings,
   getHistorySyncConfig,
   getHistorySyncProjectMappings,
+  prioritizeHistorySyncThread,
   restoreHistorySyncBackup,
   runHistorySync,
   startHistorySyncInitialImport,

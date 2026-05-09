@@ -11,6 +11,7 @@ export const HISTORY_SYNC_LOCAL_HISTORY_TABLES = [
   "projection_state",
   "checkpoint_diff_blobs",
   "history_sync_pushed_events",
+  "history_sync_thread_state",
   "orchestration_events",
 ] as const;
 
