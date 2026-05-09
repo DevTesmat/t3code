@@ -4,8 +4,10 @@ import { beforeEach, describe, expect, test } from "vitest";
 
 import {
   getHistorySyncConfig,
+  getHistorySyncPendingEvents,
   registerHistorySyncFacadeControl,
   resetHistorySyncFacadeControlForTest,
+  resolveHistorySyncPendingEvents,
   runHistorySync,
   testHistorySyncConnection,
   type HistorySyncFacadeControl,
@@ -51,6 +53,32 @@ function makeControl(overrides: Partial<HistorySyncFacadeControl> = {}): History
         candidates: [],
         localProjects: [],
       }),
+    getPendingEvents: Effect.succeed({
+      totalCount: 0,
+      pushableCount: 0,
+      deferredCount: 0,
+      displayedCount: 0,
+      omittedCount: 0,
+      localMaxSequence: 0,
+      remoteMaxSequence: 0,
+      lastSyncedRemoteSequence: 0,
+      events: [],
+    }),
+    resolvePendingEvents: () =>
+      Effect.succeed({
+        markedCount: 0,
+        review: {
+          totalCount: 0,
+          pushableCount: 0,
+          deferredCount: 0,
+          displayedCount: 0,
+          omittedCount: 0,
+          localMaxSequence: 0,
+          remoteMaxSequence: 0,
+          lastSyncedRemoteSequence: 0,
+          events: [],
+        },
+      }),
     ...overrides,
   };
 }
@@ -82,12 +110,54 @@ describe("history sync facade", () => {
 
   test("delegates to registered service control", async () => {
     const seenConnections: HistorySyncMysqlFields[] = [];
+    const seenResolvedSequences: number[][] = [];
     registerHistorySyncFacadeControl(
       makeControl({
         testConnection: (input) =>
           Effect.sync(() => {
             seenConnections.push(input);
             return { success: true, message: "ok" };
+          }),
+        getPendingEvents: Effect.succeed({
+          totalCount: 1,
+          pushableCount: 0,
+          deferredCount: 1,
+          displayedCount: 1,
+          omittedCount: 0,
+          localMaxSequence: 42,
+          remoteMaxSequence: 40,
+          lastSyncedRemoteSequence: 40,
+          events: [
+            {
+              sequence: 42,
+              eventId: "event-42",
+              eventType: "thread.message.created",
+              aggregateKind: "thread",
+              streamId: "thread-1",
+              occurredAt: "2026-05-09T10:00:00.000Z",
+              threadId: "thread-1",
+              pushable: false,
+              reason: "Deferred by autosync safety rules. Review before clearing.",
+            },
+          ],
+        }),
+        resolvePendingEvents: (input) =>
+          Effect.sync(() => {
+            seenResolvedSequences.push([...input.sequences]);
+            return {
+              markedCount: input.sequences.length,
+              review: {
+                totalCount: 0,
+                pushableCount: 0,
+                deferredCount: 0,
+                displayedCount: 0,
+                omittedCount: 0,
+                localMaxSequence: 42,
+                remoteMaxSequence: 40,
+                lastSyncedRemoteSequence: 40,
+                events: [],
+              },
+            };
           }),
       }),
     );
@@ -97,6 +167,17 @@ describe("history sync facade", () => {
       success: true,
       message: "ok",
     });
+    await expect(Effect.runPromise(getHistorySyncPendingEvents)).resolves.toMatchObject({
+      totalCount: 1,
+      deferredCount: 1,
+      events: [{ sequence: 42, eventType: "thread.message.created" }],
+    });
+    await expect(
+      Effect.runPromise(
+        resolveHistorySyncPendingEvents({ action: "mark-synced", sequences: [42] }),
+      ),
+    ).resolves.toMatchObject({ markedCount: 1, review: { totalCount: 0 } });
     expect(seenConnections).toEqual([mysql]);
+    expect(seenResolvedSequences).toEqual([[42]]);
   });
 });

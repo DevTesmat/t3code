@@ -25,7 +25,11 @@ import * as CodexErrors from "effect-codex-app-server/errors";
 import * as CodexRpc from "effect-codex-app-server/rpc";
 import * as EffectCodexSchema from "effect-codex-app-server/schema";
 
-import { buildCodexInitializeParams } from "./CodexProvider.ts";
+import {
+  buildCodexAppServerArgs,
+  buildCodexInitializeParams,
+  codexAppServerCommandLabel,
+} from "./CodexProvider.ts";
 import { expandHomePath } from "../../pathExpansion.ts";
 import {
   CODEX_DEFAULT_MODE_DEVELOPER_INSTRUCTIONS,
@@ -765,7 +769,7 @@ export const makeCodexSessionRuntime = (
     };
     const child = yield* spawner
       .spawn(
-        ChildProcess.make(options.binaryPath, ["app-server"], {
+        ChildProcess.make(options.binaryPath, buildCodexAppServerArgs(), {
           cwd: options.cwd,
           env,
           shell: process.platform === "win32",
@@ -776,7 +780,7 @@ export const makeCodexSessionRuntime = (
         Effect.mapError(
           (cause) =>
             new CodexErrors.CodexAppServerSpawnError({
-              command: `${options.binaryPath} app-server`,
+              command: codexAppServerCommandLabel(options.binaryPath),
               cause,
             }),
         ),

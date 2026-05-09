@@ -22,6 +22,7 @@ import { scopedSafeTeardown } from "./scopedSafeTeardown.ts";
 import packageJson from "../../../package.json" with { type: "json" };
 
 const PROVIDER_PROBE_TIMEOUT_MS = 8_000;
+const CODEX_APP_SERVER_ARGS = ["app-server", "--enable", "apply_patch_streaming_events"] as const;
 const CODEX_PRESENTATION = {
   displayName: "Codex",
   showInteractionModeToggle: true,
@@ -236,6 +237,14 @@ export function buildCodexInitializeParams(): CodexSchema.V1InitializeParams {
   };
 }
 
+export function buildCodexAppServerArgs(): string[] {
+  return [...CODEX_APP_SERVER_ARGS];
+}
+
+export function codexAppServerCommandLabel(binaryPath: string): string {
+  return [binaryPath, ...CODEX_APP_SERVER_ARGS].join(" ");
+}
+
 // Wrapped with `scopedSafeTeardown("codex-probe")` rather than the usual
 // `Effect.scoped` so that a defect from the `Layer.build` finalizer (e.g.
 // `ChildProcess.kill` throwing because the `codex app-server` child exited
@@ -257,7 +266,7 @@ const probeCodexAppServerProvider = Effect.fn("probeCodexAppServerProvider")(fun
   const clientContext = yield* Layer.build(
     CodexClient.layerCommand({
       command: input.binaryPath,
-      args: ["app-server"],
+      args: buildCodexAppServerArgs(),
       cwd: input.cwd,
       env: {
         ...(input.environment ?? process.env),
@@ -269,16 +278,7 @@ const probeCodexAppServerProvider = Effect.fn("probeCodexAppServerProvider")(fun
     Effect.provide(clientContext),
   );
 
-  const initialize = yield* client.request("initialize", {
-    clientInfo: {
-      name: "t3code_desktop",
-      title: "T3 Code Desktop",
-      version: "0.1.0",
-    },
-    capabilities: {
-      experimentalApi: true,
-    },
-  });
+  const initialize = yield* client.request("initialize", buildCodexInitializeParams());
   yield* client.notify("initialized", undefined);
 
   // Extract the version string after the first '/' in userAgent, up to the next space or the end

@@ -77,6 +77,9 @@ import {
   HistorySyncConnectionTestResult,
   HistorySyncProjectMappingPlan,
   HistorySyncProjectMappingsApplyInput,
+  HistorySyncPendingEventReview,
+  HistorySyncResolvePendingEventsInput,
+  HistorySyncResolvePendingEventsResult,
   HistorySyncUpdateConfigInput,
   ServerLifecycleStreamEvent,
   ServerProviderUpdatedPayload,
@@ -134,6 +137,8 @@ export const WS_METHODS = {
   serverTestHistorySyncConnection: "server.testHistorySyncConnection",
   serverGetHistorySyncProjectMappings: "server.getHistorySyncProjectMappings",
   serverApplyHistorySyncProjectMappings: "server.applyHistorySyncProjectMappings",
+  serverGetHistorySyncPendingEvents: "server.getHistorySyncPendingEvents",
+  serverResolveHistorySyncPendingEvents: "server.resolveHistorySyncPendingEvents",
 
   // Streaming subscriptions
   subscribeGitStatus: "subscribeGitStatus",
@@ -243,6 +248,24 @@ export const WsServerApplyHistorySyncProjectMappingsRpc = Rpc.make(
     payload: HistorySyncProjectMappingsApplyInput,
     success: HistorySyncProjectMappingPlan,
     error: HistorySyncConfigError,
+  },
+);
+
+export const WsServerGetHistorySyncPendingEventsRpc = Rpc.make(
+  WS_METHODS.serverGetHistorySyncPendingEvents,
+  {
+    payload: Schema.Struct({}),
+    success: HistorySyncPendingEventReview,
+    error: Schema.Union([ServerSettingsError, HistorySyncConfigError]),
+  },
+);
+
+export const WsServerResolveHistorySyncPendingEventsRpc = Rpc.make(
+  WS_METHODS.serverResolveHistorySyncPendingEvents,
+  {
+    payload: HistorySyncResolvePendingEventsInput,
+    success: HistorySyncResolvePendingEventsResult,
+    error: Schema.Union([ServerSettingsError, HistorySyncConfigError]),
   },
 );
 
@@ -459,6 +482,8 @@ export const WsRpcGroup = RpcGroup.make(
   WsServerTestHistorySyncConnectionRpc,
   WsServerGetHistorySyncProjectMappingsRpc,
   WsServerApplyHistorySyncProjectMappingsRpc,
+  WsServerGetHistorySyncPendingEventsRpc,
+  WsServerResolveHistorySyncPendingEventsRpc,
   WsProjectsSearchEntriesRpc,
   WsProjectsWriteFileRpc,
   WsShellOpenInEditorRpc,

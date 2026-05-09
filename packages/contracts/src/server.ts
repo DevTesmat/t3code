@@ -377,6 +377,46 @@ export const HistorySyncConfig = Schema.Struct({
 });
 export type HistorySyncConfig = typeof HistorySyncConfig.Type;
 
+export const HistorySyncPendingEventReviewItem = Schema.Struct({
+  sequence: NonNegativeInt,
+  eventId: TrimmedNonEmptyString,
+  eventType: TrimmedNonEmptyString,
+  aggregateKind: Schema.Literals(["project", "thread"]),
+  streamId: TrimmedNonEmptyString,
+  occurredAt: IsoDateTime,
+  threadId: Schema.optionalKey(TrimmedNonEmptyString),
+  projectId: Schema.optionalKey(TrimmedNonEmptyString),
+  pushable: Schema.Boolean,
+  reason: TrimmedNonEmptyString,
+});
+export type HistorySyncPendingEventReviewItem = typeof HistorySyncPendingEventReviewItem.Type;
+
+export const HistorySyncPendingEventReview = Schema.Struct({
+  totalCount: NonNegativeInt,
+  pushableCount: NonNegativeInt,
+  deferredCount: NonNegativeInt,
+  displayedCount: NonNegativeInt,
+  omittedCount: NonNegativeInt,
+  localMaxSequence: NonNegativeInt,
+  remoteMaxSequence: NonNegativeInt,
+  lastSyncedRemoteSequence: NonNegativeInt,
+  events: Schema.Array(HistorySyncPendingEventReviewItem),
+});
+export type HistorySyncPendingEventReview = typeof HistorySyncPendingEventReview.Type;
+
+export const HistorySyncResolvePendingEventsInput = Schema.Struct({
+  action: Schema.Literal("mark-synced"),
+  sequences: Schema.Array(NonNegativeInt),
+});
+export type HistorySyncResolvePendingEventsInput = typeof HistorySyncResolvePendingEventsInput.Type;
+
+export const HistorySyncResolvePendingEventsResult = Schema.Struct({
+  markedCount: NonNegativeInt,
+  review: HistorySyncPendingEventReview,
+});
+export type HistorySyncResolvePendingEventsResult =
+  typeof HistorySyncResolvePendingEventsResult.Type;
+
 export const HistorySyncSettingsPatch = Schema.Struct({
   enabled: Schema.optionalKey(Schema.Boolean),
   intervalMs: Schema.optionalKey(Schema.Number),

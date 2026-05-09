@@ -1,4 +1,5 @@
-import type { HistorySyncStatus } from "@t3tools/contracts";
+import type { HistorySyncPendingEventReview, HistorySyncStatus } from "@t3tools/contracts";
+import { useNavigate } from "@tanstack/react-router";
 import {
   AlertTriangleIcon,
   CheckCircle2Icon,
@@ -7,8 +8,9 @@ import {
   LoaderIcon,
   RefreshCwIcon,
 } from "lucide-react";
-import { memo, useEffect, useMemo, useState } from "react";
+import { memo, useCallback, useEffect, useMemo, useState } from "react";
 
+import { ensureLocalApi } from "../localApi";
 import { useServerConfig } from "../rpc/serverState";
 import { Button } from "./ui/button";
 import { Popover, PopoverPopup, PopoverTrigger } from "./ui/popover";
@@ -149,12 +151,44 @@ export function getHistorySyncTopbarProgressPercent(status: HistorySyncStatus): 
 }
 
 export const HistorySyncTopbarStatus = memo(function HistorySyncTopbarStatus() {
+  const navigate = useNavigate();
   const status = useServerConfig()?.historySync ?? null;
   const retryCountdown = useRetryCountdown(status);
+  const [pendingReview, setPendingReview] = useState<HistorySyncPendingEventReview | null>(null);
+  const [pendingReviewError, setPendingReviewError] = useState<string | null>(null);
+  const [isLoadingPendingReview, setIsLoadingPendingReview] = useState(false);
+  const [isRunningSync, setIsRunningSync] = useState(false);
   const summary = useMemo(
     () => (status ? getHistorySyncTopbarStatusSummary(status) : null),
     [status],
   );
+
+  const loadPendingReview = useCallback(async () => {
+    setIsLoadingPendingReview(true);
+    setPendingReviewError(null);
+    try {
+      const next = await ensureLocalApi().server.getHistorySyncPendingEvents();
+      setPendingReview(next);
+    } catch (error) {
+      setPendingReviewError(
+        error instanceof Error ? error.message : "Failed to load pending sync events.",
+      );
+    } finally {
+      setIsLoadingPendingReview(false);
+    }
+  }, []);
+
+  const handleRunSync = useCallback(async () => {
+    setIsRunningSync(true);
+    try {
+      await ensureLocalApi().server.runHistorySync();
+      await loadPendingReview();
+    } catch (error) {
+      setPendingReviewError(error instanceof Error ? error.message : "Failed to run history sync.");
+    } finally {
+      setIsRunningSync(false);
+    }
+  }, [loadPendingReview]);
 
   if (!shouldShowHistorySyncTopbarStatus(status) || !summary) {
     return null;
@@ -176,7 +210,11 @@ export const HistorySyncTopbarStatus = memo(function HistorySyncTopbarStatus() {
         : [];
 
   return (
-    <Popover>
+    <Popover
+      onOpenChange={(open) => {
+        if (open) void loadPendingReview();
+      }}
+    >
       <Tooltip>
         <TooltipTrigger
           render={
@@ -293,6 +331,56 @@ export const HistorySyncTopbarStatus = memo(function HistorySyncTopbarStatus() {
                 </span>
               </>
             ) : null}
+          </div>
+
+          <div className="rounded-md border border-border/60 bg-muted/20 p-2">
+            <div className="mb-2 flex items-center justify-between gap-2">
+              <div className="text-xs font-medium text-muted-foreground">Pending local events</div>
+              <Button
+                size="xs"
+                variant="ghost"
+                disabled={isLoadingPendingReview}
+                onClick={() => void loadPendingReview()}
+              >
+                {isLoadingPendingReview ? "Loading..." : "Refresh"}
+              </Button>
+            </div>
+            {pendingReview ? (
+              <div className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-xs">
+                <span className="text-muted-foreground">Total</span>
+                <span className="text-foreground">{pendingReview.totalCount}</span>
+                <span className="text-muted-foreground">Pushable</span>
+                <span className="text-foreground">{pendingReview.pushableCount}</span>
+                <span className="text-muted-foreground">Deferred</span>
+                <span className="text-foreground">{pendingReview.deferredCount}</span>
+                <span className="text-muted-foreground">Sequences</span>
+                <span className="min-w-0 truncate text-foreground">
+                  local {pendingReview.localMaxSequence} / remote {pendingReview.remoteMaxSequence}
+                </span>
+              </div>
+            ) : (
+              <div className="text-xs text-muted-foreground">
+                {pendingReviewError ?? (isLoadingPendingReview ? "Loading..." : "Not loaded")}
+              </div>
+            )}
+          </div>
+
+          <div className="flex justify-end gap-2">
+            <Button
+              size="xs"
+              variant="outline"
+              disabled={isRunningSync || status.state === "syncing"}
+              onClick={() => void handleRunSync()}
+            >
+              {isRunningSync || status.state === "syncing" ? "Syncing..." : "Sync now"}
+            </Button>
+            <Button
+              size="xs"
+              variant="outline"
+              onClick={() => void navigate({ to: "/settings/connections" })}
+            >
+              Settings
+            </Button>
           </div>
 
           {failures.length > 0 ? (

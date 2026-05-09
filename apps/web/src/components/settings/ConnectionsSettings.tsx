@@ -7,6 +7,7 @@ import {
   type EnvironmentId,
   type HistorySyncConfig,
   type HistorySyncInitialSyncRecovery,
+  type HistorySyncPendingEventReview,
   type HistorySyncProjectMappingPlan,
 } from "@t3tools/contracts";
 import { DateTime } from "effect";
@@ -42,6 +43,8 @@ import {
 } from "../ui/alert-dialog";
 import { Popover, PopoverPopup, PopoverTrigger } from "../ui/popover";
 import { QRCodeSvg } from "../ui/qr-code";
+import { Checkbox } from "../ui/checkbox";
+import { ScrollArea } from "../ui/scroll-area";
 import { Spinner } from "../ui/spinner";
 import { Switch } from "../ui/switch";
 import { stackedThreadToast, toastManager } from "../ui/toast";
@@ -876,6 +879,13 @@ function HistorySyncSettingsSection() {
   >({});
   const [isLoadingMappings, setIsLoadingMappings] = useState(false);
   const [isApplyingMappings, setIsApplyingMappings] = useState(false);
+  const [pendingReview, setPendingReview] = useState<HistorySyncPendingEventReview | null>(null);
+  const [pendingReviewOpen, setPendingReviewOpen] = useState(false);
+  const [selectedPendingSequences, setSelectedPendingSequences] = useState<ReadonlySet<number>>(
+    () => new Set(),
+  );
+  const [isLoadingPendingReview, setIsLoadingPendingReview] = useState(false);
+  const [isResolvingPendingEvents, setIsResolvingPendingEvents] = useState(false);
 
   const loadConfig = useCallback(async () => {
     try {
@@ -909,6 +919,26 @@ function HistorySyncSettingsSection() {
       setError(loadError instanceof Error ? loadError.message : "Failed to load project mappings.");
     } finally {
       setIsLoadingMappings(false);
+    }
+  }, []);
+
+  const loadPendingReview = useCallback(async () => {
+    setIsLoadingPendingReview(true);
+    try {
+      const next = await ensureLocalApi().server.getHistorySyncPendingEvents();
+      setPendingReview(next);
+      setSelectedPendingSequences((current) => {
+        if (current.size === 0) return current;
+        const available = new Set(next.events.map((event) => event.sequence));
+        return new Set([...current].filter((sequence) => available.has(sequence)));
+      });
+      setError(null);
+    } catch (loadError) {
+      setError(
+        loadError instanceof Error ? loadError.message : "Failed to load pending sync events.",
+      );
+    } finally {
+      setIsLoadingPendingReview(false);
     }
   }, []);
 
@@ -1091,6 +1121,45 @@ function HistorySyncSettingsSection() {
     }
   }, [loadConfig, mappingDraftByProjectId, mappingPlan]);
 
+  const handleOpenPendingReview = useCallback(() => {
+    setPendingReviewOpen(true);
+    void loadPendingReview();
+  }, [loadPendingReview]);
+
+  const handleResolvePendingEvents = useCallback(async () => {
+    const sequences = [...selectedPendingSequences].toSorted((left, right) => left - right);
+    if (sequences.length === 0) return;
+    const confirmed = await ensureLocalApi().dialogs.confirm(
+      `Ignore ${sequences.length} pending history sync event${
+        sequences.length === 1 ? "" : "s"
+      }?\n\nThis keeps local history intact, but records the selected events as already handled so MySQL sync will stop trying to push them.`,
+    );
+    if (!confirmed) return;
+
+    setIsResolvingPendingEvents(true);
+    setError(null);
+    try {
+      const result = await ensureLocalApi().server.resolveHistorySyncPendingEvents({
+        action: "mark-synced",
+        sequences,
+      });
+      setPendingReview(result.review);
+      setSelectedPendingSequences(new Set());
+      toastManager.add({
+        type: "success",
+        title: `${result.markedCount} pending event${result.markedCount === 1 ? "" : "s"} ignored`,
+      });
+    } catch (resolveError) {
+      setError(
+        resolveError instanceof Error
+          ? resolveError.message
+          : "Failed to ignore pending sync events.",
+      );
+    } finally {
+      setIsResolvingPendingEvents(false);
+    }
+  }, [selectedPendingSequences]);
+
   const effectiveHistorySyncStatus = liveHistorySyncStatus ?? config?.status ?? null;
   const statusText = getHistorySyncStatusText(effectiveHistorySyncStatus);
   const syncProgress =
@@ -1103,6 +1172,12 @@ function HistorySyncSettingsSection() {
   const showSyncAction = config?.configured === true;
   const showBackupRestoreAction = Boolean(config?.backup) && !isHistorySyncing;
   const initialSyncRecovery = config?.initialSyncRecovery ?? null;
+  const selectedPendingCount = selectedPendingSequences.size;
+  const displayedPendingEvents = pendingReview?.events ?? [];
+  const allDisplayedPendingSelected =
+    displayedPendingEvents.length > 0 &&
+    displayedPendingEvents.every((event) => selectedPendingSequences.has(event.sequence));
+  const displayedDeferredEvents = displayedPendingEvents.filter((event) => !event.pushable);
 
   return (
     <SettingsSection title="History Sync">
@@ -1195,6 +1270,16 @@ function HistorySyncSettingsSection() {
                     {isRunningSync || isHistorySyncing ? "Syncing..." : "Sync now"}
                   </Button>
                 ) : null}
+                {showSyncAction ? (
+                  <Button
+                    size="xs"
+                    variant="outline"
+                    disabled={isLoadingPendingReview}
+                    onClick={handleOpenPendingReview}
+                  >
+                    {isLoadingPendingReview ? "Loading..." : "Review pending events"}
+                  </Button>
+                ) : null}
               </div>
             </div>
             {initialSyncRecovery ? (
@@ -1240,6 +1325,196 @@ function HistorySyncSettingsSection() {
           </div>
         </div>
       ) : null}
+      <Dialog
+        open={pendingReviewOpen}
+        onOpenChange={(open) => {
+          setPendingReviewOpen(open);
+          if (open) void loadPendingReview();
+        }}
+      >
+        <DialogPopup className="max-w-4xl">
+          <DialogHeader>
+            <DialogTitle>Pending history sync events</DialogTitle>
+            <DialogDescription>
+              Inspect local events that have no MySQL push receipt. Ignoring selected events keeps
+              local history and prevents future push attempts for those sequence numbers.
+            </DialogDescription>
+          </DialogHeader>
+          <DialogPanel className="space-y-4">
+            {pendingReview ? (
+              <>
+                <div className="grid gap-2 rounded-lg border border-border/60 bg-muted/20 p-3 text-xs sm:grid-cols-4">
+                  <div>
+                    <div className="text-muted-foreground">Pending</div>
+                    <div className="mt-1 font-medium text-foreground">
+                      {pendingReview.totalCount}
+                    </div>
+                  </div>
+                  <div>
+                    <div className="text-muted-foreground">Pushable</div>
+                    <div className="mt-1 font-medium text-foreground">
+                      {pendingReview.pushableCount}
+                    </div>
+                  </div>
+                  <div>
+                    <div className="text-muted-foreground">Deferred</div>
+                    <div className="mt-1 font-medium text-foreground">
+                      {pendingReview.deferredCount}
+                    </div>
+                  </div>
+                  <div>
+                    <div className="text-muted-foreground">Sequences</div>
+                    <div className="mt-1 font-medium text-foreground">
+                      local {pendingReview.localMaxSequence} / remote{" "}
+                      {pendingReview.remoteMaxSequence}
+                    </div>
+                  </div>
+                </div>
+                {pendingReview.totalCount === 0 ? (
+                  <div className="rounded-md border border-border/60 bg-muted/20 px-3 py-6 text-center text-sm text-muted-foreground">
+                    No pending local events need review.
+                  </div>
+                ) : (
+                  <>
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <div className="text-xs text-muted-foreground">
+                        Showing {pendingReview.displayedCount} of {pendingReview.totalCount}
+                        {pendingReview.omittedCount > 0
+                          ? `; ${pendingReview.omittedCount} older events omitted`
+                          : ""}
+                      </div>
+                      <div className="flex flex-wrap gap-2">
+                        <Button
+                          size="xs"
+                          variant="outline"
+                          onClick={() =>
+                            setSelectedPendingSequences(
+                              new Set(displayedPendingEvents.map((event) => event.sequence)),
+                            )
+                          }
+                        >
+                          Select displayed
+                        </Button>
+                        <Button
+                          size="xs"
+                          variant="outline"
+                          disabled={displayedDeferredEvents.length === 0}
+                          onClick={() =>
+                            setSelectedPendingSequences(
+                              new Set(displayedDeferredEvents.map((event) => event.sequence)),
+                            )
+                          }
+                        >
+                          Select deferred
+                        </Button>
+                        <Button
+                          size="xs"
+                          variant="ghost"
+                          disabled={selectedPendingCount === 0}
+                          onClick={() => setSelectedPendingSequences(new Set())}
+                        >
+                          Clear selection
+                        </Button>
+                      </div>
+                    </div>
+                    <ScrollArea className="h-80 rounded-md border border-border bg-background">
+                      <div className="min-w-[46rem] divide-y divide-border/60">
+                        <div className="grid grid-cols-[2rem_5rem_9rem_7rem_1fr_8rem] gap-2 px-3 py-2 text-[11px] font-medium uppercase text-muted-foreground">
+                          <Checkbox
+                            checked={allDisplayedPendingSelected}
+                            indeterminate={selectedPendingCount > 0 && !allDisplayedPendingSelected}
+                            onCheckedChange={() =>
+                              setSelectedPendingSequences(
+                                allDisplayedPendingSelected
+                                  ? new Set()
+                                  : new Set(displayedPendingEvents.map((event) => event.sequence)),
+                              )
+                            }
+                          />
+                          <span>Seq</span>
+                          <span>Type</span>
+                          <span>State</span>
+                          <span>Stream</span>
+                          <span>Occurred</span>
+                        </div>
+                        {displayedPendingEvents.map((event) => (
+                          <div
+                            key={event.sequence}
+                            className="grid grid-cols-[2rem_5rem_9rem_7rem_1fr_8rem] items-center gap-2 px-3 py-2 text-xs"
+                          >
+                            <Checkbox
+                              checked={selectedPendingSequences.has(event.sequence)}
+                              onCheckedChange={() =>
+                                setSelectedPendingSequences((current) => {
+                                  const next = new Set(current);
+                                  if (next.has(event.sequence)) {
+                                    next.delete(event.sequence);
+                                  } else {
+                                    next.add(event.sequence);
+                                  }
+                                  return next;
+                                })
+                              }
+                            />
+                            <span className="font-mono text-muted-foreground">
+                              {event.sequence}
+                            </span>
+                            <span className="truncate font-medium text-foreground">
+                              {event.eventType}
+                            </span>
+                            <span
+                              className={cn(
+                                "w-fit rounded border px-1.5 py-0.5 text-[11px]",
+                                event.pushable
+                                  ? "border-emerald-500/30 text-emerald-700"
+                                  : "border-amber-500/30 text-amber-700",
+                              )}
+                              title={event.reason}
+                            >
+                              {event.pushable ? "pushable" : "deferred"}
+                            </span>
+                            <span className="truncate font-mono text-muted-foreground">
+                              {event.threadId ?? event.projectId ?? event.streamId}
+                            </span>
+                            <span className="truncate text-muted-foreground">
+                              {formatAccessTimestamp(event.occurredAt)}
+                            </span>
+                          </div>
+                        ))}
+                      </div>
+                    </ScrollArea>
+                  </>
+                )}
+              </>
+            ) : (
+              <div className="flex min-h-32 items-center justify-center text-sm text-muted-foreground">
+                {isLoadingPendingReview ? "Loading pending events..." : "No review loaded."}
+              </div>
+            )}
+          </DialogPanel>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setPendingReviewOpen(false)}>
+              Close
+            </Button>
+            <Button
+              variant="outline"
+              disabled={isLoadingPendingReview}
+              onClick={() => void loadPendingReview()}
+            >
+              {isLoadingPendingReview ? "Refreshing..." : "Refresh"}
+            </Button>
+            <Button
+              variant="destructive"
+              disabled={selectedPendingCount === 0 || isResolvingPendingEvents}
+              onClick={() => void handleResolvePendingEvents()}
+            >
+              {isResolvingPendingEvents
+                ? "Ignoring..."
+                : `Ignore selected${selectedPendingCount > 0 ? ` (${selectedPendingCount})` : ""}`}
+            </Button>
+          </DialogFooter>
+        </DialogPopup>
+      </Dialog>
       {effectiveHistorySyncStatus?.state === "needs-project-mapping" ? (
         <div className={ITEM_ROW_CLASSNAME}>
           <div className="space-y-4">

@@ -3053,6 +3053,24 @@ describe("ProviderRuntimeIngestion", () => {
         delta: "diff --git a/src/new.ts b/src/new.ts\n+hello\n",
       },
     });
+    harness.emit({
+      type: "content.delta",
+      eventId: asEventId("evt-file-change-patch-snapshot-next"),
+      provider: ProviderDriverKind.make("codex"),
+      createdAt: "2026-03-17T19:12:32.000Z",
+      threadId,
+      turnId,
+      itemId,
+      raw: {
+        source: "codex.app-server.notification",
+        method: "item/fileChange/patchUpdated",
+        payload: {},
+      },
+      payload: {
+        streamKind: "file_change_output",
+        delta: "diff --git a/src/new.ts b/src/new.ts\n+hello\n+again\n",
+      },
+    });
     await harness.drain();
 
     const snapshots = await Effect.runPromise(readCommandOutputSnapshotsForThread(threadId));
@@ -3061,10 +3079,65 @@ describe("ProviderRuntimeIngestion", () => {
         threadId,
         turnId,
         toolCallId: itemId,
-        text: "diff --git a/src/new.ts b/src/new.ts\n+hello\n",
-        updatedAt: "2026-03-17T19:12:31.000Z",
+        text: "diff --git a/src/new.ts b/src/new.ts\n+hello\n+again\n",
+        updatedAt: "2026-03-17T19:12:32.000Z",
       }),
     ]);
+
+    const thread = await waitForThread(harness.engine, (entry) =>
+      entry.activities.some(
+        (activity: ProviderRuntimeTestActivity) => activity.id === "evt-file-change-patch-snapshot",
+      ),
+    );
+    const liveActivities = thread.activities.filter((activity: ProviderRuntimeTestActivity) => {
+      const payload = activity.payload as
+        | { itemType?: string; data?: { toolCallId?: string; changes?: { path?: string }[] } }
+        | undefined;
+      return payload?.itemType === "file_change" && payload.data?.toolCallId === itemId;
+    });
+    expect(liveActivities).toHaveLength(1);
+    expect(liveActivities[0]).toMatchObject({
+      id: "evt-file-change-patch-snapshot",
+      kind: "tool.updated",
+      summary: "File change",
+      turnId,
+    });
+    const liveActivityPayload = liveActivities[0]?.payload as
+      | {
+          status?: string;
+          data?: { changes?: { path?: string }[] };
+        }
+      | undefined;
+    expect(liveActivityPayload?.data?.changes).toEqual([{ path: "src/new.ts" }]);
+  });
+
+  it("ignores generic apply_patch success output for file-change streams", async () => {
+    const harness = await createHarness();
+    const threadId = asThreadId("thread-1");
+    const turnId = asTurnId("turn-file-change-success-output");
+    const itemId = asItemId("item-file-change-success-output");
+
+    harness.emit({
+      type: "content.delta",
+      eventId: asEventId("evt-file-change-success-output"),
+      provider: ProviderDriverKind.make("codex"),
+      createdAt: "2026-03-17T19:12:30.000Z",
+      threadId,
+      turnId,
+      itemId,
+      payload: {
+        streamKind: "file_change_output",
+        delta: [
+          "Success. Updated the following files:",
+          "M /Users/matteotesa/Develop/T3Code/apps/web/src/components/settings/ConnectionsSettings.tsx",
+          "",
+        ].join("\n"),
+      },
+    });
+    await harness.drain();
+
+    const snapshots = await Effect.runPromise(readCommandOutputSnapshotsForThread(threadId));
+    expect(snapshots).toEqual([]);
   });
 
   it("spills oversized buffered deltas and still finalizes full assistant text", async () => {

@@ -8,6 +8,7 @@ import {
   ORCHESTRATION_WS_METHODS,
   type HistorySyncConnectionTestInput,
   type HistorySyncProjectMappingsApplyInput,
+  type HistorySyncResolvePendingEventsInput,
   type HistorySyncUpdateConfigInput,
   type ServerSettingsPatch,
   WS_METHODS,
@@ -139,6 +140,12 @@ export interface WsRpcClient {
     readonly applyHistorySyncProjectMappings: (
       input: HistorySyncProjectMappingsApplyInput,
     ) => ReturnType<RpcUnaryMethod<typeof WS_METHODS.serverApplyHistorySyncProjectMappings>>;
+    readonly getHistorySyncPendingEvents: RpcUnaryNoArgMethod<
+      typeof WS_METHODS.serverGetHistorySyncPendingEvents
+    >;
+    readonly resolveHistorySyncPendingEvents: (
+      input: HistorySyncResolvePendingEventsInput,
+    ) => ReturnType<RpcUnaryMethod<typeof WS_METHODS.serverResolveHistorySyncPendingEvents>>;
     readonly subscribeConfig: RpcStreamMethod<typeof WS_METHODS.subscribeServerConfig>;
     readonly subscribeLifecycle: RpcStreamMethod<typeof WS_METHODS.subscribeServerLifecycle>;
     readonly subscribeAuthAccess: RpcStreamMethod<typeof WS_METHODS.subscribeAuthAccess>;
@@ -262,6 +269,12 @@ export function createWsRpcClient(transport: WsTransport): WsRpcClient {
       applyHistorySyncProjectMappings: (input) =>
         transport.request((client) =>
           client[WS_METHODS.serverApplyHistorySyncProjectMappings](input),
+        ),
+      getHistorySyncPendingEvents: () =>
+        transport.request((client) => client[WS_METHODS.serverGetHistorySyncPendingEvents]({})),
+      resolveHistorySyncPendingEvents: (input) =>
+        transport.request((client) =>
+          client[WS_METHODS.serverResolveHistorySyncPendingEvents](input),
         ),
       subscribeConfig: (listener, options) =>
         transport.subscribe(

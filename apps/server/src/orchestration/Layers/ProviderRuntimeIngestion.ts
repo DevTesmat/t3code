@@ -79,6 +79,8 @@ const MAX_BUFFERED_ASSISTANT_CHARS = 24_000;
 const STRICT_PROVIDER_LIFECYCLE_GUARD = process.env.T3CODE_STRICT_PROVIDER_LIFECYCLE_GUARD !== "0";
 const TERMINAL_OUTPUT_PREVIEW_LINE_COUNT = 4;
 const TERMINAL_OUTPUT_PREVIEW_LINE_MAX_LENGTH = 240;
+const LIVE_FILE_CHANGE_ACTIVITY_CACHE_CAPACITY = 20_000;
+const LIVE_FILE_CHANGE_ACTIVITY_CACHE_TTL = Duration.minutes(120);
 
 type TerminalOutputPreviewStream = "stdout" | "stderr" | "mixed" | "unknown";
 
@@ -127,6 +129,63 @@ function sameId(left: string | null | undefined, right: string | null | undefine
 
 function truncateDetail(value: string, limit = 180): string {
   return value.length > limit ? `${value.slice(0, limit - 3)}...` : value;
+}
+
+function isGenericApplyPatchSuccessOutput(value: string): boolean {
+  const normalized = value.replace(/\r\n/g, "\n").replace(/\r/g, "\n").trim();
+  if (!normalized.startsWith("Success. Updated the following files:")) {
+    return false;
+  }
+  const lines = normalized.split("\n");
+  if (lines.length < 2) {
+    return false;
+  }
+  return lines.slice(1).every((line) => /^[A-Z?! ]+\s+\S/u.test(line.trim()));
+}
+
+function normalizePatchPath(value: string): string | null {
+  const normalized = value.trim();
+  if (!normalized || normalized === "/dev/null") {
+    return null;
+  }
+  if (normalized.startsWith("a/") || normalized.startsWith("b/")) {
+    return normalized.slice(2);
+  }
+  return normalized;
+}
+
+function extractChangedFilesFromUnifiedDiff(value: string): string[] {
+  const files: string[] = [];
+  const seen = new Set<string>();
+  const push = (candidate: string | null) => {
+    if (!candidate || seen.has(candidate)) {
+      return;
+    }
+    seen.add(candidate);
+    files.push(candidate);
+  };
+
+  for (const line of value.split(/\r\n|\n|\r/u)) {
+    const gitMatch = /^diff --git\s+(?<left>\S+)\s+(?<right>\S+)/u.exec(line);
+    if (gitMatch?.groups) {
+      const path = gitMatch.groups.right ?? gitMatch.groups.left;
+      if (path) {
+        push(normalizePatchPath(path));
+      }
+      continue;
+    }
+
+    const targetMatch = /^\+\+\+\s+(?<path>\S+)/u.exec(line);
+    if (targetMatch?.groups?.path) {
+      push(normalizePatchPath(targetMatch.groups.path));
+    }
+  }
+
+  return files.slice(0, 12);
+}
+
+function liveFileChangeActivityKey(threadId: ThreadId, turnId: TurnId | undefined, itemId: string) {
+  return `${threadId}:${turnId ?? ""}:${itemId}`;
 }
 
 function truncateTerminalPreviewLine(value: string): { line: string; truncated: boolean } {
@@ -1031,9 +1090,21 @@ const make = Effect.gen(function* () {
     lookup: () => Effect.succeed({ text: "", createdAt: "" }),
   });
 
+  const liveFileChangeActivityByItemKey = yield* Cache.make<string, boolean>({
+    capacity: LIVE_FILE_CHANGE_ACTIVITY_CACHE_CAPACITY,
+    timeToLive: LIVE_FILE_CHANGE_ACTIVITY_CACHE_TTL,
+    lookup: () => Effect.succeed(false),
+  });
+
   const commandOutputPreviewByItemKey = new Map<string, TerminalOutputPreviewBuffer>();
   const parentProviderThreadIdByThreadId = new Map<string, string>();
   const childProviderThreadIdsByThreadId = new Map<string, Set<string>>();
+
+  const hasSeenLiveFileChangeActivity = (key: string) =>
+    Cache.getOption(liveFileChangeActivityByItemKey, key).pipe(Effect.map(Option.isSome));
+
+  const markLiveFileChangeActivitySeen = (key: string) =>
+    Cache.set(liveFileChangeActivityByItemKey, key, true);
 
   const isGitRepoForThread = Effect.fn("isGitRepoForThread")(function* (threadId: ThreadId) {
     const readModel = yield* orchestrationEngine.getReadModel();
@@ -1896,37 +1967,69 @@ const make = Effect.gen(function* () {
         event.itemId
       ) {
         const outputDelta = commandOutputDelta ?? fileChangeOutputDelta ?? "";
-        const turnId = toTurnId(event.turnId);
-        const isFileChangePatchSnapshot =
-          fileChangeOutputDelta !== undefined &&
-          event.raw?.source === "codex.app-server.notification" &&
-          event.raw.method === "item/fileChange/patchUpdated";
-        if (commandOutputDelta) {
-          yield* appendCommandOutputPreview({
-            threadId: thread.id,
-            ...(turnId ? { turnId } : {}),
-            itemId: event.itemId,
-            delta: outputDelta,
-          });
-        }
-        if (isFileChangePatchSnapshot) {
-          yield* publishCommandOutputSnapshot({
-            threadId: thread.id,
-            turnId: turnId ?? null,
-            toolCallId: ProviderItemId.make(event.itemId),
-            updatedAt: event.createdAt,
-            text: outputDelta,
-            truncated: false,
-          });
-        } else {
-          yield* publishCommandOutputDelta({
-            threadId: thread.id,
-            turnId: turnId ?? null,
-            toolCallId: ProviderItemId.make(event.itemId),
-            chunkId: event.eventId,
-            createdAt: event.createdAt,
-            delta: outputDelta,
-          });
+        if (fileChangeOutputDelta === undefined || !isGenericApplyPatchSuccessOutput(outputDelta)) {
+          const turnId = toTurnId(event.turnId);
+          const isFileChangePatchSnapshot =
+            fileChangeOutputDelta !== undefined &&
+            event.raw?.source === "codex.app-server.notification" &&
+            event.raw.method === "item/fileChange/patchUpdated";
+          if (commandOutputDelta) {
+            yield* appendCommandOutputPreview({
+              threadId: thread.id,
+              ...(turnId ? { turnId } : {}),
+              itemId: event.itemId,
+              delta: outputDelta,
+            });
+          }
+          if (isFileChangePatchSnapshot) {
+            const activityKey = liveFileChangeActivityKey(thread.id, turnId, event.itemId);
+            const alreadyPublishedActivity = yield* hasSeenLiveFileChangeActivity(activityKey);
+            if (!alreadyPublishedActivity) {
+              const changedFiles = extractChangedFilesFromUnifiedDiff(outputDelta);
+              yield* orchestrationEngine.dispatch({
+                type: "thread.activity.append",
+                commandId: providerCommandId(event, "live-file-change-activity-append"),
+                threadId: thread.id,
+                activity: {
+                  id: event.eventId,
+                  createdAt: event.createdAt,
+                  tone: "tool",
+                  kind: "tool.updated",
+                  summary: "File change",
+                  payload: {
+                    itemType: "file_change",
+                    status: "running",
+                    data: {
+                      toolCallId: event.itemId,
+                      ...(changedFiles.length > 0
+                        ? { changes: changedFiles.map((path) => ({ path })) }
+                        : {}),
+                    },
+                  },
+                  turnId: turnId ?? null,
+                },
+                createdAt: event.createdAt,
+              });
+              yield* markLiveFileChangeActivitySeen(activityKey);
+            }
+            yield* publishCommandOutputSnapshot({
+              threadId: thread.id,
+              turnId: turnId ?? null,
+              toolCallId: ProviderItemId.make(event.itemId),
+              updatedAt: event.createdAt,
+              text: outputDelta,
+              truncated: false,
+            });
+          } else {
+            yield* publishCommandOutputDelta({
+              threadId: thread.id,
+              turnId: turnId ?? null,
+              toolCallId: ProviderItemId.make(event.itemId),
+              chunkId: event.eventId,
+              createdAt: event.createdAt,
+              delta: outputDelta,
+            });
+          }
         }
       }
 

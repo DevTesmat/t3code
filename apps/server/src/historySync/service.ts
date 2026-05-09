@@ -3,10 +3,13 @@ import {
   type HistorySyncConfig,
   type HistorySyncConnectionTestResult,
   type HistorySyncMysqlFields,
+  type HistorySyncPendingEventReview,
+  type HistorySyncPendingEventReviewItem,
   type HistorySyncProjectMappingPlan,
   type HistorySyncProjectMappingsApplyInput,
-  type HistorySyncStatus,
+  type HistorySyncResolvePendingEventsInput,
   type HistorySyncUpdateConfigInput,
+  type HistorySyncStatus,
 } from "@t3tools/contracts";
 import { Context, Effect, Layer, PubSub, Ref, Scope, Stream } from "effect";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
@@ -25,7 +28,12 @@ import {
 import { registerHistorySyncFacadeControl } from "./facade.ts";
 import * as LocalHistoryRepository from "./localRepository.ts";
 import { createHistorySyncLifecycleController } from "./lifecycle.ts";
-import { shouldScheduleAutosaveForDomainEvent, type HistorySyncEventRow } from "./planner.ts";
+import {
+  filterPushableLocalEvents,
+  maxHistoryEventSequence,
+  shouldScheduleAutosaveForDomainEvent,
+  type HistorySyncEventRow,
+} from "./planner.ts";
 import * as ProjectMappings from "./projectMappings.ts";
 import { createHistorySyncProjectMappingController } from "./projectMappingController.ts";
 import { reloadHistorySyncProjections } from "./projectionReload.ts";
@@ -67,6 +75,16 @@ export interface HistorySyncServiceShape {
   readonly applyProjectMappings: (
     input: HistorySyncProjectMappingsApplyInput,
   ) => Effect.Effect<HistorySyncProjectMappingPlan, HistorySyncConfigError>;
+  readonly getPendingEvents: Effect.Effect<
+    HistorySyncPendingEventReview,
+    HistorySyncConfigError | ServerSettingsError
+  >;
+  readonly resolvePendingEvents: (
+    input: HistorySyncResolvePendingEventsInput,
+  ) => Effect.Effect<
+    { readonly markedCount: number; readonly review: HistorySyncPendingEventReview },
+    HistorySyncConfigError | ServerSettingsError
+  >;
   readonly streamStatus: Stream.Stream<HistorySyncStatus>;
 }
 
@@ -74,6 +92,48 @@ export class HistorySyncService extends Context.Service<
   HistorySyncService,
   HistorySyncServiceShape
 >()("t3/historySync/HistorySyncService") {}
+
+const HISTORY_SYNC_PENDING_REVIEW_LIMIT = 100;
+
+function parseHistorySyncPayload(event: HistorySyncEventRow): Record<string, unknown> | null {
+  try {
+    const parsed = JSON.parse(event.payloadJson);
+    return typeof parsed === "object" && parsed !== null
+      ? (parsed as Record<string, unknown>)
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+function readPayloadString(payload: Record<string, unknown> | null, key: string): string | null {
+  const value = payload?.[key];
+  return typeof value === "string" && value.trim().length > 0 ? value : null;
+}
+
+function toPendingReviewItem(
+  event: HistorySyncEventRow,
+  pushableSequences: ReadonlySet<number>,
+): HistorySyncPendingEventReviewItem {
+  const payload = parseHistorySyncPayload(event);
+  const pushable = pushableSequences.has(event.sequence);
+  const threadId = readPayloadString(payload, "threadId");
+  const projectId = readPayloadString(payload, "projectId");
+  return {
+    sequence: event.sequence,
+    eventId: event.eventId,
+    eventType: event.eventType,
+    aggregateKind: event.aggregateKind,
+    streamId: event.streamId,
+    occurredAt: event.occurredAt,
+    ...(threadId ? { threadId } : {}),
+    ...(projectId ? { projectId } : {}),
+    pushable,
+    reason: pushable
+      ? "Ready to push on the next successful sync."
+      : "Deferred by autosync safety rules. Review before clearing.",
+  };
+}
 
 export const HistorySyncServiceLive = Layer.effect(
   HistorySyncService,
@@ -338,6 +398,96 @@ export const HistorySyncServiceLive = Layer.effect(
     });
     const { getProjectMappings, applyProjectMappings } = mappingController;
 
+    const getPendingEvents = Effect.gen(function* () {
+      const [state, localEvents, unpushedLocalEvents] = yield* Effect.all([
+        readState,
+        readLocalEvents(),
+        readUnpushedLocalEvents,
+      ]);
+      const connectionString = yield* getConnectionString;
+      const lastSyncedRemoteSequence = state?.lastSyncedRemoteSequence ?? 0;
+      const remoteMaxSequence =
+        connectionString === null
+          ? lastSyncedRemoteSequence
+          : yield* readRemoteMaxSequence(connectionString).pipe(
+              Effect.catch((cause) =>
+                Effect.logWarning("failed to read remote max sequence for pending review", {
+                  cause,
+                }).pipe(Effect.as(lastSyncedRemoteSequence)),
+              ),
+            );
+      const pushableLocalEvents = filterPushableLocalEvents(unpushedLocalEvents, localEvents);
+      const pushableSequences = new Set(pushableLocalEvents.map((event) => event.sequence));
+      const events = unpushedLocalEvents
+        .toSorted((left, right) => left.sequence - right.sequence)
+        .slice(0, HISTORY_SYNC_PENDING_REVIEW_LIMIT)
+        .map((event) => toPendingReviewItem(event, pushableSequences));
+
+      return {
+        totalCount: unpushedLocalEvents.length,
+        pushableCount: pushableLocalEvents.length,
+        deferredCount: unpushedLocalEvents.length - pushableLocalEvents.length,
+        displayedCount: events.length,
+        omittedCount: Math.max(0, unpushedLocalEvents.length - events.length),
+        localMaxSequence: maxHistoryEventSequence(localEvents),
+        remoteMaxSequence,
+        lastSyncedRemoteSequence,
+        events,
+      } satisfies HistorySyncPendingEventReview;
+    }).pipe(
+      Effect.mapError(
+        (cause) =>
+          new HistorySyncConfigError({
+            message: describeSyncFailure(cause) || "Failed to load pending history sync events.",
+          }),
+      ),
+    );
+
+    const resolvePendingEvents = (input: HistorySyncResolvePendingEventsInput) =>
+      Effect.gen(function* () {
+        if (input.action !== "mark-synced") {
+          return yield* new HistorySyncConfigError({
+            message: "Unsupported pending event action.",
+          });
+        }
+        const sequenceSet = new Set(input.sequences);
+        if (sequenceSet.size === 0) {
+          return yield* new HistorySyncConfigError({
+            message: "Select at least one pending event.",
+          });
+        }
+        const unpushedLocalEvents = yield* readUnpushedLocalEvents;
+        const selectedEvents = unpushedLocalEvents.filter((event) =>
+          sequenceSet.has(event.sequence),
+        );
+        if (selectedEvents.length === 0) {
+          return yield* new HistorySyncConfigError({
+            message: "Selected pending events were not found.",
+          });
+        }
+        const markedAt = new Date().toISOString();
+        yield* writePushedEventReceipts(selectedEvents, markedAt);
+        console.info("[history-sync] pending events marked synced by user", {
+          markedCount: selectedEvents.length,
+          firstSequence: selectedEvents[0]?.sequence ?? null,
+          lastSequence: selectedEvents.at(-1)?.sequence ?? null,
+        });
+        const review = yield* getPendingEvents;
+        return { markedCount: selectedEvents.length, review };
+      }).pipe(
+        Effect.mapError((cause) =>
+          typeof cause === "object" &&
+          cause !== null &&
+          "_tag" in cause &&
+          cause._tag === "HistorySyncConfigError"
+            ? cause
+            : new HistorySyncConfigError({
+                message:
+                  describeSyncFailure(cause) || "Failed to resolve pending history sync events.",
+              }),
+        ),
+      );
+
     registerHistorySyncFacadeControl({
       getConfig: toConfig,
       updateConfig,
@@ -348,6 +498,8 @@ export const HistorySyncServiceLive = Layer.effect(
       testConnection,
       getProjectMappings,
       applyProjectMappings,
+      getPendingEvents,
+      resolvePendingEvents,
     });
 
     return {
@@ -363,6 +515,8 @@ export const HistorySyncServiceLive = Layer.effect(
       testConnection,
       getProjectMappings,
       applyProjectMappings,
+      getPendingEvents,
+      resolvePendingEvents,
       get streamStatus() {
         return lifecycle.streamStatus;
       },

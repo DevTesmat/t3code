@@ -56,7 +56,9 @@ import { redactServerSettingsForClient, ServerSettingsService } from "./serverSe
 import {
   applyHistorySyncProjectMappings,
   getHistorySyncConfig,
+  getHistorySyncPendingEvents,
   getHistorySyncProjectMappings,
+  resolveHistorySyncPendingEvents,
   restoreHistorySyncBackup,
   runHistorySync,
   startHistorySyncInitialImport,
@@ -986,6 +988,22 @@ const makeWsRpcLayer = (currentSessionId: AuthSessionId) =>
           observeRpcEffect(
             WS_METHODS.serverApplyHistorySyncProjectMappings,
             applyHistorySyncProjectMappings(input),
+            {
+              "rpc.aggregate": "server",
+            },
+          ),
+        [WS_METHODS.serverGetHistorySyncPendingEvents]: (_input) =>
+          observeRpcEffect(
+            WS_METHODS.serverGetHistorySyncPendingEvents,
+            getHistorySyncPendingEvents,
+            {
+              "rpc.aggregate": "server",
+            },
+          ),
+        [WS_METHODS.serverResolveHistorySyncPendingEvents]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.serverResolveHistorySyncPendingEvents,
+            resolveHistorySyncPendingEvents(input),
             {
               "rpc.aggregate": "server",
             },

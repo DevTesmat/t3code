@@ -30,8 +30,11 @@ import type {
   HistorySyncConfig,
   HistorySyncConnectionTestInput,
   HistorySyncConnectionTestResult,
+  HistorySyncPendingEventReview,
   HistorySyncProjectMappingPlan,
   HistorySyncProjectMappingsApplyInput,
+  HistorySyncResolvePendingEventsInput,
+  HistorySyncResolvePendingEventsResult,
   HistorySyncUpdateConfigInput,
   ServerConfig,
   ServerProviderUpdatedPayload,
@@ -260,6 +263,10 @@ export interface LocalApi {
     applyHistorySyncProjectMappings: (
       input: HistorySyncProjectMappingsApplyInput,
     ) => Promise<HistorySyncProjectMappingPlan>;
+    getHistorySyncPendingEvents: () => Promise<HistorySyncPendingEventReview>;
+    resolveHistorySyncPendingEvents: (
+      input: HistorySyncResolvePendingEventsInput,
+    ) => Promise<HistorySyncResolvePendingEventsResult>;
   };
 }
 

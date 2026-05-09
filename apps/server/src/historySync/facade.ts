@@ -3,8 +3,11 @@ import {
   type HistorySyncConfig,
   type HistorySyncConnectionTestResult,
   type HistorySyncMysqlFields,
+  type HistorySyncPendingEventReview,
   type HistorySyncProjectMappingPlan,
   type HistorySyncProjectMappingsApplyInput,
+  type HistorySyncResolvePendingEventsInput,
+  type HistorySyncResolvePendingEventsResult,
   type HistorySyncUpdateConfigInput,
 } from "@t3tools/contracts";
 import { Effect } from "effect";
@@ -40,6 +43,16 @@ export interface HistorySyncFacadeControl {
   readonly applyProjectMappings: (
     input: HistorySyncProjectMappingsApplyInput,
   ) => Effect.Effect<HistorySyncProjectMappingPlan, HistorySyncConfigError>;
+  readonly getPendingEvents: Effect.Effect<
+    HistorySyncPendingEventReview,
+    HistorySyncConfigError | ServerSettingsError
+  >;
+  readonly resolvePendingEvents: (
+    input: HistorySyncResolvePendingEventsInput,
+  ) => Effect.Effect<
+    HistorySyncResolvePendingEventsResult,
+    HistorySyncConfigError | ServerSettingsError
+  >;
 }
 
 let latestHistorySyncControl: HistorySyncFacadeControl | null = null;
@@ -118,5 +131,18 @@ export const applyHistorySyncProjectMappings = (input: HistorySyncProjectMapping
   Effect.suspend(() =>
     latestHistorySyncControl
       ? latestHistorySyncControl.applyProjectMappings(input)
+      : Effect.fail(serviceNotReady()),
+  );
+
+export const getHistorySyncPendingEvents = Effect.suspend(() =>
+  latestHistorySyncControl
+    ? latestHistorySyncControl.getPendingEvents
+    : Effect.fail(serviceNotReady()),
+);
+
+export const resolveHistorySyncPendingEvents = (input: HistorySyncResolvePendingEventsInput) =>
+  Effect.suspend(() =>
+    latestHistorySyncControl
+      ? latestHistorySyncControl.resolvePendingEvents(input)
       : Effect.fail(serviceNotReady()),
   );
