@@ -81,6 +81,7 @@ import {
 } from "./userMessageTerminalContexts";
 import { formatWorkspaceRelativePath } from "../../filePathDisplay";
 import {
+  debugFileChangeStream,
   useLiveCommandOutput,
   type LiveCommandOutputKey,
   type LiveCommandOutputSnapshot,
@@ -1279,6 +1280,122 @@ interface LivePatchLine {
   readonly text: string;
 }
 
+const LIVE_FILE_CHANGE_REVEAL_CHARS_PER_SECOND = 9_000;
+const LIVE_FILE_CHANGE_REVEAL_MIN_STEP = 24;
+
+function commonPrefixLength(left: string, right: string): number {
+  const limit = Math.min(left.length, right.length);
+  let index = 0;
+  while (index < limit && left.charCodeAt(index) === right.charCodeAt(index)) {
+    index += 1;
+  }
+  return index;
+}
+
+function shouldAnimateLiveFileChangeSnapshot(previous: string, next: string): boolean {
+  if (previous.length === 0 || next.length <= previous.length) {
+    return false;
+  }
+  if (next.startsWith(previous)) {
+    return true;
+  }
+
+  const prefixLength = commonPrefixLength(previous, next);
+  return prefixLength >= Math.min(previous.length, 512);
+}
+
+function useRevealedLiveFileChangeText(text: string, animate: boolean): string {
+  const [displayedText, setDisplayedText] = useState(text);
+  const displayedTextRef = useRef(text);
+  const targetTextRef = useRef(text);
+  const frameRef = useRef<number | null>(null);
+  const lastFrameAtRef = useRef<number | null>(null);
+
+  useEffect(() => {
+    targetTextRef.current = text;
+
+    const cancelFrame = () => {
+      if (
+        frameRef.current !== null &&
+        typeof window !== "undefined" &&
+        typeof window.cancelAnimationFrame === "function"
+      ) {
+        window.cancelAnimationFrame(frameRef.current);
+      }
+      frameRef.current = null;
+      lastFrameAtRef.current = null;
+    };
+
+    if (
+      !animate ||
+      typeof window === "undefined" ||
+      typeof window.requestAnimationFrame !== "function" ||
+      !shouldAnimateLiveFileChangeSnapshot(displayedTextRef.current, text)
+    ) {
+      cancelFrame();
+      debugFileChangeStream("preview-reveal-jump", {
+        previousDisplayedLength: displayedTextRef.current.length,
+        targetLength: text.length,
+        animate,
+      });
+      displayedTextRef.current = text;
+      setDisplayedText(text);
+      return cancelFrame;
+    }
+
+    if (!text.startsWith(displayedTextRef.current)) {
+      const prefixLength = commonPrefixLength(displayedTextRef.current, text);
+      const prefixText = text.slice(0, prefixLength);
+      displayedTextRef.current = prefixText;
+      setDisplayedText(prefixText);
+    }
+
+    const step = (timestamp: number) => {
+      const targetText = targetTextRef.current;
+      const currentText = displayedTextRef.current;
+      if (currentText === targetText || !targetText.startsWith(currentText)) {
+        frameRef.current = null;
+        lastFrameAtRef.current = null;
+        if (currentText !== targetText) {
+          displayedTextRef.current = targetText;
+          setDisplayedText(targetText);
+        }
+        return;
+      }
+
+      const elapsedMs = Math.max(16, timestamp - (lastFrameAtRef.current ?? timestamp - 16));
+      lastFrameAtRef.current = timestamp;
+      const stepChars = Math.max(
+        LIVE_FILE_CHANGE_REVEAL_MIN_STEP,
+        Math.ceil((LIVE_FILE_CHANGE_REVEAL_CHARS_PER_SECOND * elapsedMs) / 1000),
+      );
+      const nextLength = Math.min(targetText.length, currentText.length + stepChars);
+      const nextText = targetText.slice(0, nextLength);
+      displayedTextRef.current = nextText;
+      setDisplayedText(nextText);
+
+      if (nextText.length < targetText.length) {
+        frameRef.current = window.requestAnimationFrame(step);
+      } else {
+        frameRef.current = null;
+        lastFrameAtRef.current = null;
+      }
+    };
+
+    if (frameRef.current === null) {
+      debugFileChangeStream("preview-reveal-start", {
+        displayedLength: displayedTextRef.current.length,
+        targetLength: text.length,
+      });
+      frameRef.current = window.requestAnimationFrame(step);
+    }
+
+    return cancelFrame;
+  }, [animate, text]);
+
+  return displayedText;
+}
+
 function parseLivePatchLines(text: string): LivePatchLine[] {
   const normalized = text.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
   const rawLines = normalized.split("\n");
@@ -1308,18 +1425,60 @@ function parseLivePatchLines(text: string): LivePatchLine[] {
 
 const LiveFileChangePreview = memo(function LiveFileChangePreview(props: {
   liveOutput: LiveCommandOutputSnapshot;
+  running: boolean;
+  expanded: boolean;
 }) {
-  const { liveOutput } = props;
-  const lines = useMemo(() => parseLivePatchLines(liveOutput.text), [liveOutput.text]);
+  const { liveOutput, running, expanded } = props;
+  const displayedText = useRevealedLiveFileChangeText(liveOutput.text, running);
+  const lines = useMemo(() => parseLivePatchLines(displayedText), [displayedText]);
+  const scrollerRef = useRef<HTMLDivElement | null>(null);
+  const userScrolledAwayRef = useRef(false);
 
-  if (liveOutput.text.length === 0) {
+  const handleScroll = useCallback(() => {
+    const element = scrollerRef.current;
+    if (!element) {
+      return;
+    }
+    userScrolledAwayRef.current =
+      element.scrollHeight - element.scrollTop - element.clientHeight > 24;
+  }, []);
+
+  useEffect(() => {
+    if (!running || userScrolledAwayRef.current) {
+      return;
+    }
+    const element = scrollerRef.current;
+    if (!element) {
+      return;
+    }
+    element.scrollTop = element.scrollHeight;
+  }, [displayedText, running]);
+
+  useEffect(() => {
+    debugFileChangeStream("preview-render", {
+      sourceLength: liveOutput.text.length,
+      displayedLength: displayedText.length,
+      version: liveOutput.version,
+      updatedAt: liveOutput.updatedAt,
+      running,
+      expanded,
+      lineCount: lines.length,
+    });
+  }, [displayedText.length, expanded, lines.length, liveOutput, running]);
+
+  if (displayedText.length === 0) {
     return <InlineDiffMessage minLines={3}>Waiting for file-change stream...</InlineDiffMessage>;
   }
 
   return (
     <div className="pl-7 pr-1 pb-1">
       <div
-        className="min-h-14 max-h-72 overflow-auto rounded-md border border-border/55 bg-background/80 p-2 font-mono text-[10.5px] leading-4 shadow-xs"
+        ref={scrollerRef}
+        onScroll={handleScroll}
+        className={cn(
+          "min-h-14 overflow-auto rounded-md border border-border/55 bg-background/80 p-2 font-mono text-[10.5px] leading-4 shadow-xs",
+          expanded ? "max-h-72" : "max-h-[4.75rem]",
+        )}
         data-testid="inline-file-change-patch"
       >
         {liveOutput.truncated && (
@@ -1394,8 +1553,15 @@ const InlineChangedFilesDiffPreview = memo(function InlineChangedFilesDiffPrevie
   const ctx = use(TimelineRowCtx);
   const turnId = workEntry.turnId ?? null;
   const turnSummary = turnId ? ctx.turnDiffSummaryByTurnId.get(turnId) : undefined;
-  if (liveOutput && liveOutput.text.length > 0) {
-    return <LiveFileChangePreview liveOutput={liveOutput} />;
+  const isRunningFileChange = workEntry.status === "running";
+  if (liveOutput && (liveOutput.text.length > 0 || isRunningFileChange)) {
+    return (
+      <LiveFileChangePreview
+        liveOutput={liveOutput}
+        running={isRunningFileChange}
+        expanded={!isRunningFileChange}
+      />
+    );
   }
 
   return (
@@ -1640,8 +1806,6 @@ const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
     outputPreview !== null || hasLiveOutput || Boolean(workEntry.failure?.expectedContent);
   const toolKey = workEntryToolKey(workEntry);
   const defaultOutputExpanded = isTerminal && shouldAutoShowTerminalOutput(workEntry, liveOutput);
-  const defaultLivePatchExpanded =
-    isFileChange && workEntry.status === "running" && liveOutput.text.length > 0;
   const defaultCompletedPatchExpanded =
     isFileChange && workEntry.status === "completed" && hasChangedFiles;
   const showOutputPreview =
@@ -1764,17 +1928,24 @@ const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
   }
 
   if (hasInlineDiff || (isFileChange && hasLiveOutput)) {
-    const defaultInlineDiffExpanded = defaultLivePatchExpanded || defaultCompletedPatchExpanded;
+    const isRunningLivePatch = isFileChange && workEntry.status === "running";
+    const defaultInlineDiffExpanded = defaultCompletedPatchExpanded;
     const showInlineDiffPreview =
-      inlineDiffExpanded || (defaultInlineDiffExpanded && !defaultInlineDiffCollapsed);
+      isRunningLivePatch ||
+      inlineDiffExpanded ||
+      (defaultInlineDiffExpanded && !defaultInlineDiffCollapsed);
+    const toggleDefaultExpanded = isRunningLivePatch ? false : defaultInlineDiffExpanded;
+    const inlineDiffControlExpanded = isRunningLivePatch
+      ? inlineDiffExpanded
+      : showInlineDiffPreview;
     return (
       <div className="group rounded-lg border border-border/35 bg-card/20 px-1 py-0.5 transition-colors duration-150 hover:bg-muted/20 focus-within:bg-muted/20">
         <button
           type="button"
           className="flex min-h-7 w-full min-w-0 items-center gap-2 text-left transition-[opacity,translate] duration-200 focus-visible:outline-none"
-          aria-expanded={showInlineDiffPreview}
-          aria-label={showInlineDiffPreview ? "Collapse inline diff" : "Expand inline diff"}
-          onClick={() => onToggleInlineDiffExpanded(toolKey, defaultInlineDiffExpanded)}
+          aria-expanded={inlineDiffControlExpanded}
+          aria-label={inlineDiffControlExpanded ? "Collapse inline diff" : "Expand inline diff"}
+          onClick={() => onToggleInlineDiffExpanded(toolKey, toggleDefaultExpanded)}
           data-testid="inline-diff-toggle"
         >
           <span
@@ -1808,7 +1979,7 @@ const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
           <ChevronRightIcon
             className={cn(
               "size-3.5 shrink-0 text-muted-foreground/45 opacity-0 transition-[opacity,transform,color] duration-150 group-hover:opacity-100 group-hover:text-muted-foreground/80 group-focus-within:opacity-100",
-              showInlineDiffPreview && "rotate-90 opacity-100",
+              inlineDiffControlExpanded && "rotate-90 opacity-100",
             )}
           />
         </button>
@@ -1821,7 +1992,11 @@ const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
               liveOutput={isFileChange ? liveOutput : undefined}
             />
           ) : (
-            <LiveFileChangePreview liveOutput={liveOutput} />
+            <LiveFileChangePreview
+              liveOutput={liveOutput}
+              running={workEntry.status === "running"}
+              expanded={inlineDiffExpanded}
+            />
           ))}
       </div>
     );

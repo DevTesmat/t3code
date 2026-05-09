@@ -123,6 +123,41 @@ describe("liveCommandOutput", () => {
     ).toBe("final patch");
   });
 
+  it("publishes a new immutable snapshot object for external-store updates", () => {
+    const key = {
+      environmentId,
+      threadId,
+      toolCallId,
+    };
+    hydrateLiveCommandOutputSnapshot(environmentId, {
+      threadId,
+      turnId: TurnId.make("turn-1"),
+      toolCallId,
+      updatedAt: "2026-01-01T00:00:01.000Z",
+      text: "first patch",
+      truncated: false,
+    });
+    const firstRead = readLiveCommandOutputSnapshot(key);
+    const stableRead = readLiveCommandOutputSnapshot(key);
+
+    hydrateLiveCommandOutputSnapshot(environmentId, {
+      threadId,
+      turnId: TurnId.make("turn-1"),
+      toolCallId,
+      updatedAt: "2026-01-01T00:00:02.000Z",
+      text: "first patch\nsecond patch",
+      truncated: false,
+    });
+    const secondRead = readLiveCommandOutputSnapshot(key);
+
+    expect(stableRead).toBe(firstRead);
+    expect(secondRead).not.toBe(firstRead);
+    expect(secondRead).toMatchObject({
+      text: "first patch\nsecond patch",
+      version: 2,
+    });
+  });
+
   it("evicts inactive entries after retention", () => {
     const startedAt = Date.now();
     hydrateLiveCommandOutputSnapshot(environmentId, {

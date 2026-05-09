@@ -66,6 +66,7 @@ import { useTerminalStateStore } from "~/terminalStateStore";
 import { useUiStateStore } from "~/uiStateStore";
 import {
   appendLiveCommandOutputDelta,
+  debugFileChangeStream,
   hydrateLiveCommandOutputSnapshot,
 } from "~/liveCommandOutput";
 import { WsTransport } from "../../rpc/wsTransport";
@@ -401,6 +402,13 @@ function attachThreadDetailSubscription(entry: ThreadDetailSubscriptionEntry): b
         return;
       }
       if (item.kind === "command-output-snapshot") {
+        debugFileChangeStream("thread-stream-receive-snapshot", {
+          environmentId: entry.environmentId,
+          threadId: item.snapshot.threadId,
+          toolCallId: item.snapshot.toolCallId,
+          length: item.snapshot.text.length,
+          updatedAt: item.snapshot.updatedAt,
+        });
         hydrateLiveCommandOutputSnapshot(entry.environmentId, item.snapshot);
         return;
       }
