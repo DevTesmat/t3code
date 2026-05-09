@@ -1477,7 +1477,7 @@ const LiveFileChangePreview = memo(function LiveFileChangePreview(props: {
         onScroll={handleScroll}
         className={cn(
           "min-h-14 overflow-auto rounded-md border border-border/55 bg-background/80 p-2 font-mono text-[10.5px] leading-4 shadow-xs",
-          expanded ? "max-h-72" : "max-h-[4.75rem]",
+          expanded ? "max-h-36" : "max-h-[4.75rem]",
         )}
         data-testid="inline-file-change-patch"
       >
@@ -1548,8 +1548,9 @@ const InlineChangedFilesDiffPreview = memo(function InlineChangedFilesDiffPrevie
   changedFiles: ReadonlyArray<string>;
   workspaceRoot: string | undefined;
   liveOutput?: LiveCommandOutputSnapshot | undefined;
+  expanded: boolean;
 }) {
-  const { workEntry, changedFiles, workspaceRoot, liveOutput } = props;
+  const { workEntry, changedFiles, workspaceRoot, liveOutput, expanded } = props;
   const ctx = use(TimelineRowCtx);
   const turnId = workEntry.turnId ?? null;
   const turnSummary = turnId ? ctx.turnDiffSummaryByTurnId.get(turnId) : undefined;
@@ -1559,7 +1560,7 @@ const InlineChangedFilesDiffPreview = memo(function InlineChangedFilesDiffPrevie
       <LiveFileChangePreview
         liveOutput={liveOutput}
         running={isRunningFileChange}
-        expanded={!isRunningFileChange}
+        expanded={expanded}
       />
     );
   }
@@ -1571,6 +1572,7 @@ const InlineChangedFilesDiffPreview = memo(function InlineChangedFilesDiffPrevie
       workspaceRoot={workspaceRoot}
       turnId={turnId}
       turnSummary={turnSummary}
+      expanded={expanded}
     />
   );
 });
@@ -1581,8 +1583,9 @@ const CompletedChangedFilesDiffPreview = memo(function CompletedChangedFilesDiff
   workspaceRoot: string | undefined;
   turnId: TurnId | null;
   turnSummary: TurnDiffSummary | undefined;
+  expanded: boolean;
 }) {
-  const { workEntry, changedFiles, workspaceRoot, turnId, turnSummary } = props;
+  const { workEntry, changedFiles, workspaceRoot, turnId, turnSummary, expanded } = props;
   const ctx = use(TimelineRowCtx);
   const { resolvedTheme } = useTheme();
   const settings = useSettings();
@@ -1667,7 +1670,12 @@ const CompletedChangedFilesDiffPreview = memo(function CompletedChangedFilesDiff
   if (renderablePatch.kind === "raw") {
     return (
       <div className="pl-7 pr-1 pb-1">
-        <div className="max-h-56 overflow-auto rounded-md border border-border/50 bg-muted/20 p-2">
+        <div
+          className={cn(
+            "overflow-auto rounded-md border border-border/50 bg-muted/20 p-2",
+            expanded ? "max-h-36" : "max-h-[4.75rem]",
+          )}
+        >
           <p className="mb-1 text-[10px] text-muted-foreground/65">{renderablePatch.reason}</p>
           <pre
             className={cn(
@@ -1693,7 +1701,12 @@ const CompletedChangedFilesDiffPreview = memo(function CompletedChangedFilesDiff
 
   return (
     <div className="pl-7 pr-1 pb-1">
-      <div className="min-h-14 max-h-72 overflow-auto rounded-md border border-border/55 bg-card/25">
+      <div
+        className={cn(
+          "min-h-14 overflow-auto rounded-md border border-border/55 bg-card/25",
+          expanded ? "max-h-36" : "max-h-[4.75rem]",
+        )}
+      >
         {matchingFiles.map((fileDiff) => {
           const fileKey = buildFileDiffRenderKey(fileDiff);
           return (
@@ -1806,8 +1819,6 @@ const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
     outputPreview !== null || hasLiveOutput || Boolean(workEntry.failure?.expectedContent);
   const toolKey = workEntryToolKey(workEntry);
   const defaultOutputExpanded = isTerminal && shouldAutoShowTerminalOutput(workEntry, liveOutput);
-  const defaultCompletedPatchExpanded =
-    isFileChange && workEntry.status === "completed" && hasChangedFiles;
   const showOutputPreview =
     isExpandable && (outputExpanded || (defaultOutputExpanded && !defaultOutputCollapsed));
 
@@ -1929,15 +1940,15 @@ const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
 
   if (hasInlineDiff || (isFileChange && hasLiveOutput)) {
     const isRunningLivePatch = isFileChange && workEntry.status === "running";
-    const defaultInlineDiffExpanded = defaultCompletedPatchExpanded;
+    const defaultInlineDiffExpanded = false;
+    const hasCompletedLivePatch = isFileChange && workEntry.status === "completed" && hasLiveOutput;
     const showInlineDiffPreview =
       isRunningLivePatch ||
+      hasCompletedLivePatch ||
       inlineDiffExpanded ||
       (defaultInlineDiffExpanded && !defaultInlineDiffCollapsed);
     const toggleDefaultExpanded = isRunningLivePatch ? false : defaultInlineDiffExpanded;
-    const inlineDiffControlExpanded = isRunningLivePatch
-      ? inlineDiffExpanded
-      : showInlineDiffPreview;
+    const inlineDiffControlExpanded = isRunningLivePatch ? false : inlineDiffExpanded;
     return (
       <div className="group rounded-lg border border-border/35 bg-card/20 px-1 py-0.5 transition-colors duration-150 hover:bg-muted/20 focus-within:bg-muted/20">
         <button
@@ -1945,7 +1956,11 @@ const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
           className="flex min-h-7 w-full min-w-0 items-center gap-2 text-left transition-[opacity,translate] duration-200 focus-visible:outline-none"
           aria-expanded={inlineDiffControlExpanded}
           aria-label={inlineDiffControlExpanded ? "Collapse inline diff" : "Expand inline diff"}
-          onClick={() => onToggleInlineDiffExpanded(toolKey, toggleDefaultExpanded)}
+          onClick={
+            isRunningLivePatch
+              ? undefined
+              : () => onToggleInlineDiffExpanded(toolKey, toggleDefaultExpanded)
+          }
           data-testid="inline-diff-toggle"
         >
           <span
@@ -1976,12 +1991,14 @@ const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
               {terminalStatusLabel(workEntry)}
             </span>
           )}
-          <ChevronRightIcon
-            className={cn(
-              "size-3.5 shrink-0 text-muted-foreground/45 opacity-0 transition-[opacity,transform,color] duration-150 group-hover:opacity-100 group-hover:text-muted-foreground/80 group-focus-within:opacity-100",
-              inlineDiffControlExpanded && "rotate-90 opacity-100",
-            )}
-          />
+          {!isRunningLivePatch && (
+            <ChevronRightIcon
+              className={cn(
+                "size-3.5 shrink-0 text-muted-foreground/45 opacity-0 transition-[opacity,transform,color] duration-150 group-hover:opacity-100 group-hover:text-muted-foreground/80 group-focus-within:opacity-100",
+                inlineDiffControlExpanded && "rotate-90 opacity-100",
+              )}
+            />
+          )}
         </button>
         {showInlineDiffPreview &&
           (hasChangedFiles ? (
@@ -1990,6 +2007,7 @@ const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
               changedFiles={workEntry.changedFiles ?? []}
               workspaceRoot={workspaceRoot}
               liveOutput={isFileChange ? liveOutput : undefined}
+              expanded={inlineDiffExpanded}
             />
           ) : (
             <LiveFileChangePreview
