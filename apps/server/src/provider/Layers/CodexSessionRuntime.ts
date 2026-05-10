@@ -125,6 +125,10 @@ export interface CodexSessionRuntimeShape {
   readonly sendTurn: (
     input: CodexSessionRuntimeSendTurnInput,
   ) => Effect.Effect<ProviderTurnStartResult, CodexSessionRuntimeError>;
+  readonly steerTurn: (
+    turnId: TurnId,
+    input: string,
+  ) => Effect.Effect<void, CodexSessionRuntimeError>;
   readonly interruptTurn: (turnId?: TurnId) => Effect.Effect<void, CodexSessionRuntimeError>;
   readonly readThread: Effect.Effect<CodexThreadSnapshot, CodexSessionRuntimeError>;
   readonly rollbackThread: (
@@ -1424,6 +1428,20 @@ export const makeCodexSessionRuntime = (
               ? { resumeCursor: { threadId: resumedProviderThreadId } }
               : {}),
           } satisfies ProviderTurnStartResult;
+        }),
+      steerTurn: (turnId, input) =>
+        Effect.gen(function* () {
+          const providerThreadId = yield* readProviderThreadId;
+          yield* client.request("turn/steer", {
+            threadId: providerThreadId,
+            expectedTurnId: turnId,
+            input: [
+              {
+                type: "text",
+                text: input,
+              },
+            ],
+          });
         }),
       interruptTurn: (turnId) =>
         Effect.gen(function* () {

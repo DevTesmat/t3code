@@ -72,6 +72,10 @@ class FakeCodexRuntime implements CodexSessionRuntimeShape {
       }),
   );
 
+  public readonly steerTurnImpl = vi.fn(
+    (_turnId: TurnId, _input: string): Promise<void> => Promise.resolve(undefined),
+  );
+
   public readonly interruptTurnImpl = vi.fn(
     (_turnId?: TurnId): Promise<void> => Promise.resolve(undefined),
   );
@@ -118,6 +122,10 @@ class FakeCodexRuntime implements CodexSessionRuntimeShape {
 
   sendTurn(input: CodexSessionRuntimeSendTurnInput) {
     return Effect.promise(() => this.sendTurnImpl(input));
+  }
+
+  steerTurn(turnId: TurnId, input: string) {
+    return Effect.promise(() => this.steerTurnImpl(turnId, input));
   }
 
   interruptTurn(turnId?: TurnId) {
@@ -422,13 +430,14 @@ const lifecycleLayer = it.layer(
   ),
 );
 
-function startLifecycleRuntime() {
+function startLifecycleRuntime(options?: { readonly cwd?: string }) {
   return Effect.gen(function* () {
     const adapter = yield* CodexAdapter;
     yield* adapter.startSession({
       provider: ProviderDriverKind.make("codex"),
       threadId: asThreadId("thread-1"),
       runtimeMode: "full-access",
+      ...(options?.cwd ? { cwd: options.cwd } : {}),
     });
     const runtime = lifecycleRuntimeFactory.lastRuntime;
     assert.ok(runtime);
@@ -886,6 +895,159 @@ lifecycleLayer("CodexAdapterLive lifecycle", (it) => {
       assert.equal(firstEvent.value.payload.failure?.path, "apps/web/src/session-logic.ts");
       assert.equal(firstEvent.value.payload.failure?.expectedContent, "const oldValue = true;");
     }),
+  );
+
+  it.effect(
+    "enriches apply_patch verification failures with attempted patch and file snapshot",
+    () =>
+      Effect.gen(function* () {
+        const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "t3-codex-patch-failure-"));
+        const targetPath = path.join(tempDir, "src/session-logic.ts");
+        fs.mkdirSync(path.dirname(targetPath), { recursive: true });
+        fs.writeFileSync(
+          targetPath,
+          ["export const oldValue = false;", "export const nextValue = true;", ""].join("\n"),
+        );
+
+        const { adapter, runtime } = yield* startLifecycleRuntime({ cwd: tempDir });
+        const eventsFiber = yield* Stream.runCollect(Stream.take(adapter.streamEvents, 2)).pipe(
+          Effect.forkChild,
+        );
+
+        yield* runtime.emit({
+          id: asEventId("evt-file-patch-updated-before-failure"),
+          kind: "notification",
+          provider: ProviderDriverKind.make("codex"),
+          createdAt: new Date().toISOString(),
+          method: "item/fileChange/patchUpdated",
+          threadId: asThreadId("thread-1"),
+          turnId: asTurnId("turn-1"),
+          itemId: asItemId("patch_1"),
+          payload: {
+            threadId: "thread-1",
+            turnId: "turn-1",
+            itemId: "patch_1",
+            changes: [
+              {
+                path: "src/session-logic.ts",
+                kind: { type: "update" },
+                diff: [
+                  "@@ -1,2 +1,2 @@",
+                  "-export const oldValue = true;",
+                  "+export const oldValue = false;",
+                  " export const nextValue = true;",
+                ].join("\n"),
+              },
+            ],
+          },
+        } satisfies ProviderEvent);
+        yield* runtime.emit({
+          id: asEventId("evt-patch-failed-start-enriched"),
+          kind: "notification",
+          provider: ProviderDriverKind.make("codex"),
+          threadId: asThreadId("thread-1"),
+          createdAt: new Date().toISOString(),
+          method: "process/stderr",
+          turnId: asTurnId("turn-1"),
+          message:
+            "2026-05-08T11:35:53.211779Z ERROR codex_core::tools::router: error=apply_patch verification failed: Failed to find expected lines in src/session-logic.ts:",
+        } satisfies ProviderEvent);
+        yield* runtime.emit({
+          id: asEventId("evt-patch-failed-line-enriched"),
+          kind: "notification",
+          provider: ProviderDriverKind.make("codex"),
+          threadId: asThreadId("thread-1"),
+          createdAt: new Date().toISOString(),
+          method: "process/stderr",
+          turnId: asTurnId("turn-1"),
+          message: "export const oldValue = true;",
+        } satisfies ProviderEvent);
+        yield* runtime.emit({
+          id: asEventId("evt-flush-enriched"),
+          kind: "notification",
+          provider: ProviderDriverKind.make("codex"),
+          threadId: asThreadId("thread-1"),
+          createdAt: new Date().toISOString(),
+          method: "thread/metadata/updated",
+          payload: {
+            threadId: "thread-1",
+            title: "flush",
+          },
+        } satisfies ProviderEvent);
+
+        const events = Array.from(yield* Fiber.join(eventsFiber));
+        const failureEvent = events.find((event) => event.type === "runtime.warning");
+
+        assert.equal(failureEvent?.type, "runtime.warning");
+        if (failureEvent?.type !== "runtime.warning") {
+          return;
+        }
+        assert.equal(failureEvent.payload.failure?.kind, "apply_patch_verification_failed");
+        assert.equal(failureEvent.payload.failure?.expectedContentFound, false);
+        assert.equal(failureEvent.payload.failure?.actualFileExists, true);
+        assert.equal(failureEvent.payload.failure?.actualFileLineCount, 3);
+        assert.equal(
+          failureEvent.payload.failure?.attemptedPatchEventId,
+          "evt-file-patch-updated-before-failure",
+        );
+        assert.match(
+          failureEvent.payload.failure?.attemptedPatch ?? "",
+          /diff --git a\/src\/session-logic\.ts b\/src\/session-logic\.ts/u,
+        );
+        assert.match(
+          failureEvent.payload.failure?.actualContentExcerpt ?? "",
+          /export const oldValue = false;/u,
+        );
+        yield* Effect.promise(
+          () =>
+            new Promise<void>((resolve) => {
+              setImmediate(resolve);
+            }),
+        );
+        assert.equal(runtime.steerTurnImpl.mock.calls.length, 1);
+        assert.equal(runtime.steerTurnImpl.mock.calls[0]?.[0], "turn-1");
+        const modelFeedback = runtime.steerTurnImpl.mock.calls[0]?.[1] ?? "";
+        assert.match(modelFeedback, /T3 Code recovery context for the failed apply_patch call/u);
+        assert.match(modelFeedback, /Expected content found in actual file: no/u);
+        assert.match(modelFeedback, /export const oldValue = false;/u);
+        assert.match(modelFeedback, /-export const oldValue = true;/u);
+        const warningDetail = failureEvent.payload.detail as { modelFeedback?: string };
+        assert.equal(warningDetail.modelFeedback, modelFeedback);
+
+        yield* adapter.sendTurn({
+          threadId: asThreadId("thread-1"),
+          input: "What was the full context you received after the failed tool call?",
+        });
+        const recoveredInput = runtime.sendTurnImpl.mock.calls.at(-1)?.[0].input ?? "";
+        assert.match(
+          recoveredInput,
+          /T3 Code retained recovery context from the previous apply_patch failure/u,
+        );
+        assert.match(
+          recoveredInput,
+          /Recovery context source event: evt-patch-failed-start-enriched/u,
+        );
+        assert.match(recoveredInput, /Current user message:\nWhat was the full context/u);
+        assert.match(recoveredInput, /export const oldValue = false;/u);
+        assert.match(recoveredInput, /-export const oldValue = true;/u);
+        const injectionWarning = yield* Stream.runHead(adapter.streamEvents);
+        const injectionWarningEvent = Option.getOrUndefined(injectionWarning);
+        assert.equal(injectionWarningEvent?.type, "runtime.warning");
+        if (injectionWarningEvent?.type !== "runtime.warning") {
+          return;
+        }
+        assert.equal(
+          injectionWarningEvent.payload.message,
+          "Injected apply_patch recovery context into next Codex turn",
+        );
+
+        runtime.sendTurnImpl.mockClear();
+        yield* adapter.sendTurn({
+          threadId: asThreadId("thread-1"),
+          input: "Continue",
+        });
+        assert.equal(runtime.sendTurnImpl.mock.calls.at(-1)?.[0].input, "Continue");
+      }),
   );
 
   it.effect("maps fatal websocket stderr notifications to runtime.error", () =>

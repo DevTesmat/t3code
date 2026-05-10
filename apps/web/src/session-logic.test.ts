@@ -1806,6 +1806,12 @@ describe("deriveWorkLogEntries", () => {
               path: "apps/web/src/session-logic.ts",
               reason: "Failed to find expected lines in apps/web/src/session-logic.ts:",
               expectedContent: "const oldValue = true;",
+              expectedContentFound: false,
+              attemptedPatch:
+                "diff --git a/apps/web/src/session-logic.ts b/apps/web/src/session-logic.ts",
+              attemptedPatchEventId: "evt-patch",
+              actualFileExists: true,
+              actualContentExcerpt: "const oldValue = false;",
             },
           },
         },
@@ -1822,6 +1828,12 @@ describe("deriveWorkLogEntries", () => {
         kind: "apply_patch_verification_failed",
         path: "apps/web/src/session-logic.ts",
         expectedContent: "const oldValue = true;",
+        expectedContentFound: false,
+        attemptedPatch:
+          "diff --git a/apps/web/src/session-logic.ts b/apps/web/src/session-logic.ts",
+        attemptedPatchEventId: "evt-patch",
+        actualFileExists: true,
+        actualContentExcerpt: "const oldValue = false;",
       },
     });
   });

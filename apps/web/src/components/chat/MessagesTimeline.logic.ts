@@ -416,6 +416,19 @@ function areWorkEntriesUnchanged(a: WorkLogEntry, b: WorkLogEntry): boolean {
     a.failure?.path === b.failure?.path &&
     a.failure?.reason === b.failure?.reason &&
     a.failure?.expectedContent === b.failure?.expectedContent &&
+    a.failure?.expectedContentFound === b.failure?.expectedContentFound &&
+    a.failure?.attemptedPatch === b.failure?.attemptedPatch &&
+    a.failure?.attemptedPatchEventId === b.failure?.attemptedPatchEventId &&
+    a.failure?.attemptedPatchItemId === b.failure?.attemptedPatchItemId &&
+    a.failure?.actualFileExists === b.failure?.actualFileExists &&
+    a.failure?.actualFileHash === b.failure?.actualFileHash &&
+    a.failure?.actualFileSizeBytes === b.failure?.actualFileSizeBytes &&
+    a.failure?.actualFileLineCount === b.failure?.actualFileLineCount &&
+    a.failure?.actualContentExcerpt === b.failure?.actualContentExcerpt &&
+    a.failure?.actualContentExcerptStartLine === b.failure?.actualContentExcerptStartLine &&
+    a.failure?.actualContentExcerptEndLine === b.failure?.actualContentExcerptEndLine &&
+    a.failure?.actualContentExcerptTruncated === b.failure?.actualContentExcerptTruncated &&
+    a.failure?.actualFileReadError === b.failure?.actualFileReadError &&
     areOptionalStringArraysUnchanged(a.changedFiles, b.changedFiles) &&
     areOutputPreviewsUnchanged(a.outputPreview, b.outputPreview)
   );

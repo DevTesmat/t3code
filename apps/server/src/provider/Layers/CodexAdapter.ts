@@ -21,9 +21,14 @@ import {
   RuntimeItemId,
   RuntimeRequestId,
   ProviderApprovalDecision,
+  EventId,
   ThreadId,
+  TurnId,
   ProviderSendTurnInput,
 } from "@t3tools/contracts";
+import { createHash, randomUUID } from "node:crypto";
+import fs from "node:fs";
+import path from "node:path";
 import { Effect, Exit, Fiber, FileSystem, Queue, Schema, Scope, Stream } from "effect";
 import { ChildProcessSpawner } from "effect/unstable/process";
 import * as CodexErrors from "effect-codex-app-server/errors";
@@ -74,6 +79,7 @@ export interface CodexAdapterLiveOptions {
 
 interface CodexAdapterSessionContext {
   readonly threadId: ThreadId;
+  readonly cwd: string;
   readonly scope: Scope.Closeable;
   readonly runtime: CodexSessionRuntimeShape;
   readonly eventFiber: Fiber.Fiber<void, never>;
@@ -153,6 +159,141 @@ interface PendingApplyPatchVerificationFailure {
   readonly lines: string[];
 }
 
+interface LatestFileChangePatch {
+  readonly eventId: string;
+  readonly itemId?: string | undefined;
+  readonly turnId?: string | undefined;
+  readonly paths: ReadonlyArray<string>;
+  readonly patch: string;
+}
+
+interface ApplyPatchFailureFileSnapshot {
+  readonly exists: boolean;
+  readonly hash?: string | undefined;
+  readonly sizeBytes?: number | undefined;
+  readonly lineCount?: number | undefined;
+  readonly expectedContentFound?: boolean | undefined;
+  readonly excerpt?: string | undefined;
+  readonly excerptStartLine?: number | undefined;
+  readonly excerptEndLine?: number | undefined;
+  readonly excerptTruncated?: boolean | undefined;
+  readonly readError?: string | undefined;
+}
+
+interface ApplyPatchFailureRecoveryContext {
+  readonly warning: ProviderRuntimeEvent;
+  readonly modelFeedback: string;
+  readonly turnId?: TurnId | undefined;
+}
+
+interface PendingApplyPatchRecoveryModelFeedback {
+  readonly sourceEventId: string;
+  readonly modelFeedback: string;
+}
+
+function truncateContextSection(value: string, maxLength: number): string {
+  if (value.length <= maxLength) {
+    return value;
+  }
+  return `${value.slice(0, Math.max(0, maxLength - 28)).trimEnd()}\n... [truncated by T3 Code]`;
+}
+
+function buildApplyPatchRecoveryModelFeedback(input: {
+  readonly path?: string | undefined;
+  readonly reason: string;
+  readonly expectedContent?: string | undefined;
+  readonly latestPatch?: LatestFileChangePatch | undefined;
+  readonly snapshot?: ApplyPatchFailureFileSnapshot | undefined;
+}): string {
+  const sections = [
+    "T3 Code recovery context for the failed apply_patch call.",
+    "Treat this as additional tool feedback for the immediately preceding apply_patch failure.",
+    input.path ? `Target file: ${input.path}` : undefined,
+    `Original failure: ${input.reason}`,
+    input.expectedContent ? `Expected content:\n${input.expectedContent}` : undefined,
+    input.snapshot?.expectedContentFound !== undefined
+      ? `Expected content found in actual file: ${input.snapshot.expectedContentFound ? "yes" : "no"}`
+      : undefined,
+    input.snapshot
+      ? [
+          "Actual file snapshot:",
+          `exists: ${input.snapshot.exists ? "yes" : "no"}`,
+          input.snapshot.hash ? `sha256: ${input.snapshot.hash}` : undefined,
+          input.snapshot.sizeBytes !== undefined
+            ? `sizeBytes: ${input.snapshot.sizeBytes}`
+            : undefined,
+          input.snapshot.lineCount !== undefined
+            ? `lineCount: ${input.snapshot.lineCount}`
+            : undefined,
+          input.snapshot.readError ? `readError: ${input.snapshot.readError}` : undefined,
+        ]
+          .filter((line): line is string => line !== undefined)
+          .join("\n")
+      : undefined,
+    input.snapshot?.excerpt
+      ? [
+          `Actual file excerpt${
+            input.snapshot.excerptStartLine !== undefined &&
+            input.snapshot.excerptEndLine !== undefined
+              ? ` (lines ${input.snapshot.excerptStartLine}-${input.snapshot.excerptEndLine})`
+              : ""
+          }:`,
+          "```text",
+          truncateContextSection(input.snapshot.excerpt, 4_000),
+          "```",
+        ].join("\n")
+      : undefined,
+    input.latestPatch?.patch
+      ? [
+          "Attempted patch:",
+          "```diff",
+          truncateContextSection(input.latestPatch.patch, 6_000),
+          "```",
+        ].join("\n")
+      : undefined,
+    "Use the actual file snapshot when deciding whether to retry, skip, or explain the failed edit.",
+  ].filter((section): section is string => section !== undefined && section.length > 0);
+
+  return truncateContextSection(sections.join("\n\n"), 12_000);
+}
+
+function prependApplyPatchRecoveryModelFeedback(
+  input: string | undefined,
+  recovery: PendingApplyPatchRecoveryModelFeedback,
+): string {
+  const userInput = input ?? "";
+  return [
+    "T3 Code retained recovery context from the previous apply_patch failure.",
+    "This is additional T3-provided context, not the raw tool stdout/stderr. If the user asks what context was available after the failed file edit, include this block separately from the raw tool output.",
+    `Recovery context source event: ${recovery.sourceEventId}`,
+    "",
+    recovery.modelFeedback,
+    "",
+    "Current user message:",
+    userInput,
+  ].join("\n");
+}
+
+function runDetachedApplyPatchRecoverySteer(input: {
+  readonly session: CodexAdapterSessionContext;
+  readonly turnId: TurnId;
+  readonly modelFeedback: string;
+}): void {
+  queueMicrotask(() => {
+    void Effect.runPromise(
+      input.session.runtime.steerTurn(input.turnId, input.modelFeedback),
+    ).catch((cause: CodexSessionRuntimeError) => {
+      void Effect.runPromise(
+        Effect.logDebug("failed to steer Codex turn with apply_patch recovery context", {
+          threadId: input.session.threadId,
+          turnId: input.turnId,
+          error: cause.message,
+        }),
+      );
+    });
+  });
+}
+
 function parseApplyPatchVerificationFailureStart(
   message: string,
 ): { readonly path?: string | undefined; readonly reason: string } | null {
@@ -180,31 +321,213 @@ function isApplyPatchVerificationContinuation(event: ProviderEvent): boolean {
   );
 }
 
+function lineCount(value: string): number {
+  if (value.length === 0) {
+    return 0;
+  }
+  return value.split("\n").length;
+}
+
+function nonEmptyExpectedLines(expectedContent: string | undefined): ReadonlyArray<string> {
+  if (!expectedContent) {
+    return [];
+  }
+  return expectedContent
+    .split("\n")
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0);
+}
+
+function selectActualContentExcerpt(
+  content: string,
+  expectedContent: string | undefined,
+): {
+  readonly excerpt?: string | undefined;
+  readonly startLine?: number | undefined;
+  readonly endLine?: number | undefined;
+  readonly truncated?: boolean | undefined;
+} {
+  const lines = content.split("\n");
+  if (lines.length === 0 || (lines.length === 1 && lines[0]?.length === 0)) {
+    return {};
+  }
+
+  const expectedLines = nonEmptyExpectedLines(expectedContent);
+  const anchorIndex = expectedLines
+    .map((expectedLine) => lines.findIndex((line) => line.trim() === expectedLine))
+    .find((index) => index !== -1);
+  const center = anchorIndex !== undefined ? anchorIndex : 0;
+  const radius = anchorIndex !== undefined ? 20 : 40;
+  const start = Math.max(0, center - radius);
+  const end = Math.min(lines.length, center + radius + 1);
+  const excerpt = lines.slice(start, end).join("\n").trimEnd();
+  if (!excerpt) {
+    return {};
+  }
+  return {
+    excerpt,
+    startLine: start + 1,
+    endLine: end,
+    truncated: start > 0 || end < lines.length,
+  };
+}
+
+function readApplyPatchFailureFileSnapshot(
+  cwd: string,
+  failurePath: string | undefined,
+  expectedContent: string | undefined,
+): ApplyPatchFailureFileSnapshot | undefined {
+  const trimmedPath = trimText(failurePath);
+  if (!trimmedPath) {
+    return undefined;
+  }
+
+  const resolvedPath = path.isAbsolute(trimmedPath) ? trimmedPath : path.resolve(cwd, trimmedPath);
+  try {
+    const content = fs.readFileSync(resolvedPath, "utf8");
+    const expectedContentFound =
+      expectedContent !== undefined && expectedContent.length > 0
+        ? content.includes(expectedContent)
+        : undefined;
+    const excerpt = selectActualContentExcerpt(content, expectedContent);
+    return {
+      exists: true,
+      hash: createHash("sha256").update(content).digest("hex"),
+      sizeBytes: Buffer.byteLength(content),
+      lineCount: lineCount(content),
+      ...(expectedContentFound !== undefined ? { expectedContentFound } : {}),
+      ...(excerpt.excerpt ? { excerpt: excerpt.excerpt } : {}),
+      ...(excerpt.startLine !== undefined ? { excerptStartLine: excerpt.startLine } : {}),
+      ...(excerpt.endLine !== undefined ? { excerptEndLine: excerpt.endLine } : {}),
+      ...(excerpt.truncated !== undefined ? { excerptTruncated: excerpt.truncated } : {}),
+    };
+  } catch (error) {
+    return {
+      exists: false,
+      readError: error instanceof Error ? error.message : String(error),
+    };
+  }
+}
+
+function latestPatchForFailure(
+  latestPatch: LatestFileChangePatch | undefined,
+  pending: PendingApplyPatchVerificationFailure,
+): LatestFileChangePatch | undefined {
+  if (!latestPatch) {
+    return undefined;
+  }
+  if (pending.event.turnId && latestPatch.turnId && pending.event.turnId !== latestPatch.turnId) {
+    return undefined;
+  }
+  if (!pending.path) {
+    return latestPatch;
+  }
+  const normalizedFailurePath = path.normalize(pending.path);
+  return latestPatch.paths.some((entry) => {
+    const normalizedEntry = path.normalize(entry);
+    return (
+      normalizedEntry === normalizedFailurePath ||
+      normalizedEntry.endsWith(normalizedFailurePath) ||
+      normalizedFailurePath.endsWith(normalizedEntry)
+    );
+  })
+    ? latestPatch
+    : undefined;
+}
+
 function buildApplyPatchVerificationFailureWarning(
   pending: PendingApplyPatchVerificationFailure,
   canonicalThreadId: ThreadId,
-): ProviderRuntimeEvent {
+  context?: {
+    readonly latestPatch?: LatestFileChangePatch | undefined;
+    readonly snapshot?: ApplyPatchFailureFileSnapshot | undefined;
+  },
+): ApplyPatchFailureRecoveryContext {
   const expectedContent = trimText(pending.lines.join("\n"));
   const message = pending.path
     ? `Patch verification failed for ${pending.path}`
     : "Patch verification failed";
+  const latestPatch = context?.latestPatch;
+  const snapshot = context?.snapshot;
+  const modelFeedback = buildApplyPatchRecoveryModelFeedback({
+    path: pending.path,
+    reason: pending.reason,
+    expectedContent,
+    latestPatch,
+    snapshot,
+  });
+  return {
+    warning: {
+      type: "runtime.warning",
+      ...runtimeEventBase(pending.event, canonicalThreadId),
+      payload: {
+        message,
+        detail: {
+          originalMessage: pending.event.message,
+          expectedContent,
+          ...(latestPatch
+            ? {
+                attemptedPatch: latestPatch.patch,
+                attemptedPatchEventId: latestPatch.eventId,
+                attemptedPatchItemId: latestPatch.itemId,
+              }
+            : {}),
+          ...(snapshot ? { actualFileSnapshot: snapshot } : {}),
+          modelFeedback,
+        },
+        failure: {
+          kind: "apply_patch_verification_failed",
+          recoverability: "known-retryable",
+          message,
+          itemType: "file_change",
+          ...(pending.path ? { path: pending.path } : {}),
+          reason: pending.reason,
+          ...(expectedContent ? { expectedContent } : {}),
+          ...(snapshot?.expectedContentFound !== undefined
+            ? { expectedContentFound: snapshot.expectedContentFound }
+            : {}),
+          ...(latestPatch?.patch ? { attemptedPatch: latestPatch.patch } : {}),
+          ...(latestPatch?.eventId ? { attemptedPatchEventId: latestPatch.eventId } : {}),
+          ...(latestPatch?.itemId ? { attemptedPatchItemId: latestPatch.itemId } : {}),
+          ...(snapshot ? { actualFileExists: snapshot.exists } : {}),
+          ...(snapshot?.hash ? { actualFileHash: snapshot.hash } : {}),
+          ...(snapshot?.sizeBytes !== undefined ? { actualFileSizeBytes: snapshot.sizeBytes } : {}),
+          ...(snapshot?.lineCount !== undefined ? { actualFileLineCount: snapshot.lineCount } : {}),
+          ...(snapshot?.excerpt ? { actualContentExcerpt: snapshot.excerpt } : {}),
+          ...(snapshot?.excerptStartLine !== undefined
+            ? { actualContentExcerptStartLine: snapshot.excerptStartLine }
+            : {}),
+          ...(snapshot?.excerptEndLine !== undefined
+            ? { actualContentExcerptEndLine: snapshot.excerptEndLine }
+            : {}),
+          ...(snapshot?.excerptTruncated !== undefined
+            ? { actualContentExcerptTruncated: snapshot.excerptTruncated }
+            : {}),
+          ...(snapshot?.readError ? { actualFileReadError: snapshot.readError } : {}),
+        },
+      },
+    },
+    modelFeedback,
+    ...(pending.event.turnId ? { turnId: pending.event.turnId } : {}),
+  };
+}
+
+function buildApplyPatchRecoveryInjectionWarning(input: {
+  readonly threadId: ThreadId;
+  readonly sourceEventId: string;
+  readonly modelFeedback: string;
+}): ProviderRuntimeEvent {
   return {
     type: "runtime.warning",
-    ...runtimeEventBase(pending.event, canonicalThreadId),
+    eventId: EventId.make(`t3-apply-patch-recovery-injected-${randomUUID()}`),
+    provider: PROVIDER,
+    threadId: input.threadId,
+    createdAt: new Date().toISOString(),
     payload: {
-      message,
+      message: "Injected apply_patch recovery context into next Codex turn",
       detail: {
-        originalMessage: pending.event.message,
-        expectedContent,
-      },
-      failure: {
-        kind: "apply_patch_verification_failed",
-        recoverability: "known-retryable",
-        message,
-        itemType: "file_change",
-        ...(pending.path ? { path: pending.path } : {}),
-        reason: pending.reason,
-        ...(expectedContent ? { expectedContent } : {}),
+        sourceEventId: input.sourceEventId,
+        modelFeedback: input.modelFeedback,
       },
     },
   };
@@ -1569,48 +1892,109 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
   );
   const sessions = new Map<ThreadId, CodexAdapterSessionContext>();
   const pendingPatchFailureByThread = new Map<ThreadId, PendingApplyPatchVerificationFailure>();
+  const latestFileChangePatchByThread = new Map<ThreadId, LatestFileChangePatch>();
+  const pendingApplyPatchRecoveryModelFeedbackByThread = new Map<
+    ThreadId,
+    PendingApplyPatchRecoveryModelFeedback
+  >();
 
-  const flushPendingPatchFailure = (threadId: ThreadId): ReadonlyArray<ProviderRuntimeEvent> => {
-    const pending = pendingPatchFailureByThread.get(threadId);
-    if (!pending) {
-      return [];
+  const recordLatestFileChangePatch = (event: ProviderEvent): void => {
+    if (event.method !== "item/fileChange/patchUpdated") {
+      return;
     }
-    pendingPatchFailureByThread.delete(threadId);
-    return [buildApplyPatchVerificationFailureWarning(pending, threadId)];
+    const payload = readPayload(
+      EffectCodexSchema.V2FileChangePatchUpdatedNotification,
+      event.payload,
+    );
+    if (!payload || payload.changes.length === 0) {
+      return;
+    }
+    latestFileChangePatchByThread.set(event.threadId, {
+      eventId: event.id,
+      ...(event.itemId ? { itemId: event.itemId } : {}),
+      ...(event.turnId ? { turnId: event.turnId } : {}),
+      paths: payload.changes.flatMap((change) => {
+        const paths = [change.path.trim()].filter((entry) => entry.length > 0);
+        if (change.kind.type === "update" && change.kind.move_path) {
+          const movePath = change.kind.move_path.trim();
+          if (movePath.length > 0) {
+            return [...paths, movePath];
+          }
+        }
+        return paths;
+      }),
+      patch: formatFileChangePatchUpdatedPayload(payload),
+    });
   };
+
+  const flushPendingPatchFailure = (
+    threadId: ThreadId,
+  ): Effect.Effect<ReadonlyArray<ProviderRuntimeEvent>> =>
+    Effect.sync(() => {
+      const pending = pendingPatchFailureByThread.get(threadId);
+      if (!pending) {
+        return [];
+      }
+      pendingPatchFailureByThread.delete(threadId);
+      const session = sessions.get(threadId);
+      const latestPatch = latestPatchForFailure(
+        latestFileChangePatchByThread.get(threadId),
+        pending,
+      );
+      const expectedContent = trimText(pending.lines.join("\n"));
+      const snapshot = readApplyPatchFailureFileSnapshot(
+        session?.cwd ?? process.cwd(),
+        pending.path,
+        expectedContent,
+      );
+      const recoveryContext = buildApplyPatchVerificationFailureWarning(pending, threadId, {
+        latestPatch,
+        snapshot,
+      });
+      if (session && recoveryContext.turnId) {
+        runDetachedApplyPatchRecoverySteer({
+          session,
+          turnId: recoveryContext.turnId,
+          modelFeedback: recoveryContext.modelFeedback,
+        });
+      }
+      pendingApplyPatchRecoveryModelFeedbackByThread.set(threadId, {
+        sourceEventId: recoveryContext.warning.eventId,
+        modelFeedback: recoveryContext.modelFeedback,
+      });
+      return [recoveryContext.warning];
+    });
 
   const mapEventWithBufferedStderr = (
     event: ProviderEvent,
-  ): ReadonlyArray<ProviderRuntimeEvent> => {
-    if (event.method !== "process/stderr" || !event.message) {
-      return [
-        ...flushPendingPatchFailure(event.threadId),
-        ...mapToRuntimeEvents(event, event.threadId),
-      ];
-    }
+  ): Effect.Effect<ReadonlyArray<ProviderRuntimeEvent>> =>
+    Effect.gen(function* () {
+      recordLatestFileChangePatch(event);
+      if (event.method !== "process/stderr" || !event.message) {
+        const flushed = yield* flushPendingPatchFailure(event.threadId);
+        return [...flushed, ...mapToRuntimeEvents(event, event.threadId)];
+      }
 
-    const start = parseApplyPatchVerificationFailureStart(event.message);
-    if (start) {
-      const flushed = flushPendingPatchFailure(event.threadId);
-      pendingPatchFailureByThread.set(event.threadId, {
-        event,
-        ...start,
-        lines: [],
-      });
-      return flushed;
-    }
+      const start = parseApplyPatchVerificationFailureStart(event.message);
+      if (start) {
+        const flushed = yield* flushPendingPatchFailure(event.threadId);
+        pendingPatchFailureByThread.set(event.threadId, {
+          event,
+          ...start,
+          lines: [],
+        });
+        return flushed;
+      }
 
-    const pending = pendingPatchFailureByThread.get(event.threadId);
-    if (pending && isApplyPatchVerificationContinuation(event)) {
-      pending.lines.push(event.message);
-      return [];
-    }
+      const pending = pendingPatchFailureByThread.get(event.threadId);
+      if (pending && isApplyPatchVerificationContinuation(event)) {
+        pending.lines.push(event.message);
+        return [];
+      }
 
-    return [
-      ...flushPendingPatchFailure(event.threadId),
-      ...mapToRuntimeEvents(event, event.threadId),
-    ];
-  };
+      const flushed = yield* flushPendingPatchFailure(event.threadId);
+      return [...flushed, ...mapToRuntimeEvents(event, event.threadId)];
+    });
 
   const startSession: CodexAdapterShape["startSession"] = (input) =>
     Effect.scoped(
@@ -1670,7 +2054,7 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
         const eventFiber = yield* Stream.runForEach(runtime.events, (event) =>
           Effect.gen(function* () {
             yield* writeNativeEvent(event);
-            const runtimeEvents = mapEventWithBufferedStderr(event);
+            const runtimeEvents = yield* mapEventWithBufferedStderr(event);
             if (runtimeEvents.length === 0) {
               yield* Effect.logDebug("ignoring unhandled Codex provider event", {
                 method: event.method,
@@ -1685,7 +2069,9 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
         ).pipe(
           Effect.ensuring(
             Effect.suspend(() =>
-              Queue.offerAll(runtimeEventQueue, flushPendingPatchFailure(input.threadId)),
+              flushPendingPatchFailure(input.threadId).pipe(
+                Effect.flatMap((runtimeEvents) => Queue.offerAll(runtimeEventQueue, runtimeEvents)),
+              ),
             ),
           ),
           Effect.forkChild,
@@ -1712,6 +2098,7 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
 
         sessions.set(input.threadId, {
           threadId: input.threadId,
+          cwd: runtimeInput.cwd,
           scope: sessionScope,
           runtime,
           eventFiber,
@@ -1771,9 +2158,14 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
       input.modelSelection?.instanceId === boundInstanceId
         ? getModelSelectionBooleanOptionValue(input.modelSelection, "fastMode")
         : undefined;
-    return yield* session.runtime
+    const pendingRecovery = pendingApplyPatchRecoveryModelFeedbackByThread.get(input.threadId);
+    const turnInput =
+      pendingRecovery !== undefined
+        ? prependApplyPatchRecoveryModelFeedback(input.input, pendingRecovery)
+        : input.input;
+    const result = yield* session.runtime
       .sendTurn({
-        ...(input.input !== undefined ? { input: input.input } : {}),
+        ...(turnInput !== undefined ? { input: turnInput } : {}),
         ...(input.modelSelection?.instanceId === boundInstanceId
           ? { model: input.modelSelection.model }
           : {}),
@@ -1787,6 +2179,18 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
         ...(codexAttachments.length > 0 ? { attachments: codexAttachments } : {}),
       })
       .pipe(Effect.mapError((cause) => mapCodexRuntimeError(input.threadId, "turn/start", cause)));
+    if (pendingRecovery !== undefined) {
+      pendingApplyPatchRecoveryModelFeedbackByThread.delete(input.threadId);
+      yield* Queue.offer(
+        runtimeEventQueue,
+        buildApplyPatchRecoveryInjectionWarning({
+          threadId: input.threadId,
+          sourceEventId: pendingRecovery.sourceEventId,
+          modelFeedback: pendingRecovery.modelFeedback,
+        }),
+      );
+    }
+    return result;
   });
 
   const requireSession = Effect.fn("requireSession")(function* (threadId: ThreadId) {
@@ -1891,6 +2295,9 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
     yield* session.runtime.close.pipe(Effect.ignore);
     yield* Effect.ignore(Scope.close(session.scope, Exit.void));
     yield* Fiber.interrupt(session.eventFiber).pipe(Effect.ignore);
+    pendingPatchFailureByThread.delete(session.threadId);
+    latestFileChangePatchByThread.delete(session.threadId);
+    pendingApplyPatchRecoveryModelFeedbackByThread.delete(session.threadId);
   });
 
   const stopSession: CodexAdapterShape["stopSession"] = (threadId) =>

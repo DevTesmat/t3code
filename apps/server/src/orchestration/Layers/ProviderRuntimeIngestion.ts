@@ -720,6 +720,35 @@ function managedFailureWarningToActivity(
     ...(failure.path ? { path: failure.path } : {}),
     ...(failure.reason ? { reason: failure.reason } : {}),
     ...(failure.expectedContent ? { expectedContent: failure.expectedContent } : {}),
+    ...(failure.expectedContentFound !== undefined
+      ? { expectedContentFound: failure.expectedContentFound }
+      : {}),
+    ...(failure.attemptedPatch ? { attemptedPatch: failure.attemptedPatch } : {}),
+    ...(failure.attemptedPatchEventId
+      ? { attemptedPatchEventId: failure.attemptedPatchEventId }
+      : {}),
+    ...(failure.attemptedPatchItemId ? { attemptedPatchItemId: failure.attemptedPatchItemId } : {}),
+    ...(failure.actualFileExists !== undefined
+      ? { actualFileExists: failure.actualFileExists }
+      : {}),
+    ...(failure.actualFileHash ? { actualFileHash: failure.actualFileHash } : {}),
+    ...(failure.actualFileSizeBytes !== undefined
+      ? { actualFileSizeBytes: failure.actualFileSizeBytes }
+      : {}),
+    ...(failure.actualFileLineCount !== undefined
+      ? { actualFileLineCount: failure.actualFileLineCount }
+      : {}),
+    ...(failure.actualContentExcerpt ? { actualContentExcerpt: failure.actualContentExcerpt } : {}),
+    ...(failure.actualContentExcerptStartLine !== undefined
+      ? { actualContentExcerptStartLine: failure.actualContentExcerptStartLine }
+      : {}),
+    ...(failure.actualContentExcerptEndLine !== undefined
+      ? { actualContentExcerptEndLine: failure.actualContentExcerptEndLine }
+      : {}),
+    ...(failure.actualContentExcerptTruncated !== undefined
+      ? { actualContentExcerptTruncated: failure.actualContentExcerptTruncated }
+      : {}),
+    ...(failure.actualFileReadError ? { actualFileReadError: failure.actualFileReadError } : {}),
   };
 
   return {

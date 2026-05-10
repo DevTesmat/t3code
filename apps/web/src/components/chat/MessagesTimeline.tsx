@@ -1269,23 +1269,67 @@ const ToolOutputPreview = memo(function ToolOutputPreview(props: {
 const ManagedFailedEditPreview = memo(function ManagedFailedEditPreview(props: {
   workEntry: TimelineWorkEntry;
 }) {
-  const expectedContent = props.workEntry.failure?.expectedContent;
-  if (!expectedContent) {
+  const failure = props.workEntry.failure;
+  const expectedContent = failure?.expectedContent;
+  const actualContentExcerpt = failure?.actualContentExcerpt;
+  const attemptedPatch = failure?.attemptedPatch;
+  if (!expectedContent && !actualContentExcerpt && !attemptedPatch) {
     return null;
   }
+  const actualLabel =
+    failure?.actualContentExcerptStartLine !== undefined &&
+    failure.actualContentExcerptEndLine !== undefined
+      ? `actual file lines ${failure.actualContentExcerptStartLine}-${failure.actualContentExcerptEndLine}`
+      : "actual file snapshot";
   return (
-    <div className="pl-7 pr-1 pb-1">
-      <div className="mb-1 font-mono text-[9px] leading-3 text-muted-foreground/55">
-        expected content
-      </div>
-      <div
-        className="max-h-56 overflow-auto rounded-md border border-destructive/25 bg-destructive/5 px-2 py-1 font-mono text-[11px] leading-4 text-destructive/85"
-        data-testid="managed-failed-edit-preview"
-      >
-        <pre className="m-0 min-w-max font-inherit leading-inherit whitespace-pre">
-          {expectedContent}
-        </pre>
-      </div>
+    <div className="space-y-2 pl-7 pr-1 pb-1">
+      {expectedContent && (
+        <div>
+          <div className="mb-1 font-mono text-[9px] leading-3 text-muted-foreground/55">
+            expected content
+            {failure?.expectedContentFound === false ? " (not found)" : ""}
+          </div>
+          <div
+            className="max-h-56 overflow-auto rounded-md border border-destructive/25 bg-destructive/5 px-2 py-1 font-mono text-[11px] leading-4 text-destructive/85"
+            data-testid="managed-failed-edit-preview"
+          >
+            <pre className="m-0 min-w-max font-inherit leading-inherit whitespace-pre">
+              {expectedContent}
+            </pre>
+          </div>
+        </div>
+      )}
+      {actualContentExcerpt && (
+        <div>
+          <div className="mb-1 font-mono text-[9px] leading-3 text-muted-foreground/55">
+            {actualLabel}
+            {failure?.actualContentExcerptTruncated ? " (excerpt)" : ""}
+          </div>
+          <div
+            className="max-h-56 overflow-auto rounded-md border border-border/45 bg-muted/20 px-2 py-1 font-mono text-[11px] leading-4 text-muted-foreground/85"
+            data-testid="managed-failed-edit-actual-preview"
+          >
+            <pre className="m-0 min-w-max font-inherit leading-inherit whitespace-pre">
+              {actualContentExcerpt}
+            </pre>
+          </div>
+        </div>
+      )}
+      {attemptedPatch && (
+        <div>
+          <div className="mb-1 font-mono text-[9px] leading-3 text-muted-foreground/55">
+            attempted patch
+          </div>
+          <div
+            className="max-h-56 overflow-auto rounded-md border border-border/45 bg-muted/20 px-2 py-1 font-mono text-[11px] leading-4 text-muted-foreground/85"
+            data-testid="managed-failed-edit-attempt-preview"
+          >
+            <pre className="m-0 min-w-max font-inherit leading-inherit whitespace-pre">
+              {attemptedPatch}
+            </pre>
+          </div>
+        </div>
+      )}
     </div>
   );
 });
@@ -2104,7 +2148,9 @@ const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
               {terminalStatusLabel(workEntry)}
             </span>
           )}
-          {workEntry.failure?.expectedContent && (
+          {(workEntry.failure?.expectedContent ||
+            workEntry.failure?.actualContentExcerpt ||
+            workEntry.failure?.attemptedPatch) && (
             <button
               type="button"
               className="flex size-5 shrink-0 items-center justify-center rounded-md text-muted-foreground/45 transition-[transform,color] duration-150 hover:text-muted-foreground/80 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring/45"

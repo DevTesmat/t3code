@@ -79,6 +79,19 @@ export interface WorkLogEntry {
     path?: string;
     reason?: string;
     expectedContent?: string;
+    expectedContentFound?: boolean;
+    attemptedPatch?: string;
+    attemptedPatchEventId?: string;
+    attemptedPatchItemId?: string;
+    actualFileExists?: boolean;
+    actualFileHash?: string;
+    actualFileSizeBytes?: number;
+    actualFileLineCount?: number;
+    actualContentExcerpt?: string;
+    actualContentExcerptStartLine?: number;
+    actualContentExcerptEndLine?: number;
+    actualContentExcerptTruncated?: boolean;
+    actualFileReadError?: string;
   };
 }
 
@@ -1158,6 +1171,10 @@ function asNumber(value: unknown): number | null {
   return typeof value === "number" && Number.isFinite(value) ? value : null;
 }
 
+function asBoolean(value: unknown): boolean | null {
+  return typeof value === "boolean" ? value : null;
+}
+
 function firstString(...values: Array<string | null | undefined>): string | undefined {
   return values.find((value): value is string => typeof value === "string" && value.length > 0);
 }
@@ -1338,11 +1355,53 @@ function extractManagedFailure(
   const path = asTrimmedString(failure?.path ?? data?.path);
   const reason = asTrimmedString(failure?.reason ?? data?.reason);
   const expectedContent = asTrimmedString(failure?.expectedContent ?? data?.expectedContent);
+  const expectedContentFound = asBoolean(
+    failure?.expectedContentFound ?? data?.expectedContentFound,
+  );
+  const attemptedPatch = asTrimmedString(failure?.attemptedPatch ?? data?.attemptedPatch);
+  const attemptedPatchEventId = asTrimmedString(
+    failure?.attemptedPatchEventId ?? data?.attemptedPatchEventId,
+  );
+  const attemptedPatchItemId = asTrimmedString(
+    failure?.attemptedPatchItemId ?? data?.attemptedPatchItemId,
+  );
+  const actualFileExists = asBoolean(failure?.actualFileExists ?? data?.actualFileExists);
+  const actualFileHash = asTrimmedString(failure?.actualFileHash ?? data?.actualFileHash);
+  const actualFileSizeBytes = asNumber(failure?.actualFileSizeBytes ?? data?.actualFileSizeBytes);
+  const actualFileLineCount = asNumber(failure?.actualFileLineCount ?? data?.actualFileLineCount);
+  const actualContentExcerpt = asTrimmedString(
+    failure?.actualContentExcerpt ?? data?.actualContentExcerpt,
+  );
+  const actualContentExcerptStartLine = asNumber(
+    failure?.actualContentExcerptStartLine ?? data?.actualContentExcerptStartLine,
+  );
+  const actualContentExcerptEndLine = asNumber(
+    failure?.actualContentExcerptEndLine ?? data?.actualContentExcerptEndLine,
+  );
+  const actualContentExcerptTruncated = asBoolean(
+    failure?.actualContentExcerptTruncated ?? data?.actualContentExcerptTruncated,
+  );
+  const actualFileReadError = asTrimmedString(
+    failure?.actualFileReadError ?? data?.actualFileReadError,
+  );
   return {
     kind,
     ...(path ? { path } : {}),
     ...(reason ? { reason } : {}),
     ...(expectedContent ? { expectedContent } : {}),
+    ...(expectedContentFound !== null ? { expectedContentFound } : {}),
+    ...(attemptedPatch ? { attemptedPatch } : {}),
+    ...(attemptedPatchEventId ? { attemptedPatchEventId } : {}),
+    ...(attemptedPatchItemId ? { attemptedPatchItemId } : {}),
+    ...(actualFileExists !== null ? { actualFileExists } : {}),
+    ...(actualFileHash ? { actualFileHash } : {}),
+    ...(actualFileSizeBytes !== null ? { actualFileSizeBytes } : {}),
+    ...(actualFileLineCount !== null ? { actualFileLineCount } : {}),
+    ...(actualContentExcerpt ? { actualContentExcerpt } : {}),
+    ...(actualContentExcerptStartLine !== null ? { actualContentExcerptStartLine } : {}),
+    ...(actualContentExcerptEndLine !== null ? { actualContentExcerptEndLine } : {}),
+    ...(actualContentExcerptTruncated !== null ? { actualContentExcerptTruncated } : {}),
+    ...(actualFileReadError ? { actualFileReadError } : {}),
   };
 }
 
