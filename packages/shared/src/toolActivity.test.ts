@@ -118,6 +118,49 @@ NODE`,
     }
   });
 
+  it("uses structured command action evidence before shell heuristics", () => {
+    expect(
+      classifyToolActivityGroup({
+        itemType: "command_execution",
+        command: "node -e 'mystery()'",
+        commandActionTypes: ["read", "listFiles", "search"],
+      }),
+    ).toBe("exploration");
+
+    expect(
+      classifyToolActivityGroup({
+        itemType: "command_execution",
+        command: "cat package.json",
+        commandActionTypes: ["unknown"],
+      }),
+    ).toBe("exploration");
+
+    expect(
+      classifyToolActivityGroup({
+        itemType: "command_execution",
+        command: "cat package.json && rm package.json",
+        commandActionTypes: ["unknown"],
+      }),
+    ).toBe("other");
+
+    expect(
+      classifyToolActivityGroup({
+        itemType: "command_execution",
+        command: "cat package.json",
+        changedFiles: ["package.json"],
+        commandActionTypes: ["read"],
+      }),
+    ).toBe("other");
+
+    expect(
+      classifyToolActivityGroup({
+        itemType: "command_execution",
+        command: "bun typecheck",
+        commandActionTypes: ["unknown"],
+      }),
+    ).toBe("validation");
+  });
+
   it("classifies validation commands separately from exploration", () => {
     for (const command of [
       "bun run test",

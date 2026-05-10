@@ -1293,6 +1293,74 @@ describe("deriveWorkLogEntries", () => {
     expect(entries[0]?.status).toBe("completed");
   });
 
+  it("derives verified read-only safety from structured command actions", () => {
+    const activities: OrchestrationThreadActivity[] = [
+      makeActivity({
+        id: "command-start",
+        kind: "tool.started",
+        summary: "Ran command started",
+        payload: {
+          itemType: "command_execution",
+          detail: "node -e 'inspect()'",
+          data: {
+            toolCallId: "tool-command-readonly",
+            command: "node -e 'inspect()'",
+            item: {
+              commandActions: [
+                { type: "read", command: "cat package.json", path: "/repo/package.json" },
+                { type: "search", command: "rg query", query: "query" },
+              ],
+            },
+          },
+        },
+      }),
+    ];
+
+    const [entry] = deriveWorkLogEntries(activities, undefined);
+    expect(entry?.activitySafety).toEqual({
+      kind: "verified-read-only",
+      source: "command-actions",
+    });
+  });
+
+  it("lets observed changed files override read-only command action hints", () => {
+    const activities: OrchestrationThreadActivity[] = [
+      makeActivity({
+        id: "command-start",
+        createdAt: "2026-02-23T00:00:01.000Z",
+        kind: "tool.started",
+        summary: "Ran command started",
+        payload: {
+          itemType: "command_execution",
+          data: {
+            toolCallId: "tool-command-mutating",
+            command: "cat package.json",
+            commandActions: [{ type: "read", command: "cat package.json" }],
+          },
+        },
+      }),
+      makeActivity({
+        id: "command-complete",
+        createdAt: "2026-02-23T00:00:02.000Z",
+        kind: "tool.completed",
+        summary: "Ran command",
+        payload: {
+          itemType: "command_execution",
+          data: {
+            toolCallId: "tool-command-mutating",
+            command: "cat package.json",
+            commandActions: [{ type: "read", command: "cat package.json" }],
+            changes: [{ path: "package.json" }],
+          },
+        },
+      }),
+    ];
+
+    const [entry] = deriveWorkLogEntries(activities, undefined);
+    expect(entry?.changedFiles).toEqual(["package.json"]);
+    expect(entry?.activitySafety).toEqual({ kind: "mutating", source: "changed-files" });
+  });
+
   it("reconciles command lifecycle by tool call id across intervening assistant text", () => {
     const activities: OrchestrationThreadActivity[] = [
       makeActivity({

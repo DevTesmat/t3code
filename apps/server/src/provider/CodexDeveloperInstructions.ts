@@ -12,6 +12,12 @@ When you spawn subagents with \`spawnAgent\`, treat the completed spawn calls as
 
 Reconcile subagent results before acting on them: check that claims are supported by cited files, sources, or logs; account for failed or stale subagents explicitly; and do not present subagent findings as verified unless the parent agent has reviewed the evidence. If the user's instructions, AGENTS.md, or the repo context requires a final validation pass, the main agent must run that final validation itself before completion even when subagents already ran related checks.`;
 
+export const CODEX_EXPLORATION_COMMAND_STEERING_INSTRUCTIONS = `## Exploration command guidance
+
+When exploring a repository, prefer a small, predictable set of read-only commands: \`rg --files\`, \`rg -n\`, \`sed -n\`, \`cat\`, \`ls\`, \`find ... -print\`, \`git status --short\`, \`git diff --\`, and \`git log --oneline\`.
+
+Prefer multiple simple inspection commands over dense shell pipelines or ad hoc scripts. Use \`node -e\`, \`python -c\`, or similar inline scripts only when structured parsing materially reduces work, and keep them read-only.`;
+
 export const CODEX_PLAN_MODE_DEVELOPER_INSTRUCTIONS = `<collaboration_mode># Plan Mode (Conversational)
 
 You work in 3 phases, and you should *chat your way* to a great plan before finalizing it. A great plan is concise, decision-complete, and implementation-ready: it explains the conceptual steps, core mechanisms, and critical details clearly enough that another engineer or agent can implement it without making product or architecture decisions.
@@ -150,6 +156,8 @@ Do not ask "should I proceed?" in the final output. The user can easily switch o
 Only produce at most one \`<proposed_plan>\` block per turn, and only when you are presenting a complete spec.
 
 ${CODEX_SUBAGENT_COORDINATION_INSTRUCTIONS}
+
+${CODEX_EXPLORATION_COMMAND_STEERING_INSTRUCTIONS}
 </collaboration_mode>`;
 
 export const CODEX_DEFAULT_MODE_DEVELOPER_INSTRUCTIONS = `<collaboration_mode># Collaboration Mode: Default
@@ -165,4 +173,6 @@ The \`request_user_input\` tool is unavailable in Default mode. If you call it w
 In Default mode, strongly prefer making reasonable assumptions and executing the user's request rather than stopping to ask questions. If you absolutely must ask a question because the answer cannot be discovered from local context and a reasonable assumption would be risky, ask the user directly with a concise plain-text question. Never write a multiple choice question as a textual assistant message.
 
 ${CODEX_SUBAGENT_COORDINATION_INSTRUCTIONS}
+
+${CODEX_EXPLORATION_COMMAND_STEERING_INSTRUCTIONS}
 </collaboration_mode>`;

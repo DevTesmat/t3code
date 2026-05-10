@@ -13,7 +13,11 @@ import {
   type ThreadId,
   TurnId,
 } from "@t3tools/contracts";
-import { classifyToolActivityGroup } from "@t3tools/shared/toolActivity";
+import {
+  classifyToolActivityGroup,
+  deriveToolActivitySafety,
+  type ToolActivitySafetyVerdict,
+} from "@t3tools/shared/toolActivity";
 import { deriveUserInputPauseDurationMs as deriveSharedUserInputPauseDurationMs } from "@t3tools/shared/workDuration";
 
 import type {
@@ -67,6 +71,7 @@ export interface WorkLogEntry {
   status?: "running" | "completed" | "failed";
   exitCode?: number;
   changedFiles?: ReadonlyArray<string>;
+  activitySafety?: ToolActivitySafetyVerdict;
   tone: "thinking" | "tool" | "info" | "error";
   toolTitle?: string;
   itemType?: ToolLifecycleItemType;
@@ -677,6 +682,7 @@ function toDerivedWorkLogEntry(activity: OrchestrationThreadActivity): DerivedWo
       : null;
   const commandPreview = extractToolCommand(payload);
   const changedFiles = extractChangedFiles(payload);
+  const commandActionTypes = extractCommandActionTypes(payload);
   const title = extractToolTitle(payload);
   const itemType = extractWorkLogItemType(payload);
   const outputPreview = extractCommandOutputPreview(payload, itemType);
@@ -723,6 +729,12 @@ function toDerivedWorkLogEntry(activity: OrchestrationThreadActivity): DerivedWo
     activityKind: activity.kind,
   };
   const requestKind = extractWorkLogRequestKind(payload);
+  const activitySafety = deriveToolActivitySafety({
+    itemType,
+    changedFiles,
+    requestKind,
+    commandActionTypes,
+  });
   if (detail) {
     entry.detail = detail;
   }
@@ -745,6 +757,9 @@ function toDerivedWorkLogEntry(activity: OrchestrationThreadActivity): DerivedWo
   }
   if (changedFiles.length > 0) {
     entry.changedFiles = changedFiles;
+  }
+  if (activitySafety) {
+    entry.activitySafety = activitySafety;
   }
   if (title) {
     entry.toolTitle = title;
@@ -1133,6 +1148,7 @@ function mergeDerivedWorkLogEntries(
   const toolTitle = next.toolTitle ?? previous.toolTitle;
   const itemType = next.itemType ?? previous.itemType;
   const requestKind = next.requestKind ?? previous.requestKind;
+  const activitySafety = mergeToolActivitySafety(previous.activitySafety, next.activitySafety);
   const collapseKey = next.collapseKey ?? previous.collapseKey;
   const toolCallId = next.toolCallId ?? previous.toolCallId;
   const toolKey = next.toolKey ?? previous.toolKey;
@@ -1151,12 +1167,26 @@ function mergeDerivedWorkLogEntries(
     ...(toolTitle ? { toolTitle } : {}),
     ...(itemType ? { itemType } : {}),
     ...(requestKind ? { requestKind } : {}),
+    ...(activitySafety ? { activitySafety } : {}),
     ...(collapseKey ? { collapseKey } : {}),
     ...(toolCallId ? { toolCallId } : {}),
     ...(toolKey ? { toolKey } : {}),
     ...(turnId ? { turnId } : {}),
     ...(failure ? { failure } : {}),
   };
+}
+
+function mergeToolActivitySafety(
+  previous: ToolActivitySafetyVerdict | undefined,
+  next: ToolActivitySafetyVerdict | undefined,
+): ToolActivitySafetyVerdict | undefined {
+  if (previous?.kind === "mutating") {
+    return previous;
+  }
+  if (next?.kind === "mutating") {
+    return next;
+  }
+  return next ?? previous;
 }
 
 function mergeWorkLogStatus(
@@ -1731,6 +1761,26 @@ function extractToolCallId(payload: Record<string, unknown> | null): string | nu
   return asTrimmedString(data?.toolCallId);
 }
 
+function extractCommandActionTypes(payload: Record<string, unknown> | null): string[] | undefined {
+  const data = asRecord(payload?.data);
+  const item = asRecord(data?.item);
+  const rawActions = data?.commandActions ?? item?.commandActions;
+  if (!Array.isArray(rawActions)) {
+    return undefined;
+  }
+
+  const actionTypes = rawActions
+    .map((action) => {
+      if (typeof action === "string") {
+        return asTrimmedString(action);
+      }
+      return asTrimmedString(asRecord(action)?.type);
+    })
+    .filter((actionType): actionType is string => actionType !== undefined);
+
+  return actionTypes.length > 0 ? actionTypes : undefined;
+}
+
 function extractCollabTool(payload: Record<string, unknown> | null): string | null {
   const data = asRecord(payload?.data);
   return asTrimmedString(data?.collabTool);
@@ -2143,6 +2193,7 @@ function labelForToolActivity(entry: WorkLogEntry): string {
     detail: entry.detail,
     changedFiles: entry.changedFiles,
     requestKind: entry.requestKind,
+    safety: entry.activitySafety,
   });
   if (activityGroupKind === "exploration") {
     return "Exploring...";

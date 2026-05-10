@@ -1040,6 +1040,33 @@ describe("MessagesTimeline", () => {
     expect(markup).not.toContain("should not render");
   });
 
+  it("falls back to command parsing for unknown structured command actions", async () => {
+    const { MessagesTimeline } = await import("./MessagesTimeline");
+    const markup = renderToStaticMarkup(
+      <MessagesTimeline
+        {...buildProps()}
+        timelineEntries={[
+          {
+            id: "entry-1",
+            kind: "work",
+            createdAt: "2026-03-17T19:12:28.000Z",
+            entry: {
+              id: "work-1",
+              createdAt: "2026-03-17T19:12:28.000Z",
+              label: "Ran command",
+              tone: "tool",
+              itemType: "command_execution",
+              command: "cat package.json",
+              activitySafety: { kind: "unknown", source: "command-actions" },
+            },
+          },
+        ]}
+      />,
+    );
+
+    expect(markup).toContain("Exploring");
+  });
+
   it("does not render assistant changed files inside message content", async () => {
     const { MessagesTimeline } = await import("./MessagesTimeline");
     const assistantMessageId = MessageId.make("message-assistant-1");

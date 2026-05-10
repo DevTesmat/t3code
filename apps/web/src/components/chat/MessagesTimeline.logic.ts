@@ -298,6 +298,7 @@ function classifyWorkEntryActivityGroup(entry: WorkLogEntry): ToolActivityGroupK
     detail: entry.detail,
     changedFiles: entry.changedFiles,
     requestKind: entry.requestKind,
+    safety: entry.activitySafety,
   });
 }
 

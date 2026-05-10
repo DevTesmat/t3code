@@ -8,6 +8,7 @@ import * as CodexRpc from "effect-codex-app-server/rpc";
 
 import {
   CODEX_DEFAULT_MODE_DEVELOPER_INSTRUCTIONS,
+  CODEX_EXPLORATION_COMMAND_STEERING_INSTRUCTIONS,
   CODEX_PLAN_MODE_DEVELOPER_INSTRUCTIONS,
   CODEX_SUBAGENT_COORDINATION_INSTRUCTIONS,
 } from "../CodexDeveloperInstructions.ts";
@@ -118,6 +119,10 @@ describe("buildTurnStartParams", () => {
       CODEX_PLAN_MODE_DEVELOPER_INSTRUCTIONS,
       /main agent must run that final validation/,
     );
+    assert.match(CODEX_PLAN_MODE_DEVELOPER_INSTRUCTIONS, /Exploration command guidance/);
+    assert.match(CODEX_PLAN_MODE_DEVELOPER_INSTRUCTIONS, /rg --files/);
+    assert.match(CODEX_PLAN_MODE_DEVELOPER_INSTRUCTIONS, /git status --short/);
+    assert.match(CODEX_PLAN_MODE_DEVELOPER_INSTRUCTIONS, /dense shell pipelines/);
   });
 
   it("includes default collaboration mode and image attachments", () => {
@@ -182,6 +187,10 @@ describe("buildTurnStartParams", () => {
       CODEX_DEFAULT_MODE_DEVELOPER_INSTRUCTIONS,
       /main agent must run that final validation/,
     );
+    assert.match(CODEX_DEFAULT_MODE_DEVELOPER_INSTRUCTIONS, /Exploration command guidance/);
+    assert.match(CODEX_DEFAULT_MODE_DEVELOPER_INSTRUCTIONS, /rg --files/);
+    assert.match(CODEX_DEFAULT_MODE_DEVELOPER_INSTRUCTIONS, /git status --short/);
+    assert.match(CODEX_DEFAULT_MODE_DEVELOPER_INSTRUCTIONS, /dense shell pipelines/);
   });
 
   it("uses the same subagent coordination guidance in plan and default modes", () => {
@@ -192,6 +201,17 @@ describe("buildTurnStartParams", () => {
     assert.match(
       CODEX_DEFAULT_MODE_DEVELOPER_INSTRUCTIONS,
       new RegExp(escapeRegExp(CODEX_SUBAGENT_COORDINATION_INSTRUCTIONS)),
+    );
+  });
+
+  it("uses the same exploration command guidance in plan and default modes", () => {
+    assert.match(
+      CODEX_PLAN_MODE_DEVELOPER_INSTRUCTIONS,
+      new RegExp(escapeRegExp(CODEX_EXPLORATION_COMMAND_STEERING_INSTRUCTIONS)),
+    );
+    assert.match(
+      CODEX_DEFAULT_MODE_DEVELOPER_INSTRUCTIONS,
+      new RegExp(escapeRegExp(CODEX_EXPLORATION_COMMAND_STEERING_INSTRUCTIONS)),
     );
   });
 

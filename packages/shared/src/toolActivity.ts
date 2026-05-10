@@ -1,6 +1,18 @@
 import type { ToolLifecycleItemType } from "@t3tools/contracts";
 
 export type ToolActivityGroupKind = "exploration" | "validation" | "other";
+export type ToolActivitySafetyKind = "verified-read-only" | "mutating" | "unknown";
+export type ToolActivitySafetySource =
+  | "file-change"
+  | "command-actions"
+  | "request-kind"
+  | "changed-files"
+  | "heuristic";
+
+export interface ToolActivitySafetyVerdict {
+  readonly kind: ToolActivitySafetyKind;
+  readonly source: ToolActivitySafetySource;
+}
 
 function asRecord(value: unknown): Record<string, unknown> | undefined {
   return value !== null && typeof value === "object" && !Array.isArray(value)
@@ -542,6 +554,44 @@ function classifyCommandActivity(command: string): ToolActivityGroupKind {
   return segments.every(isReadOnlyExplorationSegment) ? "exploration" : "other";
 }
 
+const readOnlyCommandActionTypes = new Set(["read", "listfiles", "search"]);
+
+function normalizeCommandActionType(value: unknown): string | undefined {
+  if (typeof value === "string") {
+    return asTrimmedString(value)?.toLowerCase();
+  }
+  const record = asRecord(value);
+  return asTrimmedString(record?.type)?.toLowerCase();
+}
+
+export function deriveToolActivitySafety(input: {
+  readonly itemType?: ToolLifecycleItemType | null | undefined;
+  readonly changedFiles?: ReadonlyArray<string> | null | undefined;
+  readonly requestKind?: "command" | "file-read" | "file-change" | null | undefined;
+  readonly commandActionTypes?: ReadonlyArray<string> | null | undefined;
+}): ToolActivitySafetyVerdict | undefined {
+  if (input.itemType === "file_change") {
+    return { kind: "mutating", source: "file-change" };
+  }
+  if (input.requestKind === "file-change") {
+    return { kind: "mutating", source: "request-kind" };
+  }
+  if ((input.changedFiles?.length ?? 0) > 0) {
+    return { kind: "mutating", source: "changed-files" };
+  }
+
+  const commandActionTypes = input.commandActionTypes
+    ?.map((actionType) => normalizeCommandActionType(actionType))
+    .filter((actionType): actionType is string => actionType !== undefined);
+  if (commandActionTypes !== undefined && commandActionTypes.length > 0) {
+    return commandActionTypes.every((actionType) => readOnlyCommandActionTypes.has(actionType))
+      ? { kind: "verified-read-only", source: "command-actions" }
+      : { kind: "unknown", source: "command-actions" };
+  }
+
+  return undefined;
+}
+
 export interface ToolActivityGroupClassificationInput {
   readonly itemType?: ToolLifecycleItemType | null | undefined;
   readonly title?: string | null | undefined;
@@ -550,17 +600,26 @@ export interface ToolActivityGroupClassificationInput {
   readonly detail?: string | null | undefined;
   readonly changedFiles?: ReadonlyArray<string> | null | undefined;
   readonly requestKind?: "command" | "file-read" | "file-change" | null | undefined;
+  readonly commandActionTypes?: ReadonlyArray<string> | null | undefined;
+  readonly safety?: ToolActivitySafetyVerdict | null | undefined;
 }
 
 export function classifyToolActivityGroup(
   input: ToolActivityGroupClassificationInput,
 ): ToolActivityGroupKind {
-  if (
-    input.itemType === "file_change" ||
-    input.requestKind === "file-change" ||
-    (input.changedFiles?.length ?? 0) > 0
-  ) {
+  const safety =
+    input.safety ??
+    deriveToolActivitySafety({
+      itemType: input.itemType,
+      changedFiles: input.changedFiles,
+      requestKind: input.requestKind,
+      commandActionTypes: input.commandActionTypes,
+    });
+  if (safety?.kind === "mutating") {
     return "other";
+  }
+  if (safety?.kind === "verified-read-only") {
+    return "exploration";
   }
 
   const command = asTrimmedString(input.command ?? undefined);
