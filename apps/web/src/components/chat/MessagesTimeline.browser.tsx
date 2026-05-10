@@ -88,8 +88,23 @@ vi.mock("@legendapp/list/react", async () => {
 });
 
 vi.mock("@pierre/diffs/react", () => ({
-  FileDiff: (props: { fileDiff: { name?: string; prevName?: string } }) => (
-    <div data-testid="inline-file-diff">{props.fileDiff.name ?? props.fileDiff.prevName}</div>
+  FileDiff: (props: {
+    fileDiff: {
+      name?: string;
+      prevName?: string;
+      additionLines?: string[];
+      deletionLines?: string[];
+    };
+  }) => (
+    <div data-testid="inline-file-diff">
+      {props.fileDiff.name ?? props.fileDiff.prevName}
+      {(props.fileDiff.deletionLines ?? []).map((line) => (
+        <span key={`deletion:${line}`}>-{line}</span>
+      ))}
+      {(props.fileDiff.additionLines ?? []).map((line) => (
+        <span key={`addition:${line}`}>+{line}</span>
+      ))}
+    </div>
   ),
 }));
 
@@ -637,32 +652,11 @@ describe("MessagesTimeline", () => {
     }
   });
 
-  it("renders completed changed-file rows inline and reuses the loaded diff when collapsed", async () => {
+  it("does not fall back to a whole-turn checkpoint diff when per-call patches are unavailable", async () => {
     const environmentId = EnvironmentId.make("environment-local");
     const threadId = ThreadId.make("thread-1");
     const turnId = TurnId.make("turn-1");
-    const getTurnDiff = vi.fn(async () => ({
-      threadId,
-      fromTurnCount: 1,
-      toTurnCount: 2,
-      diff: [
-        "diff --git a/src/app.ts b/src/app.ts",
-        "index 1111111..2222222 100644",
-        "--- a/src/app.ts",
-        "+++ b/src/app.ts",
-        "@@ -1 +1 @@",
-        "-old",
-        "+new",
-        "diff --git a/src/other.ts b/src/other.ts",
-        "index 3333333..4444444 100644",
-        "--- a/src/other.ts",
-        "+++ b/src/other.ts",
-        "@@ -1 +1 @@",
-        "-other",
-        "+changed",
-        "",
-      ].join("\n"),
-    }));
+    const getTurnDiff = vi.fn();
     __setEnvironmentApiOverrideForTests(environmentId, {
       orchestration: {
         getTurnDiff,
@@ -718,17 +712,12 @@ describe("MessagesTimeline", () => {
     );
 
     try {
-      await expect.element(page.getByTestId("inline-file-diff")).toHaveTextContent("src/app.ts");
-      await expect.element(page.getByText("src/other.ts")).not.toBeInTheDocument();
-      expect(getTurnDiff).toHaveBeenCalledWith({
-        threadId,
-        fromTurnCount: 1,
-        toTurnCount: 2,
-      });
-
-      await page.getByTestId("inline-diff-toggle").click();
       await expect.element(page.getByTestId("inline-file-diff")).not.toBeInTheDocument();
-      expect(getTurnDiff).toHaveBeenCalledTimes(1);
+      await page.getByTestId("inline-diff-toggle").click();
+      await expect
+        .element(page.getByText("Per-call patch details are no longer retained for src/app.ts."))
+        .toBeInTheDocument();
+      expect(getTurnDiff).not.toHaveBeenCalled();
     } finally {
       queryClient.clear();
       await screen.unmount();
@@ -763,6 +752,14 @@ describe("MessagesTimeline", () => {
         getFullThreadDiff: vi.fn(),
       },
     } as unknown as EnvironmentApi);
+    hydrateLiveCommandOutputSnapshot(environmentId, {
+      threadId,
+      turnId,
+      toolCallId: ProviderItemId.make("patch-large"),
+      updatedAt: "2026-04-13T12:00:02.000Z",
+      text: diff,
+      truncated: false,
+    });
     const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
 
     const renderStartedAt = performance.now();
@@ -798,6 +795,7 @@ describe("MessagesTimeline", () => {
                 tone: "tool",
                 itemType: "file_change",
                 status: "completed",
+                toolCallId: "patch-large",
                 changedFiles: [selectedPath],
               },
             },
@@ -810,7 +808,7 @@ describe("MessagesTimeline", () => {
       await expect.element(page.getByTestId("inline-file-diff")).toHaveTextContent(selectedPath);
       expectBrowserDurationUnder(renderStartedAt, 5_000, "large inline diff render");
       await expect.element(page.getByText("src/generated/file-000.ts")).not.toBeInTheDocument();
-      expect(getTurnDiff).toHaveBeenCalledTimes(1);
+      expect(getTurnDiff).not.toHaveBeenCalled();
 
       await page.getByTestId("inline-diff-toggle").click();
       await expect.element(page.getByTestId("inline-file-diff")).not.toBeInTheDocument();

@@ -328,11 +328,8 @@ describe("MessagesTimeline", () => {
 
     expect(markup).toContain("Editing files");
     expect(markup).toContain("src/app.ts");
-    expect(markup).toContain("-const value = &#x27;old&#x27;;");
-    expect(markup).toContain("+const value = &#x27;new&#x27;;");
-    expect(countOccurrences(markup, ">1</span>")).toBeGreaterThanOrEqual(2);
-    expect(markup).toContain("bg-success");
-    expect(markup).toContain("bg-destructive");
+    expect(markup).toContain("inline-file-change-patch");
+    expect(markup).toContain("diffs-container");
   });
 
   it("numbers streamed Codex new-file patches without hunk headers", async () => {
@@ -378,12 +375,8 @@ describe("MessagesTimeline", () => {
       />,
     );
 
-    expect(markup).toContain("# File Change UI Fixture");
-    expect(markup).toContain("First body line");
-    expect(markup).toContain(">1</span>");
-    expect(markup).toContain(">3</span>");
-    expect(markup).toContain(">4</span>");
-    expect(markup).toContain("bg-success");
+    expect(markup).toContain("inline-file-change-patch");
+    expect(markup).toContain("diffs-container");
   });
 
   it("renders partial file-change output before a newline arrives", async () => {

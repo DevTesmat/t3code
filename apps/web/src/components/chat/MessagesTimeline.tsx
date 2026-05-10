@@ -1,6 +1,5 @@
 import { type EnvironmentId, type MessageId, type ThreadId, type TurnId } from "@t3tools/contracts";
 import { FileDiff } from "@pierre/diffs/react";
-import { useQuery } from "@tanstack/react-query";
 import {
   createContext,
   memo,
@@ -64,7 +63,6 @@ import { type TimestampFormat } from "@t3tools/contracts/settings";
 import { formatTimestamp } from "../../timestampFormat";
 import { useSettings } from "../../hooks/useSettings";
 import { useTheme } from "../../hooks/useTheme";
-import { checkpointDiffQueryOptions } from "../../lib/providerReactQuery";
 import { resolveDiffThemeName } from "../../lib/diffRendering";
 import { isScrollViewportAtBottom } from "./scrollStickiness";
 import {
@@ -1272,15 +1270,6 @@ const ManagedFailedEditPreview = memo(function ManagedFailedEditPreview(props: {
   );
 });
 
-type LivePatchLineKind = "addition" | "deletion" | "header" | "context";
-
-interface LivePatchLine {
-  readonly id: string;
-  readonly kind: LivePatchLineKind;
-  readonly lineNumber: number | null;
-  readonly text: string;
-}
-
 const LIVE_FILE_CHANGE_REVEAL_CHARS_PER_SECOND = 9_000;
 const LIVE_FILE_CHANGE_REVEAL_MIN_STEP = 24;
 
@@ -1397,130 +1386,46 @@ function useRevealedLiveFileChangeText(text: string, animate: boolean): string {
   return displayedText;
 }
 
-function isLivePatchMetadataLine(line: string): boolean {
-  return (
-    line.startsWith("diff ") ||
-    line.startsWith("@@") ||
-    line.startsWith("+++") ||
-    line.startsWith("---") ||
-    line.startsWith("index ") ||
-    line.startsWith("new file mode ") ||
-    line.startsWith("deleted file mode ") ||
-    line.startsWith("old mode ") ||
-    line.startsWith("new mode ") ||
-    line.startsWith("similarity index ") ||
-    line.startsWith("dissimilarity index ") ||
-    line.startsWith("rename from ") ||
-    line.startsWith("rename to ") ||
-    line.startsWith("copy from ") ||
-    line.startsWith("copy to ") ||
-    line.startsWith("Binary files ")
-  );
-}
-
-function parseLivePatchLines(text: string): LivePatchLine[] {
-  const normalized = text.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
-  const rawLines = normalized.split("\n");
-  const sourceLines = normalized.endsWith("\n") ? rawLines.slice(0, -1) : rawLines;
-  const lineEntries: LivePatchLine[] = [];
-  let oldLineNumber: number | null = null;
-  let newLineNumber: number | null = null;
-  let newFileBodyLineNumber: number | null = null;
-  let deletedFileBodyLineNumber: number | null = null;
-  let previousHeaderWasOldDevNull = false;
-
-  for (const [sourceIndex, line] of sourceLines.entries()) {
-    const hunkMatch = /^@@\s+-(?<oldStart>\d+)(?:,\d+)?\s+\+(?<newStart>\d+)(?:,\d+)?\s+@@/u.exec(
-      line,
-    );
-    if (line.startsWith("diff ")) {
-      oldLineNumber = null;
-      newLineNumber = null;
-      newFileBodyLineNumber = null;
-      deletedFileBodyLineNumber = null;
-      previousHeaderWasOldDevNull = false;
-    }
-    if (hunkMatch?.groups?.oldStart && hunkMatch.groups.newStart) {
-      oldLineNumber = Number.parseInt(hunkMatch.groups.oldStart, 10);
-      newLineNumber = Number.parseInt(hunkMatch.groups.newStart, 10);
-      newFileBodyLineNumber = null;
-      deletedFileBodyLineNumber = null;
-    }
-
-    const isMetadataLine = isLivePatchMetadataLine(line);
-    if (line === "--- /dev/null") {
-      previousHeaderWasOldDevNull = true;
-    } else if (line.startsWith("---")) {
-      previousHeaderWasOldDevNull = false;
-    } else if (line.startsWith("+++") && previousHeaderWasOldDevNull) {
-      newFileBodyLineNumber = 1;
-      previousHeaderWasOldDevNull = false;
-    } else if (line === "+++ /dev/null") {
-      deletedFileBodyLineNumber = 1;
-      previousHeaderWasOldDevNull = false;
-    }
-
-    const kind: LivePatchLineKind =
-      line.startsWith("+") && !line.startsWith("+++")
-        ? "addition"
-        : line.startsWith("-") && !line.startsWith("---")
-          ? "deletion"
-          : isMetadataLine
-            ? "header"
-            : newFileBodyLineNumber !== null && oldLineNumber === null && newLineNumber === null
-              ? "addition"
-              : deletedFileBodyLineNumber !== null &&
-                  oldLineNumber === null &&
-                  newLineNumber === null
-                ? "deletion"
-                : "context";
-
-    let lineNumber: number | null = null;
-    if (kind === "addition") {
-      if (newLineNumber !== null) {
-        lineNumber = newLineNumber;
-        newLineNumber += 1;
-      } else if (newFileBodyLineNumber !== null) {
-        lineNumber = newFileBodyLineNumber;
-        newFileBodyLineNumber += 1;
-      }
-    } else if (kind === "deletion") {
-      if (oldLineNumber !== null) {
-        lineNumber = oldLineNumber;
-        oldLineNumber += 1;
-      } else if (deletedFileBodyLineNumber !== null) {
-        lineNumber = deletedFileBodyLineNumber;
-        deletedFileBodyLineNumber += 1;
-      }
-    } else if (kind === "context") {
-      lineNumber = newLineNumber;
-      if (oldLineNumber !== null) {
-        oldLineNumber += 1;
-      }
-      if (newLineNumber !== null) {
-        newLineNumber += 1;
-      }
-    }
-
-    lineEntries.push({
-      id: `${sourceIndex}:${line}`,
-      kind,
-      lineNumber,
-      text: line.length > 0 ? line : " ",
-    });
-  }
-
-  return lineEntries.slice(-300);
-}
-
 const LiveFileChangePreview = memo(function LiveFileChangePreview(props: {
   liveOutput: LiveCommandOutputSnapshot;
   running: boolean;
   expanded: boolean;
+  changedFiles?: ReadonlyArray<string> | undefined;
+  workspaceRoot?: string | undefined;
 }) {
-  const { liveOutput, running, expanded } = props;
+  const { liveOutput, running, expanded, changedFiles = [], workspaceRoot } = props;
   const displayedText = useRevealedLiveFileChangeText(liveOutput.text, running);
-  const lines = useMemo(() => parseLivePatchLines(displayedText), [displayedText]);
+  const { resolvedTheme } = useTheme();
+  const settings = useSettings();
+  const renderablePatch = useMemo(
+    () => getRenderablePatch(displayedText, `inline-file-change:${resolvedTheme}`),
+    [displayedText, resolvedTheme],
+  );
+  const requestedPaths = useMemo(
+    () => changedFiles.map((filePath) => normalizeDiffMatchPath(filePath, workspaceRoot)),
+    [changedFiles, workspaceRoot],
+  );
+  const selectedFileDiff = useMemo(() => {
+    if (renderablePatch?.kind !== "files") {
+      return null;
+    }
+    if (requestedPaths.length === 0) {
+      return renderablePatch.files[0] ?? null;
+    }
+    const fileDiffByPath = new Map<string, (typeof renderablePatch.files)[number]>();
+    for (const fileDiff of renderablePatch.files) {
+      for (const filePath of resolveFileDiffMatchPaths(fileDiff)) {
+        fileDiffByPath.set(normalizeDiffMatchPath(filePath, workspaceRoot), fileDiff);
+      }
+    }
+    for (const requestedPath of requestedPaths) {
+      const fileDiff = fileDiffByPath.get(requestedPath);
+      if (fileDiff) {
+        return fileDiff;
+      }
+    }
+    return renderablePatch.files[0] ?? null;
+  }, [renderablePatch, requestedPaths, workspaceRoot]);
   const scrollerRef = useRef<HTMLDivElement | null>(null);
   const userScrolledAwayRef = useRef(false);
 
@@ -1552,12 +1457,80 @@ const LiveFileChangePreview = memo(function LiveFileChangePreview(props: {
       updatedAt: liveOutput.updatedAt,
       running,
       expanded,
-      lineCount: lines.length,
+      renderableKind: renderablePatch?.kind ?? null,
+      selectedFile:
+        selectedFileDiff === null ? null : resolveFileDiffMatchPaths(selectedFileDiff).join(","),
     });
-  }, [displayedText.length, expanded, lines.length, liveOutput, running]);
+  }, [displayedText.length, expanded, liveOutput, renderablePatch, running, selectedFileDiff]);
 
   if (displayedText.length === 0) {
     return <InlineDiffMessage minLines={3}>Waiting for file-change stream...</InlineDiffMessage>;
+  }
+
+  if (selectedFileDiff) {
+    const fileKey = buildFileDiffRenderKey(selectedFileDiff);
+    return (
+      <div className="pl-7 pr-1 pb-1">
+        <div
+          ref={scrollerRef}
+          onScroll={handleScroll}
+          className={cn(
+            "min-h-14 overflow-auto rounded-md border border-border/55 bg-card/25 [scrollbar-width:thin] [&::-webkit-scrollbar]:h-1.5 [&::-webkit-scrollbar]:w-1.5",
+            expanded ? "max-h-80" : "max-h-48",
+          )}
+        >
+          {liveOutput.truncated && (
+            <div className="border-b border-border/45 px-2 py-1 text-[10px] text-muted-foreground/55">
+              Earlier streamed edits truncated.
+            </div>
+          )}
+          <div key={`${fileKey}:${resolvedTheme}`} data-testid="inline-file-change-patch">
+            <FileDiff
+              fileDiff={selectedFileDiff}
+              options={{
+                diffStyle: "unified",
+                lineDiffType: "none",
+                overflow: settings.diffWordWrap ? "wrap" : "scroll",
+                theme: resolveDiffThemeName(resolvedTheme),
+                themeType: resolvedTheme as InlineDiffThemeType,
+                unsafeCSS: DIFF_RENDER_UNSAFE_CSS,
+              }}
+            />
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  if (renderablePatch?.kind === "raw") {
+    return (
+      <div className="pl-7 pr-1 pb-1">
+        <div
+          ref={scrollerRef}
+          onScroll={handleScroll}
+          className={cn(
+            "min-h-14 overflow-auto rounded-md border border-border/55 bg-background/80 p-2 shadow-xs [scrollbar-width:thin] [&::-webkit-scrollbar]:h-1.5 [&::-webkit-scrollbar]:w-1.5",
+            expanded ? "max-h-80" : "max-h-48",
+          )}
+          data-testid="inline-file-change-patch"
+        >
+          {liveOutput.truncated && (
+            <div className="mb-1 text-[10px] text-muted-foreground/55">
+              Earlier streamed edits truncated.
+            </div>
+          )}
+          <p className="mb-1 text-[10px] text-muted-foreground/65">{renderablePatch.reason}</p>
+          <pre
+            className={cn(
+              "m-0 font-mono text-[10.5px] leading-4 text-muted-foreground/85",
+              settings.diffWordWrap ? "whitespace-pre-wrap wrap-break-word" : "whitespace-pre",
+            )}
+          >
+            {renderablePatch.text}
+          </pre>
+        </div>
+      </div>
+    );
   }
 
   return (
@@ -1575,30 +1548,7 @@ const LiveFileChangePreview = memo(function LiveFileChangePreview(props: {
           <div className="mb-1 text-muted-foreground/55">Earlier streamed edits truncated.</div>
         )}
         <pre className="m-0 min-w-max font-inherit leading-inherit whitespace-pre">
-          {lines.map((line) => (
-            <div
-              key={line.id}
-              className={cn(
-                "grid grid-cols-[3.25rem_auto]",
-                line.kind === "addition" && "bg-success/8",
-                line.kind === "deletion" && "bg-destructive/8",
-              )}
-            >
-              <span className="select-none pr-3 text-right text-muted-foreground/40">
-                {line.lineNumber ?? ""}
-              </span>
-              <span
-                className={cn(
-                  line.kind === "addition" && "text-success-foreground dark:text-success",
-                  line.kind === "deletion" && "text-destructive",
-                  line.kind === "header" && "text-muted-foreground/65",
-                  line.kind === "context" && "text-muted-foreground/85",
-                )}
-              >
-                {line.text}
-              </span>
-            </div>
-          ))}
+          {displayedText}
         </pre>
       </div>
     </div>
@@ -1606,28 +1556,6 @@ const LiveFileChangePreview = memo(function LiveFileChangePreview(props: {
 });
 
 type InlineDiffThemeType = "light" | "dark";
-
-const INLINE_DIFF_UNSAFE_CSS = `${DIFF_RENDER_UNSAFE_CSS}
-
-:host {
-  --diffs-font-size: 10.5px;
-  --diffs-line-height: 15px;
-  --diffs-gap-fallback: 4px;
-  --diffs-gap-block: 3px;
-  --diffs-gap-inline: 4px;
-  --diffs-tab-size: 2;
-}
-
-[data-code] {
-  padding-block: 3px !important;
-}
-
-[data-file-info] {
-  padding: 4px 6px !important;
-  font-size: 10px !important;
-  font-weight: 600 !important;
-}
-`;
 
 function normalizeDiffMatchPath(pathValue: string, workspaceRoot: string | undefined): string {
   let normalized = pathValue.replace(/\\/g, "/").trim();
@@ -1651,9 +1579,6 @@ const InlineChangedFilesDiffPreview = memo(function InlineChangedFilesDiffPrevie
   expanded: boolean;
 }) {
   const { workEntry, changedFiles, workspaceRoot, liveOutput, expanded } = props;
-  const ctx = use(TimelineRowCtx);
-  const turnId = workEntry.turnId ?? null;
-  const turnSummary = turnId ? ctx.turnDiffSummaryByTurnId.get(turnId) : undefined;
   const isRunningFileChange = workEntry.status === "running";
   if (liveOutput && (liveOutput.text.length > 0 || isRunningFileChange)) {
     return (
@@ -1661,6 +1586,8 @@ const InlineChangedFilesDiffPreview = memo(function InlineChangedFilesDiffPrevie
         liveOutput={liveOutput}
         running={isRunningFileChange}
         expanded={expanded}
+        changedFiles={changedFiles}
+        workspaceRoot={workspaceRoot}
       />
     );
   }
@@ -1670,8 +1597,6 @@ const InlineChangedFilesDiffPreview = memo(function InlineChangedFilesDiffPrevie
       workEntry={workEntry}
       changedFiles={changedFiles}
       workspaceRoot={workspaceRoot}
-      turnId={turnId}
-      turnSummary={turnSummary}
       expanded={expanded}
     />
   );
@@ -1681,162 +1606,17 @@ const CompletedChangedFilesDiffPreview = memo(function CompletedChangedFilesDiff
   workEntry: TimelineWorkEntry;
   changedFiles: ReadonlyArray<string>;
   workspaceRoot: string | undefined;
-  turnId: TurnId | null;
-  turnSummary: TurnDiffSummary | undefined;
   expanded: boolean;
 }) {
-  const { workEntry, changedFiles, workspaceRoot, turnId, turnSummary, expanded } = props;
-  const ctx = use(TimelineRowCtx);
-  const { resolvedTheme } = useTheme();
-  const settings = useSettings();
-  const checkpointTurnCount =
-    turnId && turnSummary
-      ? (turnSummary.checkpointTurnCount ?? ctx.inferredCheckpointTurnCountByTurnId[turnId])
-      : undefined;
-  const checkpointRange =
-    typeof checkpointTurnCount === "number"
-      ? {
-          fromTurnCount: Math.max(0, checkpointTurnCount - 1),
-          toTurnCount: checkpointTurnCount,
-        }
-      : null;
-  const diffQuery = useQuery(
-    checkpointDiffQueryOptions({
-      environmentId: ctx.activeThreadEnvironmentId,
-      threadId: ctx.activeThreadId,
-      fromTurnCount: checkpointRange?.fromTurnCount ?? null,
-      toTurnCount: checkpointRange?.toTurnCount ?? null,
-      cacheScope: turnId ? `turn:${turnId}` : null,
-      enabled: checkpointRange !== null,
-    }),
-  );
-  const renderablePatch = useMemo(
-    () => getRenderablePatch(diffQuery.data?.diff, `inline-diff:${resolvedTheme}`),
-    [diffQuery.data?.diff, resolvedTheme],
-  );
-  const requestedPaths = useMemo(
-    () => new Set(changedFiles.map((filePath) => normalizeDiffMatchPath(filePath, workspaceRoot))),
-    [changedFiles, workspaceRoot],
-  );
-  const matchingFiles = useMemo(() => {
-    if (renderablePatch?.kind !== "files") {
-      return [];
-    }
-    return renderablePatch.files.filter((fileDiff) =>
-      resolveFileDiffMatchPaths(fileDiff).some((filePath) =>
-        requestedPaths.has(normalizeDiffMatchPath(filePath, workspaceRoot)),
-      ),
-    );
-  }, [renderablePatch, requestedPaths, workspaceRoot]);
-  const matchedPaths = useMemo(() => {
-    const paths = new Set<string>();
-    for (const fileDiff of matchingFiles) {
-      for (const filePath of resolveFileDiffMatchPaths(fileDiff)) {
-        paths.add(normalizeDiffMatchPath(filePath, workspaceRoot));
-      }
-    }
-    return paths;
-  }, [matchingFiles, workspaceRoot]);
-  const missingFiles = useMemo(
-    () =>
-      changedFiles.filter(
-        (filePath) => !matchedPaths.has(normalizeDiffMatchPath(filePath, workspaceRoot)),
-      ),
-    [changedFiles, matchedPaths, workspaceRoot],
-  );
-
-  if (!turnId || !turnSummary || checkpointRange === null) {
-    return (
-      <InlineDiffMessage>
-        Per-call patch details are no longer retained for this change.
-      </InlineDiffMessage>
-    );
-  }
-
-  if (diffQuery.isLoading) {
-    return <InlineDiffMessage>Loading inline diff...</InlineDiffMessage>;
-  }
-
-  if (diffQuery.error) {
-    const message =
-      diffQuery.error instanceof Error ? diffQuery.error.message : "Failed to load inline diff.";
-    return <InlineDiffMessage>{message}</InlineDiffMessage>;
-  }
-
-  if (!renderablePatch) {
-    return <InlineDiffMessage>No net diff available for this change.</InlineDiffMessage>;
-  }
-
-  if (renderablePatch.kind === "raw") {
-    return (
-      <div className="pl-7 pr-1 pb-1">
-        <div
-          className={cn(
-            "overflow-auto rounded-md border border-border/50 bg-muted/20 p-2 [scrollbar-width:thin] [&::-webkit-scrollbar]:h-1.5 [&::-webkit-scrollbar]:w-1.5",
-            expanded ? "max-h-36" : "max-h-[5.75rem]",
-          )}
-        >
-          <p className="mb-1 text-[10px] text-muted-foreground/65">{renderablePatch.reason}</p>
-          <pre
-            className={cn(
-              "font-mono text-[9.5px] leading-3.5 text-muted-foreground/85",
-              settings.diffWordWrap ? "whitespace-pre-wrap wrap-break-word" : "whitespace-pre",
-            )}
-          >
-            {renderablePatch.text}
-          </pre>
-        </div>
-      </div>
-    );
-  }
-
-  if (matchingFiles.length === 0) {
-    return (
-      <InlineDiffMessage>
-        Per-call patch details are no longer retained for{" "}
-        {changedFiles.length === 1 ? "this file" : "these files"}.
-      </InlineDiffMessage>
-    );
-  }
-
+  const { changedFiles, workspaceRoot } = props;
   return (
-    <div className="pl-7 pr-1 pb-1">
-      <div
-        className={cn(
-          "min-h-14 overflow-auto rounded-md border border-border/55 bg-card/25 [scrollbar-width:thin] [&::-webkit-scrollbar]:h-1.5 [&::-webkit-scrollbar]:w-1.5",
-          expanded ? "max-h-36" : "max-h-[5.75rem]",
-        )}
-      >
-        {matchingFiles.map((fileDiff) => {
-          const fileKey = buildFileDiffRenderKey(fileDiff);
-          return (
-            <div key={`${fileKey}:${resolvedTheme}`}>
-              <FileDiff
-                fileDiff={fileDiff}
-                options={{
-                  disableFileHeader: true,
-                  diffStyle: "unified",
-                  lineDiffType: "none",
-                  overflow: settings.diffWordWrap ? "wrap" : "scroll",
-                  theme: resolveDiffThemeName(resolvedTheme),
-                  themeType: resolvedTheme as InlineDiffThemeType,
-                  unsafeCSS: INLINE_DIFF_UNSAFE_CSS,
-                }}
-              />
-            </div>
-          );
-        })}
-      </div>
-      {missingFiles.length > 0 && (
-        <div className="mt-1 flex flex-wrap gap-1 text-[10px] text-muted-foreground/55">
-          {missingFiles.map((filePath) => (
-            <span key={`${workEntry.id}:missing-diff:${filePath}`}>
-              Per-call patch not retained for {formatWorkspaceRelativePath(filePath, workspaceRoot)}
-            </span>
-          ))}
-        </div>
-      )}
-    </div>
+    <InlineDiffMessage>
+      Per-call patch details are no longer retained for{" "}
+      {changedFiles.length === 1
+        ? formatWorkspaceRelativePath(changedFiles[0] ?? "this file", workspaceRoot)
+        : "these files"}
+      .
+    </InlineDiffMessage>
   );
 });
 
@@ -2040,11 +1820,10 @@ const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
 
   if (hasInlineDiff || (isFileChange && hasLiveOutput)) {
     const isRunningLivePatch = isFileChange && workEntry.status === "running";
-    const defaultInlineDiffExpanded = false;
     const hasCompletedLivePatch = isFileChange && workEntry.status === "completed" && hasLiveOutput;
+    const defaultInlineDiffExpanded = hasCompletedLivePatch;
     const showInlineDiffPreview =
       isRunningLivePatch ||
-      hasCompletedLivePatch ||
       inlineDiffExpanded ||
       (defaultInlineDiffExpanded && !defaultInlineDiffCollapsed);
     const toggleDefaultExpanded = isRunningLivePatch ? false : defaultInlineDiffExpanded;
