@@ -509,7 +509,12 @@ export function projectEvent(
                     thread.latestTurn.state === "running"
                   ? {
                       ...thread.latestTurn,
-                      state: session.status === "error" ? "error" : "interrupted",
+                      state:
+                        session.status === "error"
+                          ? "error"
+                          : session.status === "needs_resume"
+                            ? "needs_resume"
+                            : "interrupted",
                       completedAt: thread.latestTurn.completedAt ?? session.updatedAt,
                     }
                   : thread.latestTurn,

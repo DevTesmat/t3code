@@ -591,6 +591,21 @@ describe("resolveThreadStatusPill", () => {
     ).toMatchObject({ label: "Awaiting Input", pulse: false });
   });
 
+  it("shows needs resume when a stale working thread requires user action", () => {
+    expect(
+      resolveThreadStatusPill({
+        thread: {
+          ...baseThread,
+          session: {
+            ...baseThread.session,
+            status: "ready",
+            orchestrationStatus: "needs_resume",
+          },
+        },
+      }),
+    ).toMatchObject({ label: "Needs Resume", pulse: false, showTextLabel: true });
+  });
+
   it("falls back to working when the thread is actively running without blockers", () => {
     expect(
       resolveThreadStatusPill({

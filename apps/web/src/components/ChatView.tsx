@@ -422,6 +422,9 @@ interface TerminalLaunchContext {
 
 type PersistentTerminalLaunchContext = Pick<TerminalLaunchContext, "cwd" | "worktreePath">;
 
+const THREAD_RESUME_PROMPT =
+  "The previous runtime session was interrupted or became unresponsive. Continue from the durable conversation state and current workspace files. Do not repeat completed work. Inspect git status, relevant diffs, and relevant files before editing if the current workspace state is uncertain.";
+
 function useLocalDispatchState(input: {
   activeThread: Thread | undefined;
   activeLatestTurn: Thread["latestTurn"] | null;
@@ -1205,6 +1208,7 @@ export default function ChatView(props: ChatViewProps) {
   const phase = derivePhase(activeThread?.session ?? null);
   const activeTurnRunning =
     phase === "running" || activeThread?.session?.orchestrationStatus === "running";
+  const activeThreadNeedsResume = activeThread?.session?.orchestrationStatus === "needs_resume";
   const composerPhase: SessionPhase = activeTurnRunning ? "running" : phase;
   const threadActivities = activeThread?.activities ?? EMPTY_ACTIVITIES;
   const workLogEntries = useMemo(
@@ -1879,6 +1883,64 @@ export default function ChatView(props: ChatViewProps) {
     },
     [draftId, routeThreadRef, serverThread, setStoreThreadError],
   );
+
+  const resumeThread = useCallback(async () => {
+    const api = readEnvironmentApi(environmentId);
+    if (
+      !api ||
+      !activeThread ||
+      !activeThreadNeedsResume ||
+      isSendBusy ||
+      isConnecting ||
+      sendInFlightRef.current
+    ) {
+      return;
+    }
+
+    const messageCreatedAt = new Date().toISOString();
+    const messageId = newMessageId();
+    sendInFlightRef.current = true;
+    beginLocalDispatch({ preparingWorktree: false });
+    setThreadError(activeThread.id, null);
+
+    try {
+      await api.orchestration.dispatchCommand({
+        type: "thread.turn.start",
+        commandId: newCommandId(),
+        threadId: activeThread.id,
+        message: {
+          messageId,
+          role: "user",
+          text: THREAD_RESUME_PROMPT,
+          attachments: [],
+        },
+        modelSelection: activeThread.modelSelection,
+        titleSeed: activeThread.title,
+        runtimeMode,
+        interactionMode,
+        createdAt: messageCreatedAt,
+      });
+    } catch (err) {
+      resetLocalDispatch();
+      setThreadError(
+        activeThread.id,
+        err instanceof Error ? err.message : "Failed to resume thread.",
+      );
+    } finally {
+      sendInFlightRef.current = false;
+    }
+  }, [
+    activeThread,
+    activeThreadNeedsResume,
+    beginLocalDispatch,
+    environmentId,
+    interactionMode,
+    isConnecting,
+    isSendBusy,
+    resetLocalDispatch,
+    runtimeMode,
+    setThreadError,
+  ]);
 
   const focusComposer = useCallback(() => {
     getComposerHandle()?.focusAtEnd();
@@ -4146,6 +4208,26 @@ export default function ChatView(props: ChatViewProps) {
         error={activeThread.error}
         onDismiss={() => setThreadError(activeThread.id, null)}
       />
+      {activeThreadNeedsResume ? (
+        <div className="border-b border-orange-200/70 bg-orange-50 px-3 py-2 text-orange-950 dark:border-orange-900/60 dark:bg-orange-950/35 dark:text-orange-100 sm:px-5">
+          <div className="mx-auto flex max-w-208 flex-col gap-2 text-sm sm:flex-row sm:items-center sm:justify-between">
+            <div className="min-w-0">
+              <div className="font-medium">This thread needs resume.</div>
+              <div className="text-orange-900/80 text-xs dark:text-orange-100/75">
+                It stopped while work was in progress. Review the latest output before resuming.
+              </div>
+            </div>
+            <button
+              type="button"
+              className="inline-flex h-8 shrink-0 items-center justify-center rounded-md bg-orange-600 px-3 font-medium text-white text-xs transition-colors hover:bg-orange-700 disabled:cursor-not-allowed disabled:opacity-60 dark:bg-orange-500 dark:text-orange-950 dark:hover:bg-orange-400"
+              disabled={isSendBusy || isConnecting}
+              onClick={() => void resumeThread()}
+            >
+              Resume
+            </button>
+          </div>
+        </div>
+      ) : null}
       {/* Main content area with optional plan sidebar */}
       <div className="flex min-h-0 min-w-0 flex-1">
         {/* Chat column */}

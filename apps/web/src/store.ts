@@ -1090,6 +1090,7 @@ function toLegacySessionStatus(
     case "error":
       return "error";
     case "ready":
+    case "needs_resume":
     case "interrupted":
       return "ready";
     case "idle":
@@ -1523,11 +1524,13 @@ function applyEnvironmentOrchestrationEvent(
                 turnId: event.payload.turnId,
                 state: event.payload.streaming
                   ? "running"
-                  : thread.latestTurn?.state === "interrupted"
-                    ? "interrupted"
-                    : thread.latestTurn?.state === "error"
-                      ? "error"
-                      : "completed",
+                  : thread.latestTurn?.state === "needs_resume"
+                    ? "needs_resume"
+                    : thread.latestTurn?.state === "interrupted"
+                      ? "interrupted"
+                      : thread.latestTurn?.state === "error"
+                        ? "error"
+                        : "completed",
                 requestedAt:
                   thread.latestTurn?.turnId === event.payload.turnId
                     ? thread.latestTurn.requestedAt
@@ -1605,7 +1608,12 @@ function applyEnvironmentOrchestrationEvent(
                 ? buildLatestTurn({
                     previous: thread.latestTurn,
                     turnId: settlingTurnId,
-                    state: event.payload.session.status === "error" ? "error" : "interrupted",
+                    state:
+                      event.payload.session.status === "error"
+                        ? "error"
+                        : event.payload.session.status === "needs_resume"
+                          ? "needs_resume"
+                          : "interrupted",
                     requestedAt: thread.latestTurn.requestedAt,
                     startedAt: thread.latestTurn.startedAt ?? event.payload.session.updatedAt,
                     completedAt: thread.latestTurn.completedAt ?? event.payload.session.updatedAt,

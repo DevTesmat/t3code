@@ -172,11 +172,13 @@ function mapLatestTurn(
     state:
       row.state === "error"
         ? "error"
-        : row.state === "interrupted"
-          ? "interrupted"
-          : row.state === "completed"
-            ? "completed"
-            : "running",
+        : row.state === "needs_resume"
+          ? "needs_resume"
+          : row.state === "interrupted"
+            ? "interrupted"
+            : row.state === "completed"
+              ? "completed"
+              : "running",
     requestedAt: row.requestedAt,
     startedAt: row.startedAt,
     completedAt: row.completedAt,
@@ -942,11 +944,13 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
                   state:
                     row.state === "error"
                       ? "error"
-                      : row.state === "interrupted"
-                        ? "interrupted"
-                        : row.state === "completed"
-                          ? "completed"
-                          : "running",
+                      : row.state === "needs_resume"
+                        ? "needs_resume"
+                        : row.state === "interrupted"
+                          ? "interrupted"
+                          : row.state === "completed"
+                            ? "completed"
+                            : "running",
                   requestedAt: row.requestedAt,
                   startedAt: row.startedAt,
                   completedAt: row.completedAt,

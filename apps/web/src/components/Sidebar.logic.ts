@@ -27,7 +27,14 @@ type SidebarProject = {
 export type ThreadTraversalDirection = "previous" | "next";
 
 export interface ThreadStatusPill {
-  label: "Working" | "Connecting" | "Done" | "Pending Approval" | "Awaiting Input" | "Plan Ready";
+  label:
+    | "Needs Resume"
+    | "Working"
+    | "Connecting"
+    | "Done"
+    | "Pending Approval"
+    | "Awaiting Input"
+    | "Plan Ready";
   colorClass: string;
   dotClass: string;
   pulse: boolean;
@@ -35,6 +42,7 @@ export interface ThreadStatusPill {
 }
 
 const THREAD_STATUS_PRIORITY: Record<ThreadStatusPill["label"], number> = {
+  "Needs Resume": 6,
   "Pending Approval": 5,
   "Awaiting Input": 4,
   Working: 3,
@@ -360,6 +368,16 @@ export function resolveThreadStatusPill(input: {
       colorClass: "text-amber-600 dark:text-amber-300/90",
       dotClass: "bg-amber-500 dark:bg-amber-300/90",
       pulse: false,
+    };
+  }
+
+  if (thread.session?.orchestrationStatus === "needs_resume") {
+    return {
+      label: "Needs Resume",
+      colorClass: "text-orange-600 dark:text-orange-300/90",
+      dotClass: "bg-orange-500 dark:bg-orange-300/90",
+      pulse: false,
+      showTextLabel: true,
     };
   }
 

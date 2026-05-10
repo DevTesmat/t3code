@@ -5,6 +5,7 @@ import {
   TurnId,
   ProviderDriverKind,
   ProviderInstanceId,
+  type OrchestrationCommand,
 } from "@t3tools/contracts";
 import { Effect, Exit, Layer, ManagedRuntime, Option, Scope, Stream } from "effect";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -53,7 +54,14 @@ function makeReadModel(
     readonly id: ThreadId;
     readonly session: {
       readonly threadId: ThreadId;
-      readonly status: "starting" | "running" | "ready" | "interrupted" | "stopped" | "error";
+      readonly status:
+        | "starting"
+        | "running"
+        | "needs_resume"
+        | "ready"
+        | "interrupted"
+        | "stopped"
+        | "error";
       readonly providerName: "codex" | "claudeAgent";
       readonly runtimeMode: "approval-required" | "full-access" | "auto-accept-edits";
       readonly activeTurnId: TurnId | null;
@@ -128,6 +136,7 @@ describe("ProviderSessionReaper", () => {
     }) => ReturnType<ProviderServiceShape["stopSession"]>;
   }) {
     const stoppedThreadIds = new Set<ThreadId>();
+    const dispatched: OrchestrationCommand[] = [];
     const stopSession = vi.fn<ProviderServiceShape["stopSession"]>(
       (request) =>
         (input.stopSessionImplementation
@@ -167,7 +176,11 @@ describe("ProviderSessionReaper", () => {
     const orchestrationEngine: OrchestrationEngineShape = {
       getReadModel: () => Effect.succeed(input.readModel),
       readEvents: () => Stream.empty,
-      dispatch: () => unsupported(),
+      dispatch: (command) =>
+        Effect.sync(() => {
+          dispatched.push(command);
+          return { sequence: dispatched.length };
+        }),
       streamDomainEvents: Stream.empty,
     };
 
@@ -189,7 +202,7 @@ describe("ProviderSessionReaper", () => {
     );
 
     runtime = ManagedRuntime.make(layer);
-    return { stopSession, stoppedThreadIds };
+    return { stopSession, stoppedThreadIds, dispatched };
   }
 
   it("reaps stale persisted sessions without active turns", async () => {
@@ -239,7 +252,7 @@ describe("ProviderSessionReaper", () => {
     expect(harness.stoppedThreadIds.has(threadId)).toBe(true);
   });
 
-  it("skips stale sessions when the thread still has an active turn", async () => {
+  it("marks stale active-turn sessions as needing explicit resume", async () => {
     const threadId = ThreadId.make("thread-reaper-active-turn");
     const turnId = TurnId.make("turn-reaper-active");
     const now = new Date().toISOString();
@@ -280,11 +293,25 @@ describe("ProviderSessionReaper", () => {
     const reaper = await runtime!.runPromise(Effect.service(ProviderSessionReaper));
     scope = await Effect.runPromise(Scope.make("sequential"));
     await Effect.runPromise(reaper.start().pipe(Scope.provide(scope)));
-    await new Promise((resolve) => setTimeout(resolve, 50));
+    await waitFor(
+      () =>
+        harness.stopSession.mock.calls.length === 1 &&
+        harness.dispatched.some(
+          (command) =>
+            command.type === "thread.session.set" && command.session.status === "needs_resume",
+        ),
+    );
 
-    expect(harness.stopSession).not.toHaveBeenCalled();
+    expect(harness.stopSession.mock.calls[0]?.[0]).toEqual({ threadId });
     const remaining = await runtime!.runPromise(repository.getByThreadId({ threadId }));
     expect(Option.isSome(remaining)).toBe(true);
+    const sessionSet = harness.dispatched.find((command) => command.type === "thread.session.set");
+    expect(sessionSet?.type).toBe("thread.session.set");
+    if (sessionSet?.type === "thread.session.set") {
+      expect(sessionSet.session.status).toBe("needs_resume");
+      expect(sessionSet.session.activeTurnId).toBeNull();
+      expect(sessionSet.session.lastError).toBeNull();
+    }
   });
 
   it("does not reap sessions that are still within the inactivity threshold", async () => {

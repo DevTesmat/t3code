@@ -1,3 +1,4 @@
+import { CommandId, EventId } from "@t3tools/contracts";
 import { Duration, Effect, Layer, Schedule } from "effect";
 
 import { OrchestrationEngineService } from "../../orchestration/Services/OrchestrationEngine.ts";
@@ -10,6 +11,8 @@ import { ProviderService } from "../Services/ProviderService.ts";
 
 const DEFAULT_INACTIVITY_THRESHOLD_MS = 30 * 60 * 1000;
 const DEFAULT_SWEEP_INTERVAL_MS = 5 * 60 * 1000;
+const NEEDS_RESUME_INACTIVITY_MESSAGE =
+  "No provider, tool, or subagent activity was observed while this thread was working. Review the latest output, then resume when ready.";
 
 export interface ProviderSessionReaperLiveOptions {
   readonly inactivityThresholdMs?: number;
@@ -57,7 +60,60 @@ const makeProviderSessionReaper = (options?: ProviderSessionReaperLiveOptions) =
 
         const thread = threadsById.get(binding.threadId);
         if (thread?.session?.activeTurnId != null) {
-          yield* Effect.logDebug("provider.session.reaper.skipped-active-turn", {
+          const nowIso = new Date(now).toISOString();
+          yield* orchestrationEngine.dispatch({
+            type: "thread.activity.append",
+            commandId: CommandId.make(
+              `provider-session-reaper:needs-resume-activity:${binding.threadId}:${crypto.randomUUID()}`,
+            ),
+            threadId: binding.threadId,
+            activity: {
+              id: EventId.make(crypto.randomUUID()),
+              tone: "error",
+              kind: "provider.session.needs_resume",
+              summary: "Thread needs resume",
+              payload: {
+                detail: NEEDS_RESUME_INACTIVITY_MESSAGE,
+                idleDurationMs,
+                provider: binding.provider,
+              },
+              turnId: thread.session.activeTurnId,
+              createdAt: nowIso,
+            },
+            createdAt: nowIso,
+          });
+          yield* orchestrationEngine.dispatch({
+            type: "thread.session.set",
+            commandId: CommandId.make(
+              `provider-session-reaper:needs-resume:${binding.threadId}:${crypto.randomUUID()}`,
+            ),
+            threadId: binding.threadId,
+            session: {
+              threadId: binding.threadId,
+              status: "needs_resume",
+              providerName: thread.session.providerName,
+              ...(thread.session.providerInstanceId !== undefined
+                ? { providerInstanceId: thread.session.providerInstanceId }
+                : {}),
+              runtimeMode: thread.session.runtimeMode,
+              activeTurnId: null,
+              lastError: null,
+              updatedAt: nowIso,
+            },
+            createdAt: nowIso,
+          });
+          yield* providerService.stopSession({ threadId: binding.threadId }).pipe(
+            Effect.catchCause((cause) =>
+              Effect.logWarning("provider.session.reaper.stop-active-needs-resume-failed", {
+                threadId: binding.threadId,
+                provider: binding.provider,
+                idleDurationMs,
+                cause,
+              }),
+            ),
+          );
+          reapedCount += 1;
+          yield* Effect.logInfo("provider.session.marked-needs-resume", {
             threadId: binding.threadId,
             activeTurnId: thread.session.activeTurnId,
             idleDurationMs,

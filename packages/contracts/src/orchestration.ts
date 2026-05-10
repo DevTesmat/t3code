@@ -249,6 +249,7 @@ export const OrchestrationSessionStatus = Schema.Literals([
   "idle",
   "starting",
   "running",
+  "needs_resume",
   "ready",
   "interrupted",
   "stopped",
@@ -312,6 +313,7 @@ export type OrchestrationThreadActivity = typeof OrchestrationThreadActivity.Typ
 
 const OrchestrationLatestTurnState = Schema.Literals([
   "running",
+  "needs_resume",
   "interrupted",
   "completed",
   "error",
@@ -1273,6 +1275,7 @@ export type ProviderSessionRuntimeStatus = typeof ProviderSessionRuntimeStatus.T
 
 const ProjectionThreadTurnStatus = Schema.Literals([
   "running",
+  "needs_resume",
   "completed",
   "interrupted",
   "error",

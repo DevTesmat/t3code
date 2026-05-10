@@ -1116,11 +1116,15 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
                   state:
                     event.payload.session.status === "error"
                       ? "error"
-                      : turn.state === "interrupted"
-                        ? "interrupted"
-                        : turn.state === "error"
-                          ? "error"
-                          : "completed",
+                      : event.payload.session.status === "needs_resume"
+                        ? "needs_resume"
+                        : turn.state === "interrupted"
+                          ? "interrupted"
+                          : turn.state === "needs_resume"
+                            ? "needs_resume"
+                            : turn.state === "error"
+                              ? "error"
+                              : "completed",
                   completedAt: turn.completedAt ?? event.payload.session.updatedAt,
                   startedAt: turn.startedAt ?? event.payload.session.updatedAt,
                   requestedAt: turn.requestedAt ?? event.payload.session.updatedAt,
@@ -1232,11 +1236,13 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
               assistantMessageId: event.payload.messageId,
               state: event.payload.streaming
                 ? existingTurn.value.state
-                : existingTurn.value.state === "interrupted"
-                  ? "interrupted"
-                  : existingTurn.value.state === "error"
-                    ? "error"
-                    : "completed",
+                : existingTurn.value.state === "needs_resume"
+                  ? "needs_resume"
+                  : existingTurn.value.state === "interrupted"
+                    ? "interrupted"
+                    : existingTurn.value.state === "error"
+                      ? "error"
+                      : "completed",
               completedAt: event.payload.streaming
                 ? existingTurn.value.completedAt
                 : (existingTurn.value.completedAt ?? event.payload.updatedAt),

@@ -6,10 +6,9 @@ import {
   TurnId,
   type OrchestrationCommand,
   type OrchestrationReadModel,
-  type ProviderSession,
 } from "@t3tools/contracts";
 import { Effect, Layer, Stream } from "effect";
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it } from "vitest";
 
 import {
   OrchestrationEngineService,
@@ -17,11 +16,7 @@ import {
 } from "../../orchestration/Services/OrchestrationEngine.ts";
 import { ProviderSessionRecovery } from "../Services/ProviderSessionRecovery.ts";
 import { ProviderService, type ProviderServiceShape } from "../Services/ProviderService.ts";
-import {
-  PROVIDER_SESSION_RECOVERY_RESTART_MESSAGE,
-  ProviderSessionRecoveryLive,
-} from "./ProviderSessionRecovery.ts";
-import { ProviderValidationError } from "../Errors.ts";
+import { ProviderSessionRecoveryLive } from "./ProviderSessionRecovery.ts";
 
 const codexInstanceId = ProviderInstanceId.make("codex");
 const codexDriver = ProviderDriverKind.make("codex");
@@ -98,10 +93,7 @@ function makeReadModel(input: {
   };
 }
 
-function makeHarness(input: {
-  readonly recoverSession: ProviderServiceShape["recoverSession"];
-  readonly readModel: OrchestrationReadModel;
-}) {
+function makeHarness(input: { readonly readModel: OrchestrationReadModel }) {
   const dispatched: OrchestrationCommand[] = [];
   const providerService: ProviderServiceShape = {
     startSession: () => unsupported(),
@@ -110,7 +102,7 @@ function makeHarness(input: {
     respondToRequest: () => unsupported(),
     respondToUserInput: () => unsupported(),
     stopSession: () => unsupported(),
-    recoverSession: input.recoverSession,
+    recoverSession: () => unsupported(),
     listSessions: () => Effect.succeed([]),
     getCapabilities: () => Effect.succeed({ sessionModelSwitch: "in-session" }),
     getInstanceInfo: (instanceId) =>
@@ -148,56 +140,10 @@ function makeHarness(input: {
 }
 
 describe("ProviderSessionRecovery", () => {
-  it("keeps stale running threads running when provider recovery succeeds", async () => {
-    const threadId = ThreadId.make("thread-recovery-success");
-    const turnId = TurnId.make("turn-recovery-success");
-    const recoverSession = vi.fn<ProviderServiceShape["recoverSession"]>((requestThreadId) =>
-      Effect.succeed({
-        provider: codexDriver,
-        providerInstanceId: codexInstanceId,
-        status: "ready",
-        runtimeMode: "full-access",
-        threadId: requestThreadId,
-        createdAt: now,
-        updatedAt: now,
-      } satisfies ProviderSession),
-    );
-    const harness = makeHarness({
-      recoverSession,
-      readModel: makeReadModel({ threadId, turnId }),
-    });
-
-    await Effect.runPromise(
-      Effect.gen(function* () {
-        const recovery = yield* ProviderSessionRecovery;
-        yield* recovery.recoverStaleRunningThreads();
-      }).pipe(Effect.provide(harness.layer)),
-    );
-
-    expect(recoverSession).toHaveBeenCalledTimes(1);
-    expect(harness.dispatched).toHaveLength(1);
-    const command = harness.dispatched[0];
-    expect(command?.type).toBe("thread.session.set");
-    if (command?.type === "thread.session.set") {
-      expect(command.session.status).toBe("running");
-      expect(command.session.activeTurnId).toBe(turnId);
-      expect(command.session.lastError).toBeNull();
-    }
-  });
-
-  it("marks stale running threads interrupted when provider recovery fails", async () => {
+  it("marks stale running threads as needing explicit user resume", async () => {
     const threadId = ThreadId.make("thread-recovery-failed");
     const turnId = TurnId.make("turn-recovery-failed");
-    const recoverSession = vi.fn<ProviderServiceShape["recoverSession"]>(() =>
-      Effect.fail(
-        new ProviderValidationError({
-          operation: "ProviderSessionRecovery.test",
-          issue: "missing resume cursor",
-        }),
-      ),
-    );
     const harness = makeHarness({
-      recoverSession,
       readModel: makeReadModel({ threadId, turnId }),
     });
 
@@ -208,14 +154,13 @@ describe("ProviderSessionRecovery", () => {
       }).pipe(Effect.provide(harness.layer)),
     );
 
-    expect(recoverSession).toHaveBeenCalledTimes(1);
     expect(harness.dispatched).toHaveLength(1);
     const command = harness.dispatched[0];
     expect(command?.type).toBe("thread.session.set");
     if (command?.type === "thread.session.set") {
-      expect(command.session.status).toBe("interrupted");
+      expect(command.session.status).toBe("needs_resume");
       expect(command.session.activeTurnId).toBeNull();
-      expect(command.session.lastError).toBe(PROVIDER_SESSION_RECOVERY_RESTART_MESSAGE);
+      expect(command.session.lastError).toBeNull();
     }
   });
 });

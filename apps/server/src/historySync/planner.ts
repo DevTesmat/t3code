@@ -1119,6 +1119,7 @@ export function shouldScheduleAutosaveForDomainEvent(event: OrchestrationEvent):
       event.payload.session.activeTurnId === null &&
       (event.payload.session.status === "ready" ||
         event.payload.session.status === "stopped" ||
+        event.payload.session.status === "needs_resume" ||
         event.payload.session.status === "interrupted" ||
         event.payload.session.status === "error")
     );
