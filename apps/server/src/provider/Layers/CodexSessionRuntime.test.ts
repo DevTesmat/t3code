@@ -80,13 +80,17 @@ describe("buildTurnStartParams", () => {
         },
       },
     });
+    assert.match(CODEX_PLAN_MODE_DEVELOPER_INSTRUCTIONS, /official Plan Mode plan/);
+    assert.match(CODEX_PLAN_MODE_DEVELOPER_INSTRUCTIONS, /<proposed_plan>/);
+    assert.match(CODEX_PLAN_MODE_DEVELOPER_INSTRUCTIONS, /custom `\.md` plan/);
+    assert.match(CODEX_PLAN_MODE_DEVELOPER_INSTRUCTIONS, /non-`<proposed_plan>` deliverable/);
     assert.match(CODEX_PLAN_MODE_DEVELOPER_INSTRUCTIONS, /compact, legible/);
     assert.match(
       CODEX_PLAN_MODE_DEVELOPER_INSTRUCTIONS,
       /single-level feature- or outcome-oriented bullets/,
     );
     assert.match(CODEX_PLAN_MODE_DEVELOPER_INSTRUCTIONS, /Avoid nested bullets by default/);
-    assert.match(CODEX_PLAN_MODE_DEVELOPER_INSTRUCTIONS, /Aim for under 40 lines/);
+    assert.match(CODEX_PLAN_MODE_DEVELOPER_INSTRUCTIONS, /Aim for under 40 lines in official/);
     assert.match(
       CODEX_PLAN_MODE_DEVELOPER_INSTRUCTIONS,
       /top "Cause" section of at most 1-2 lines/,
@@ -98,15 +102,22 @@ describe("buildTurnStartParams", () => {
     assert.match(CODEX_PLAN_MODE_DEVELOPER_INSTRUCTIONS, /bounded research helpers/);
     assert.match(CODEX_PLAN_MODE_DEVELOPER_INSTRUCTIONS, /repo explorers/);
     assert.match(CODEX_PLAN_MODE_DEVELOPER_INSTRUCTIONS, /online researchers/);
-    assert.match(CODEX_PLAN_MODE_DEVELOPER_INSTRUCTIONS, /parallel repo exploration/);
-    assert.match(CODEX_PLAN_MODE_DEVELOPER_INSTRUCTIONS, /immediate critical path/);
+    assert.match(CODEX_PLAN_MODE_DEVELOPER_INSTRUCTIONS, /intermediate verification runners/);
+    assert.match(CODEX_PLAN_MODE_DEVELOPER_INSTRUCTIONS, /parallel repo searches/);
+    assert.match(CODEX_PLAN_MODE_DEVELOPER_INSTRUCTIONS, /destructive operations/);
+    assert.match(CODEX_PLAN_MODE_DEVELOPER_INSTRUCTIONS, /must not edit or write files/);
+    assert.match(CODEX_PLAN_MODE_DEVELOPER_INSTRUCTIONS, /test\/check commands/);
     assert.match(CODEX_PLAN_MODE_DEVELOPER_INSTRUCTIONS, /expected output format/);
     assert.match(CODEX_PLAN_MODE_DEVELOPER_INSTRUCTIONS, /links and dates/);
-    assert.match(CODEX_PLAN_MODE_DEVELOPER_INSTRUCTIONS, /disjoint write scopes/);
+    assert.match(CODEX_PLAN_MODE_DEVELOPER_INSTRUCTIONS, /exit status/);
     assert.match(CODEX_PLAN_MODE_DEVELOPER_INSTRUCTIONS, /After the batch is done/);
     assert.match(CODEX_PLAN_MODE_DEVELOPER_INSTRUCTIONS, /receiver thread ID/);
     assert.match(CODEX_PLAN_MODE_DEVELOPER_INSTRUCTIONS, /failed or stale subagents/);
     assert.match(CODEX_PLAN_MODE_DEVELOPER_INSTRUCTIONS, /reviewed the evidence/);
+    assert.match(
+      CODEX_PLAN_MODE_DEVELOPER_INSTRUCTIONS,
+      /main agent must run that final validation/,
+    );
   });
 
   it("includes default collaboration mode and image attachments", () => {
@@ -155,15 +166,22 @@ describe("buildTurnStartParams", () => {
     assert.match(CODEX_DEFAULT_MODE_DEVELOPER_INSTRUCTIONS, /bounded research helpers/);
     assert.match(CODEX_DEFAULT_MODE_DEVELOPER_INSTRUCTIONS, /repo explorers/);
     assert.match(CODEX_DEFAULT_MODE_DEVELOPER_INSTRUCTIONS, /online researchers/);
-    assert.match(CODEX_DEFAULT_MODE_DEVELOPER_INSTRUCTIONS, /parallel repo exploration/);
-    assert.match(CODEX_DEFAULT_MODE_DEVELOPER_INSTRUCTIONS, /immediate critical path/);
+    assert.match(CODEX_DEFAULT_MODE_DEVELOPER_INSTRUCTIONS, /intermediate verification runners/);
+    assert.match(CODEX_DEFAULT_MODE_DEVELOPER_INSTRUCTIONS, /parallel repo searches/);
+    assert.match(CODEX_DEFAULT_MODE_DEVELOPER_INSTRUCTIONS, /destructive operations/);
+    assert.match(CODEX_DEFAULT_MODE_DEVELOPER_INSTRUCTIONS, /must not edit or write files/);
+    assert.match(CODEX_DEFAULT_MODE_DEVELOPER_INSTRUCTIONS, /test\/check commands/);
     assert.match(CODEX_DEFAULT_MODE_DEVELOPER_INSTRUCTIONS, /expected output format/);
     assert.match(CODEX_DEFAULT_MODE_DEVELOPER_INSTRUCTIONS, /links and dates/);
-    assert.match(CODEX_DEFAULT_MODE_DEVELOPER_INSTRUCTIONS, /disjoint write scopes/);
+    assert.match(CODEX_DEFAULT_MODE_DEVELOPER_INSTRUCTIONS, /exit status/);
     assert.match(CODEX_DEFAULT_MODE_DEVELOPER_INSTRUCTIONS, /After the batch is done/);
     assert.match(CODEX_DEFAULT_MODE_DEVELOPER_INSTRUCTIONS, /receiver thread ID/);
     assert.match(CODEX_DEFAULT_MODE_DEVELOPER_INSTRUCTIONS, /failed or stale subagents/);
     assert.match(CODEX_DEFAULT_MODE_DEVELOPER_INSTRUCTIONS, /reviewed the evidence/);
+    assert.match(
+      CODEX_DEFAULT_MODE_DEVELOPER_INSTRUCTIONS,
+      /main agent must run that final validation/,
+    );
   });
 
   it("uses the same subagent coordination guidance in plan and default modes", () => {
