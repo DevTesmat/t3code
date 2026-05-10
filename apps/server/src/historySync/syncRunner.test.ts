@@ -350,6 +350,34 @@ describe("history sync runner", () => {
     });
   });
 
+  test("full sync skips latest-first bootstrap for small remote deltas", async () => {
+    const calls: string[] = [];
+    const { runner, statuses } = await Effect.runPromise(
+      makeRunner(
+        {
+          readState: Effect.succeed({
+            hasCompletedInitialSync: 1,
+            lastSyncedRemoteSequence: 1,
+            lastSuccessfulSyncAt: "2026-05-01T00:00:00.000Z",
+          }),
+          readLocalEvents: () => Effect.succeed([remoteEvent]),
+          readLocalProjectionCounts: Effect.succeed({ projectCount: 1, threadCount: 1 }),
+          readRemoteMaxSequence: () => Effect.succeed(2),
+          readRemoteEvents: () => Effect.succeed([localEvent]),
+          readRemoteLatestThreadShells: () =>
+            Effect.sync(() => calls.push("readLatestThreads")).pipe(Effect.as([])),
+        },
+        calls,
+      ),
+    );
+
+    await Effect.runPromise(runner.performSync({ mode: "full", markStopped: Effect.void }));
+
+    expect(calls).not.toContain("readLatestThreads");
+    expect(calls).toContain("importDelta");
+    expect(statuses.at(-1)).toMatchObject({ state: "idle", configured: true });
+  });
+
   test("full sync waits for explicit initial sync before initialization", async () => {
     const { runner, statuses } = await Effect.runPromise(makeRunner());
 

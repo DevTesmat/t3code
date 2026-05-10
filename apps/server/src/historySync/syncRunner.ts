@@ -32,6 +32,8 @@ import {
 import type { HistorySyncProgress } from "./projectionReload.ts";
 
 const HISTORY_SYNC_OPERATION_TIMEOUT_MS = 10 * 60_000;
+const HISTORY_SYNC_LATEST_FIRST_MIN_REMOTE_DELTA_EVENTS = 500;
+const HISTORY_SYNC_LATEST_FIRST_BOOTSTRAP_TIMEOUT_MS = 30_000;
 const HISTORY_SYNC_RETRY_DELAYS_MS = [10_000, 3 * 60_000, 10 * 60_000, 10 * 60_000, 10 * 60_000];
 const HISTORY_SYNC_RECENT_FAILURE_LIMIT = 5;
 export const HISTORY_SYNC_AUTOSAVE_REMOTE_CONFLICT_MESSAGE =
@@ -815,7 +817,11 @@ export function createHistorySyncRunner(input: HistorySyncRunnerDependencies) {
         return;
       }
       const projectMappings = yield* input.readProjectMappings;
-      if (hasCompletedInitialSync && remoteMaxSequence > lastSyncedRemoteSequence) {
+      if (
+        hasCompletedInitialSync &&
+        remoteMaxSequence > lastSyncedRemoteSequence &&
+        remoteEvents.length >= HISTORY_SYNC_LATEST_FIRST_MIN_REMOTE_DELTA_EVENTS
+      ) {
         yield* runLatestFirstBootstrap({
           connectionString,
           remoteMaxSequence,
@@ -823,6 +829,7 @@ export function createHistorySyncRunner(input: HistorySyncRunnerDependencies) {
           liveAppendEnabled: true,
           context: syncContext,
         }).pipe(
+          Effect.timeout(HISTORY_SYNC_LATEST_FIRST_BOOTSTRAP_TIMEOUT_MS),
           Effect.catch((cause) =>
             Effect.logWarning("latest-first history bootstrap failed; continuing full sync", {
               cause,

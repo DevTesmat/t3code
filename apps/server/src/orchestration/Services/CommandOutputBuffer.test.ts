@@ -41,4 +41,49 @@ describe("CommandOutputBuffer", () => {
       },
     ]);
   });
+
+  it("resets buffered text for synthetic file-change reset chunks", async () => {
+    await Effect.runPromise(
+      appendCommandOutputBufferDelta({
+        threadId,
+        turnId: TurnId.make("turn-1"),
+        toolCallId,
+        chunkId: EventId.make("chunk-1"),
+        createdAt: "2026-01-01T00:00:00.000Z",
+        delta: "old text",
+      }),
+    );
+    await Effect.runPromise(
+      appendCommandOutputBufferDelta({
+        threadId,
+        turnId: TurnId.make("turn-1"),
+        toolCallId,
+        chunkId: EventId.make("event-1:file-change-reset:0"),
+        createdAt: "2026-01-01T00:00:01.000Z",
+        delta: "new",
+      }),
+    );
+    await Effect.runPromise(
+      appendCommandOutputBufferDelta({
+        threadId,
+        turnId: TurnId.make("turn-1"),
+        toolCallId,
+        chunkId: EventId.make("event-1:file-change:1"),
+        createdAt: "2026-01-01T00:00:01.000Z",
+        delta: " text",
+      }),
+    );
+
+    const snapshots = await Effect.runPromise(readCommandOutputSnapshotsForThread(threadId));
+    expect(snapshots).toEqual([
+      {
+        threadId,
+        turnId: TurnId.make("turn-1"),
+        toolCallId,
+        updatedAt: "2026-01-01T00:00:01.000Z",
+        text: "new text",
+        truncated: false,
+      },
+    ]);
+  });
 });

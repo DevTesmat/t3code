@@ -330,8 +330,60 @@ describe("MessagesTimeline", () => {
     expect(markup).toContain("src/app.ts");
     expect(markup).toContain("-const value = &#x27;old&#x27;;");
     expect(markup).toContain("+const value = &#x27;new&#x27;;");
+    expect(countOccurrences(markup, ">1</span>")).toBeGreaterThanOrEqual(2);
     expect(markup).toContain("bg-success");
     expect(markup).toContain("bg-destructive");
+  });
+
+  it("numbers streamed Codex new-file patches without hunk headers", async () => {
+    hydrateLiveCommandOutputSnapshot(ACTIVE_THREAD_ENVIRONMENT_ID, {
+      threadId: ThreadId.make("thread-1"),
+      turnId: TurnId.make("turn-1"),
+      toolCallId: ProviderItemId.make("file-change-new-file"),
+      updatedAt: "2026-03-17T19:12:30.000Z",
+      text: [
+        "diff --git a/file-change-ui-medium-new-patches-2026-05-09.md b/file-change-ui-medium-new-patches-2026-05-09.md",
+        "new file mode 100644",
+        "--- /dev/null",
+        "+++ b/file-change-ui-medium-new-patches-2026-05-09.md",
+        "# File Change UI Fixture",
+        "",
+        "First body line",
+        "Second body line",
+      ].join("\n"),
+      truncated: false,
+    });
+
+    const { MessagesTimeline } = await import("./MessagesTimeline");
+    const markup = renderToStaticMarkup(
+      <MessagesTimeline
+        {...buildProps()}
+        timelineEntries={[
+          {
+            id: "entry-1",
+            kind: "work",
+            createdAt: "2026-03-17T19:12:28.000Z",
+            entry: {
+              id: "work-1",
+              createdAt: "2026-03-17T19:12:28.000Z",
+              label: "Editing files",
+              tone: "tool",
+              itemType: "file_change",
+              status: "running",
+              toolCallId: "file-change-new-file",
+              changedFiles: ["file-change-ui-medium-new-patches-2026-05-09.md"],
+            },
+          },
+        ]}
+      />,
+    );
+
+    expect(markup).toContain("# File Change UI Fixture");
+    expect(markup).toContain("First body line");
+    expect(markup).toContain(">1</span>");
+    expect(markup).toContain(">3</span>");
+    expect(markup).toContain(">4</span>");
+    expect(markup).toContain("bg-success");
   });
 
   it("renders partial file-change output before a newline arrives", async () => {

@@ -1277,7 +1277,7 @@ type LivePatchLineKind = "addition" | "deletion" | "header" | "context";
 interface LivePatchLine {
   readonly id: string;
   readonly kind: LivePatchLineKind;
-  readonly lineNumber: number;
+  readonly lineNumber: number | null;
   readonly text: string;
 }
 
@@ -1397,33 +1397,120 @@ function useRevealedLiveFileChangeText(text: string, animate: boolean): string {
   return displayedText;
 }
 
+function isLivePatchMetadataLine(line: string): boolean {
+  return (
+    line.startsWith("diff ") ||
+    line.startsWith("@@") ||
+    line.startsWith("+++") ||
+    line.startsWith("---") ||
+    line.startsWith("index ") ||
+    line.startsWith("new file mode ") ||
+    line.startsWith("deleted file mode ") ||
+    line.startsWith("old mode ") ||
+    line.startsWith("new mode ") ||
+    line.startsWith("similarity index ") ||
+    line.startsWith("dissimilarity index ") ||
+    line.startsWith("rename from ") ||
+    line.startsWith("rename to ") ||
+    line.startsWith("copy from ") ||
+    line.startsWith("copy to ") ||
+    line.startsWith("Binary files ")
+  );
+}
+
 function parseLivePatchLines(text: string): LivePatchLine[] {
   const normalized = text.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
   const rawLines = normalized.split("\n");
   const sourceLines = normalized.endsWith("\n") ? rawLines.slice(0, -1) : rawLines;
-  const visibleLines = sourceLines.slice(-300);
-  const firstVisibleLineNumber = sourceLines.length - visibleLines.length + 1;
+  const lineEntries: LivePatchLine[] = [];
+  let oldLineNumber: number | null = null;
+  let newLineNumber: number | null = null;
+  let newFileBodyLineNumber: number | null = null;
+  let deletedFileBodyLineNumber: number | null = null;
+  let previousHeaderWasOldDevNull = false;
 
-  return visibleLines.map((line, index) => {
+  for (const [sourceIndex, line] of sourceLines.entries()) {
+    const hunkMatch = /^@@\s+-(?<oldStart>\d+)(?:,\d+)?\s+\+(?<newStart>\d+)(?:,\d+)?\s+@@/u.exec(
+      line,
+    );
+    if (line.startsWith("diff ")) {
+      oldLineNumber = null;
+      newLineNumber = null;
+      newFileBodyLineNumber = null;
+      deletedFileBodyLineNumber = null;
+      previousHeaderWasOldDevNull = false;
+    }
+    if (hunkMatch?.groups?.oldStart && hunkMatch.groups.newStart) {
+      oldLineNumber = Number.parseInt(hunkMatch.groups.oldStart, 10);
+      newLineNumber = Number.parseInt(hunkMatch.groups.newStart, 10);
+      newFileBodyLineNumber = null;
+      deletedFileBodyLineNumber = null;
+    }
+
+    const isMetadataLine = isLivePatchMetadataLine(line);
+    if (line === "--- /dev/null") {
+      previousHeaderWasOldDevNull = true;
+    } else if (line.startsWith("---")) {
+      previousHeaderWasOldDevNull = false;
+    } else if (line.startsWith("+++") && previousHeaderWasOldDevNull) {
+      newFileBodyLineNumber = 1;
+      previousHeaderWasOldDevNull = false;
+    } else if (line === "+++ /dev/null") {
+      deletedFileBodyLineNumber = 1;
+      previousHeaderWasOldDevNull = false;
+    }
+
     const kind: LivePatchLineKind =
       line.startsWith("+") && !line.startsWith("+++")
         ? "addition"
         : line.startsWith("-") && !line.startsWith("---")
           ? "deletion"
-          : line.startsWith("diff ") ||
-              line.startsWith("@@") ||
-              line.startsWith("+++") ||
-              line.startsWith("---") ||
-              line.startsWith("index ")
+          : isMetadataLine
             ? "header"
-            : "context";
-    return {
-      id: `${index}:${line}`,
+            : newFileBodyLineNumber !== null && oldLineNumber === null && newLineNumber === null
+              ? "addition"
+              : deletedFileBodyLineNumber !== null &&
+                  oldLineNumber === null &&
+                  newLineNumber === null
+                ? "deletion"
+                : "context";
+
+    let lineNumber: number | null = null;
+    if (kind === "addition") {
+      if (newLineNumber !== null) {
+        lineNumber = newLineNumber;
+        newLineNumber += 1;
+      } else if (newFileBodyLineNumber !== null) {
+        lineNumber = newFileBodyLineNumber;
+        newFileBodyLineNumber += 1;
+      }
+    } else if (kind === "deletion") {
+      if (oldLineNumber !== null) {
+        lineNumber = oldLineNumber;
+        oldLineNumber += 1;
+      } else if (deletedFileBodyLineNumber !== null) {
+        lineNumber = deletedFileBodyLineNumber;
+        deletedFileBodyLineNumber += 1;
+      }
+    } else if (kind === "context") {
+      lineNumber = newLineNumber;
+      if (oldLineNumber !== null) {
+        oldLineNumber += 1;
+      }
+      if (newLineNumber !== null) {
+        newLineNumber += 1;
+      }
+    }
+
+    lineEntries.push({
+      id: `${sourceIndex}:${line}`,
       kind,
-      lineNumber: firstVisibleLineNumber + index,
+      lineNumber,
       text: line.length > 0 ? line : " ",
-    };
-  });
+    });
+  }
+
+  return lineEntries.slice(-300);
 }
 
 const LiveFileChangePreview = memo(function LiveFileChangePreview(props: {
@@ -1498,7 +1585,7 @@ const LiveFileChangePreview = memo(function LiveFileChangePreview(props: {
               )}
             >
               <span className="select-none pr-3 text-right text-muted-foreground/40">
-                {line.lineNumber}
+                {line.lineNumber ?? ""}
               </span>
               <span
                 className={cn(

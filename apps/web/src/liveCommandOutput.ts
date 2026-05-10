@@ -71,6 +71,10 @@ function liveCommandOutputKey(input: LiveCommandOutputKey): string {
   return `${input.environmentId}:${input.threadId}:${input.toolCallId}`;
 }
 
+function isResetChunkId(chunkId: string): boolean {
+  return chunkId.includes(":file-change-reset:");
+}
+
 function trimBufferedText(text: string): { text: string; truncated: boolean } {
   let nextText = text;
   let truncated = false;
@@ -170,7 +174,7 @@ function refreshEntrySnapshot(entry: LiveCommandOutputEntry): void {
   };
 }
 
-function queueNotify(entry: LiveCommandOutputEntry): void {
+function queueNotify(entry: LiveCommandOutputEntry, mode: "frame" | "microtask" = "frame"): void {
   if (entry.notifyQueued) return;
   entry.notifyQueued = true;
   const notify = () => {
@@ -179,7 +183,11 @@ function queueNotify(entry: LiveCommandOutputEntry): void {
       subscriber();
     }
   };
-  if (typeof window === "undefined" || typeof window.requestAnimationFrame !== "function") {
+  if (
+    mode === "microtask" ||
+    typeof window === "undefined" ||
+    typeof window.requestAnimationFrame !== "function"
+  ) {
     queueMicrotask(notify);
     return;
   }
@@ -197,6 +205,14 @@ export function appendLiveCommandOutputDelta(
   });
   const entry = getOrCreateEntry(key);
   const chunkId = String(delta.chunkId);
+  const isFileChangeSyntheticChunk = chunkId.includes(":file-change");
+  if (isResetChunkId(chunkId)) {
+    totalChars -= entry.text.length;
+    entry.text = "";
+    entry.truncated = false;
+    entry.seenChunkIds.clear();
+    entry.seenChunkOrder.length = 0;
+  }
   if (entry.seenChunkIds.has(chunkId)) {
     return;
   }
@@ -217,7 +233,7 @@ export function appendLiveCommandOutputDelta(
   totalChars += entry.text.length - previousLength;
   touchEntry(entry, Date.now());
   evictLru();
-  queueNotify(entry);
+  queueNotify(entry, isFileChangeSyntheticChunk ? "microtask" : "frame");
 }
 
 export function hydrateLiveCommandOutputSnapshot(

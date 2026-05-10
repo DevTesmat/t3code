@@ -112,6 +112,10 @@ function getOrCreateEntry(
   return entry;
 }
 
+function isResetChunkId(chunkId: string): boolean {
+  return chunkId.includes(":file-change-reset:");
+}
+
 export const appendCommandOutputBufferDelta = (delta: OrchestrationCommandOutputDelta) =>
   Effect.sync(() => {
     const now = Date.now();
@@ -119,6 +123,13 @@ export const appendCommandOutputBufferDelta = (delta: OrchestrationCommandOutput
     const entry = getOrCreateEntry(delta, now);
 
     const chunkId = String(delta.chunkId);
+    if (isResetChunkId(chunkId)) {
+      totalChars -= entry.text.length;
+      entry.text = "";
+      entry.truncated = false;
+      entry.seenChunkIds.clear();
+      entry.seenChunkOrder.length = 0;
+    }
     if (entry.seenChunkIds.has(chunkId)) {
       entry.lastAccessedAt = now;
       entry.expiresAt = now + RETENTION_MS;

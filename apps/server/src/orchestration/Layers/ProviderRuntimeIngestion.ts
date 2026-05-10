@@ -18,6 +18,8 @@ import {
   type ProviderRuntimeEvent,
 } from "@t3tools/contracts";
 import { Cache, Cause, Duration, Effect, Layer, Option, Stream } from "effect";
+import fs from "node:fs";
+import path from "node:path";
 import { makeDrainableWorker } from "@t3tools/shared/DrainableWorker";
 
 import { ProviderService } from "../../provider/Services/ProviderService.ts";
@@ -33,10 +35,7 @@ import {
   type ProviderRuntimeIngestionShape,
 } from "../Services/ProviderRuntimeIngestion.ts";
 import { ServerSettingsService } from "../../serverSettings.ts";
-import {
-  publishCommandOutputDelta,
-  publishCommandOutputSnapshot,
-} from "../Services/CommandOutputDeltaBus.ts";
+import { publishCommandOutputDelta } from "../Services/CommandOutputDeltaBus.ts";
 
 const providerTurnKey = (threadId: ThreadId, turnId: TurnId) => `${threadId}:${turnId}`;
 const stableIdentityPart = (value: unknown): string =>
@@ -81,6 +80,10 @@ const TERMINAL_OUTPUT_PREVIEW_LINE_COUNT = 4;
 const TERMINAL_OUTPUT_PREVIEW_LINE_MAX_LENGTH = 240;
 const LIVE_FILE_CHANGE_ACTIVITY_CACHE_CAPACITY = 20_000;
 const LIVE_FILE_CHANGE_ACTIVITY_CACHE_TTL = Duration.minutes(120);
+const LIVE_FILE_CHANGE_LINE_RESOLVE_MAX_PATCH_CHARS = 256 * 1024;
+const LIVE_FILE_CHANGE_LINE_RESOLVE_MAX_FILE_CHARS = 768 * 1024;
+const LIVE_FILE_CHANGE_LINE_RESOLVE_MAX_HUNK_LINES = 80;
+const LIVE_FILE_CHANGE_SYNTHETIC_DELTA_CHARS = 24;
 
 type TerminalOutputPreviewStream = "stdout" | "stderr" | "mixed" | "unknown";
 
@@ -95,6 +98,11 @@ interface TerminalOutputPreviewBuffer {
   pendingLine: string;
   stream: TerminalOutputPreviewStream;
   truncated: boolean;
+}
+
+interface LiveFileChangeStreamState {
+  text: string;
+  nextChunkIndex: number;
 }
 
 type TurnStartRequestedDomainEvent = Extract<
@@ -182,6 +190,184 @@ function extractChangedFilesFromUnifiedDiff(value: string): string[] {
   }
 
   return files.slice(0, 12);
+}
+
+interface WorkspaceFileSnapshot {
+  readonly mtimeMs: number;
+  readonly size: number;
+  readonly text: string;
+}
+
+function readWorkspaceTextFile(
+  workspaceCwd: string,
+  relativePath: string,
+  cache: Map<string, WorkspaceFileSnapshot>,
+): string | null {
+  if (!relativePath || relativePath.includes("\0")) {
+    return null;
+  }
+  const resolvedPath = path.resolve(workspaceCwd, relativePath);
+  const resolvedRoot = path.resolve(workspaceCwd);
+  if (resolvedPath !== resolvedRoot && !resolvedPath.startsWith(`${resolvedRoot}${path.sep}`)) {
+    return null;
+  }
+  let stat: fs.Stats;
+  try {
+    stat = fs.statSync(resolvedPath);
+  } catch {
+    return null;
+  }
+  if (!stat.isFile() || stat.size > LIVE_FILE_CHANGE_LINE_RESOLVE_MAX_FILE_CHARS) {
+    return null;
+  }
+
+  const cacheKey = resolvedPath;
+  const cached = cache.get(cacheKey);
+  if (cached && cached.mtimeMs === stat.mtimeMs && cached.size === stat.size) {
+    return cached.text;
+  }
+
+  let text: string;
+  try {
+    text = fs.readFileSync(resolvedPath, "utf8");
+  } catch {
+    return null;
+  }
+  cache.set(cacheKey, { mtimeMs: stat.mtimeMs, size: stat.size, text });
+  return text;
+}
+
+function normalizeDiffPath(value: string): string | null {
+  const normalized = value.trim();
+  if (!normalized || normalized === "/dev/null") {
+    return null;
+  }
+  return normalizePatchPath(normalized);
+}
+
+function splitTextLines(value: string): string[] {
+  return value.replace(/\r\n/g, "\n").replace(/\r/g, "\n").split("\n");
+}
+
+function collectBareHunkLineCounts(lines: string[], hunkStartIndex: number) {
+  const oldLines: string[] = [];
+  const newLineCountRef = { count: 0 };
+  for (
+    let index = hunkStartIndex + 1;
+    index < lines.length && oldLines.length <= LIVE_FILE_CHANGE_LINE_RESOLVE_MAX_HUNK_LINES;
+    index += 1
+  ) {
+    const line = lines[index] ?? "";
+    if (line.startsWith("diff --git ") || line.startsWith("@@")) {
+      break;
+    }
+    if (line.startsWith("+") && !line.startsWith("+++")) {
+      newLineCountRef.count += 1;
+      continue;
+    }
+    if (line.startsWith("-") && !line.startsWith("---")) {
+      oldLines.push(line.slice(1));
+      continue;
+    }
+    if (line.startsWith("---") || line.startsWith("+++")) {
+      continue;
+    }
+    const contextLine = line.startsWith(" ") ? line.slice(1) : line;
+    oldLines.push(contextLine);
+    newLineCountRef.count += 1;
+  }
+
+  if (oldLines.length > LIVE_FILE_CHANGE_LINE_RESOLVE_MAX_HUNK_LINES) {
+    return null;
+  }
+  return {
+    oldLines,
+    newLineCount: newLineCountRef.count,
+  };
+}
+
+function findContiguousLineSequenceStart(fileLines: string[], needleLines: readonly string[]) {
+  if (needleLines.length === 0 || needleLines.length > fileLines.length) {
+    return null;
+  }
+  const firstNeedleLine = needleLines[0];
+  for (let startIndex = 0; startIndex <= fileLines.length - needleLines.length; startIndex += 1) {
+    if (fileLines[startIndex] !== firstNeedleLine) {
+      continue;
+    }
+    let matches = true;
+    for (let offset = 1; offset < needleLines.length; offset += 1) {
+      if (fileLines[startIndex + offset] !== needleLines[offset]) {
+        matches = false;
+        break;
+      }
+    }
+    if (matches) {
+      return startIndex + 1;
+    }
+  }
+  return null;
+}
+
+function resolveBareHunkHeadersInLivePatch(
+  value: string,
+  workspaceCwd: string | null,
+  fileSnapshotCache: Map<string, WorkspaceFileSnapshot>,
+): string {
+  if (
+    !workspaceCwd ||
+    value.length > LIVE_FILE_CHANGE_LINE_RESOLVE_MAX_PATCH_CHARS ||
+    !/^@@$/mu.test(value)
+  ) {
+    return value;
+  }
+
+  const lines = splitTextLines(value);
+  let currentNewPath: string | null = null;
+  let changed = false;
+
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index] ?? "";
+    const newPathMatch = /^\+\+\+\s+(?<path>\S+)/u.exec(line);
+    if (newPathMatch?.groups?.path) {
+      currentNewPath = normalizeDiffPath(newPathMatch.groups.path);
+      continue;
+    }
+    if (line.startsWith("diff --git ")) {
+      currentNewPath = null;
+      continue;
+    }
+    if (line.trim() !== "@@" || !currentNewPath) {
+      continue;
+    }
+
+    const hunk = collectBareHunkLineCounts(lines, index);
+    if (!hunk || hunk.oldLines.length === 0) {
+      continue;
+    }
+
+    const fileText = readWorkspaceTextFile(workspaceCwd, currentNewPath, fileSnapshotCache);
+    if (fileText === null) {
+      continue;
+    }
+    const startLine = findContiguousLineSequenceStart(splitTextLines(fileText), hunk.oldLines);
+    if (startLine === null) {
+      continue;
+    }
+
+    lines[index] = `@@ -${startLine},${hunk.oldLines.length} +${startLine},${hunk.newLineCount} @@`;
+    changed = true;
+  }
+
+  return changed ? lines.join("\n") : value;
+}
+
+function liveFileChangeSyntheticDeltaChunkId(
+  eventId: EventId,
+  chunkIndex: number,
+  reset: boolean,
+): EventId {
+  return EventId.make(`${eventId}:${reset ? "file-change-reset" : "file-change"}:${chunkIndex}`);
 }
 
 function liveFileChangeActivityKey(threadId: ThreadId, turnId: TurnId | undefined, itemId: string) {
@@ -1099,12 +1285,83 @@ const make = Effect.gen(function* () {
   const commandOutputPreviewByItemKey = new Map<string, TerminalOutputPreviewBuffer>();
   const parentProviderThreadIdByThreadId = new Map<string, string>();
   const childProviderThreadIdsByThreadId = new Map<string, Set<string>>();
+  const liveFileChangeSnapshotCache = new Map<string, WorkspaceFileSnapshot>();
+  const liveFileChangeStreamByItemKey = new Map<string, LiveFileChangeStreamState>();
 
   const hasSeenLiveFileChangeActivity = (key: string) =>
     Cache.getOption(liveFileChangeActivityByItemKey, key).pipe(Effect.map(Option.isSome));
 
   const markLiveFileChangeActivitySeen = (key: string) =>
     Cache.set(liveFileChangeActivityByItemKey, key, true);
+
+  const publishLiveFileChangeText = Effect.fn("publishLiveFileChangeText")(function* (input: {
+    readonly threadId: ThreadId;
+    readonly turnId: TurnId | null;
+    readonly itemId: string;
+    readonly eventId: EventId;
+    readonly createdAt: string;
+    readonly text: string;
+  }) {
+    const stateKey = liveFileChangeActivityKey(
+      input.threadId,
+      input.turnId === null ? undefined : input.turnId,
+      input.itemId,
+    );
+    const existing = liveFileChangeStreamByItemKey.get(stateKey);
+    const previous = existing ?? {
+      text: "",
+      nextChunkIndex: 0,
+    };
+
+    if (input.text.length === 0) {
+      yield* publishCommandOutputDelta({
+        threadId: input.threadId,
+        turnId: input.turnId,
+        toolCallId: ProviderItemId.make(input.itemId),
+        chunkId: liveFileChangeSyntheticDeltaChunkId(input.eventId, previous.nextChunkIndex, true),
+        createdAt: input.createdAt,
+        delta: "",
+      });
+      liveFileChangeStreamByItemKey.set(stateKey, {
+        text: "",
+        nextChunkIndex: previous.nextChunkIndex + 1,
+      });
+      return;
+    }
+
+    if (input.text === previous.text) {
+      return;
+    }
+
+    const shouldReset = existing === undefined || !input.text.startsWith(previous.text);
+    const appendedText = shouldReset ? input.text : input.text.slice(previous.text.length);
+    let nextChunkIndex = previous.nextChunkIndex;
+    for (
+      let offset = 0;
+      offset < appendedText.length;
+      offset += LIVE_FILE_CHANGE_SYNTHETIC_DELTA_CHARS
+    ) {
+      const delta = appendedText.slice(offset, offset + LIVE_FILE_CHANGE_SYNTHETIC_DELTA_CHARS);
+      yield* publishCommandOutputDelta({
+        threadId: input.threadId,
+        turnId: input.turnId,
+        toolCallId: ProviderItemId.make(input.itemId),
+        chunkId: liveFileChangeSyntheticDeltaChunkId(
+          input.eventId,
+          nextChunkIndex,
+          shouldReset && offset === 0,
+        ),
+        createdAt: input.createdAt,
+        delta,
+      });
+      nextChunkIndex += 1;
+    }
+
+    liveFileChangeStreamByItemKey.set(stateKey, {
+      text: input.text,
+      nextChunkIndex,
+    });
+  });
 
   const isGitRepoForThread = Effect.fn("isGitRepoForThread")(function* (threadId: ThreadId) {
     const readModel = yield* orchestrationEngine.getReadModel();
@@ -1120,6 +1377,20 @@ const make = Effect.gen(function* () {
       return false;
     }
     return isGitRepository(workspaceCwd);
+  });
+
+  const workspaceCwdForThread = Effect.fn("workspaceCwdForThread")(function* (threadId: ThreadId) {
+    const readModel = yield* orchestrationEngine.getReadModel();
+    const thread = readModel.threads.find((entry) => entry.id === threadId);
+    if (!thread) {
+      return null;
+    }
+    return (
+      resolveThreadWorkspaceCwd({
+        thread,
+        projects: readModel.projects,
+      }) ?? null
+    );
   });
 
   const rememberAssistantMessageId = (threadId: ThreadId, turnId: TurnId, messageId: MessageId) =>
@@ -1982,10 +2253,16 @@ const make = Effect.gen(function* () {
             });
           }
           if (isFileChangePatchSnapshot) {
+            const workspaceCwd = yield* workspaceCwdForThread(thread.id);
+            const resolvedOutputDelta = resolveBareHunkHeadersInLivePatch(
+              outputDelta,
+              workspaceCwd,
+              liveFileChangeSnapshotCache,
+            );
             const activityKey = liveFileChangeActivityKey(thread.id, turnId, event.itemId);
             const alreadyPublishedActivity = yield* hasSeenLiveFileChangeActivity(activityKey);
             if (!alreadyPublishedActivity) {
-              const changedFiles = extractChangedFilesFromUnifiedDiff(outputDelta);
+              const changedFiles = extractChangedFilesFromUnifiedDiff(resolvedOutputDelta);
               yield* orchestrationEngine.dispatch({
                 type: "thread.activity.append",
                 commandId: providerCommandId(event, "live-file-change-activity-append"),
@@ -2012,13 +2289,13 @@ const make = Effect.gen(function* () {
               });
               yield* markLiveFileChangeActivitySeen(activityKey);
             }
-            yield* publishCommandOutputSnapshot({
+            yield* publishLiveFileChangeText({
               threadId: thread.id,
               turnId: turnId ?? null,
-              toolCallId: ProviderItemId.make(event.itemId),
-              updatedAt: event.createdAt,
-              text: outputDelta,
-              truncated: false,
+              itemId: event.itemId,
+              eventId: event.eventId,
+              createdAt: event.createdAt,
+              text: resolvedOutputDelta,
             });
           } else {
             yield* publishCommandOutputDelta({

@@ -308,6 +308,7 @@ describe("ProviderRuntimeIngestion", () => {
       emit: provider.emit,
       setProviderSession: provider.setSession,
       drain,
+      workspaceRoot,
     };
   }
 
@@ -3109,6 +3110,138 @@ describe("ProviderRuntimeIngestion", () => {
         }
       | undefined;
     expect(liveActivityPayload?.data?.changes).toEqual([{ path: "src/new.ts" }]);
+  });
+
+  it("resolves bare file-change hunk headers against the workspace file", async () => {
+    const harness = await createHarness();
+    const now = new Date().toISOString();
+    const threadId = asThreadId("thread-1");
+    const turnId = asTurnId("turn-file-change-bare-hunk");
+    const itemId = asItemId("item-file-change-bare-hunk");
+    fs.writeFileSync(
+      path.join(harness.workspaceRoot, "file-change-ui-session-fixture-2026-05-09.md"),
+      ["intro", "existing context", "old body line", "tail", ""].join("\n"),
+      "utf8",
+    );
+
+    harness.emit({
+      type: "turn.started",
+      eventId: asEventId("evt-turn-started-file-change-bare-hunk"),
+      provider: ProviderDriverKind.make("codex"),
+      createdAt: now,
+      threadId,
+      turnId,
+    });
+    await waitForThread(
+      harness.engine,
+      (thread) => thread.session?.status === "running" && thread.session?.activeTurnId === turnId,
+    );
+
+    harness.emit({
+      type: "content.delta",
+      eventId: asEventId("evt-file-change-bare-hunk-snapshot"),
+      provider: ProviderDriverKind.make("codex"),
+      createdAt: "2026-03-17T19:12:31.000Z",
+      threadId,
+      turnId,
+      itemId,
+      raw: {
+        source: "codex.app-server.notification",
+        method: "item/fileChange/patchUpdated",
+        payload: {},
+      },
+      payload: {
+        streamKind: "file_change_output",
+        delta: [
+          "diff --git a/file-change-ui-session-fixture-2026-05-09.md b/file-change-ui-session-fixture-2026-05-09.md",
+          "--- a/file-change-ui-session-fixture-2026-05-09.md",
+          "+++ b/file-change-ui-session-fixture-2026-05-09.md",
+          "@@",
+          "existing context",
+          "-old body line",
+          "+new body line",
+        ].join("\n"),
+      },
+    });
+    await harness.drain();
+
+    const snapshots = await Effect.runPromise(readCommandOutputSnapshotsForThread(threadId));
+    expect(snapshots).toEqual([
+      expect.objectContaining({
+        threadId,
+        turnId,
+        toolCallId: itemId,
+        text: [
+          "diff --git a/file-change-ui-session-fixture-2026-05-09.md b/file-change-ui-session-fixture-2026-05-09.md",
+          "--- a/file-change-ui-session-fixture-2026-05-09.md",
+          "+++ b/file-change-ui-session-fixture-2026-05-09.md",
+          "@@ -2,2 +2,2 @@",
+          "existing context",
+          "-old body line",
+          "+new body line",
+        ].join("\n"),
+        updatedAt: "2026-03-17T19:12:31.000Z",
+      }),
+    ]);
+  });
+
+  it("resets live file-change output when Codex sends a non-prefix snapshot", async () => {
+    const harness = await createHarness();
+    const threadId = asThreadId("thread-1");
+    const turnId = asTurnId("turn-file-change-replacement");
+    const itemId = asItemId("item-file-change-replacement");
+    const firstPatch = "diff --git a/src/app.ts b/src/app.ts\n@@ -1,1 +1,1 @@\n-old\n+new\n";
+    const replacementPatch =
+      "diff --git a/src/app.ts b/src/app.ts\n@@ -8,1 +8,1 @@\n-before\n+after\n";
+
+    harness.emit({
+      type: "content.delta",
+      eventId: asEventId("evt-file-change-replacement-first"),
+      provider: ProviderDriverKind.make("codex"),
+      createdAt: "2026-03-17T19:12:31.000Z",
+      threadId,
+      turnId,
+      itemId,
+      raw: {
+        source: "codex.app-server.notification",
+        method: "item/fileChange/patchUpdated",
+        payload: {},
+      },
+      payload: {
+        streamKind: "file_change_output",
+        delta: firstPatch,
+      },
+    });
+    harness.emit({
+      type: "content.delta",
+      eventId: asEventId("evt-file-change-replacement-second"),
+      provider: ProviderDriverKind.make("codex"),
+      createdAt: "2026-03-17T19:12:32.000Z",
+      threadId,
+      turnId,
+      itemId,
+      raw: {
+        source: "codex.app-server.notification",
+        method: "item/fileChange/patchUpdated",
+        payload: {},
+      },
+      payload: {
+        streamKind: "file_change_output",
+        delta: replacementPatch,
+      },
+    });
+    await harness.drain();
+
+    const snapshots = await Effect.runPromise(readCommandOutputSnapshotsForThread(threadId));
+    expect(snapshots).toEqual([
+      expect.objectContaining({
+        threadId,
+        turnId,
+        toolCallId: itemId,
+        text: replacementPatch,
+        updatedAt: "2026-03-17T19:12:32.000Z",
+      }),
+    ]);
   });
 
   it("ignores generic apply_patch success output for file-change streams", async () => {

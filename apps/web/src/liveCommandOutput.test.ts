@@ -72,6 +72,41 @@ describe("liveCommandOutput", () => {
     ).toBe("same\n");
   });
 
+  it("resets streamed text when a synthetic file-change reset chunk arrives", () => {
+    appendLiveCommandOutputDelta(environmentId, {
+      threadId,
+      turnId: TurnId.make("turn-1"),
+      toolCallId,
+      chunkId: EventId.make("chunk-1"),
+      createdAt: "2026-01-01T00:00:00.000Z",
+      delta: "old text",
+    });
+    appendLiveCommandOutputDelta(environmentId, {
+      threadId,
+      turnId: TurnId.make("turn-1"),
+      toolCallId,
+      chunkId: EventId.make("event-1:file-change-reset:0"),
+      createdAt: "2026-01-01T00:00:01.000Z",
+      delta: "new",
+    });
+    appendLiveCommandOutputDelta(environmentId, {
+      threadId,
+      turnId: TurnId.make("turn-1"),
+      toolCallId,
+      chunkId: EventId.make("event-1:file-change:1"),
+      createdAt: "2026-01-01T00:00:01.000Z",
+      delta: " text",
+    });
+
+    expect(
+      readLiveCommandOutputSnapshot({
+        environmentId,
+        threadId,
+        toolCallId,
+      }).text,
+    ).toBe("new text");
+  });
+
   it("hydrates command output snapshots after a refresh", () => {
     hydrateLiveCommandOutputSnapshot(environmentId, {
       threadId,
