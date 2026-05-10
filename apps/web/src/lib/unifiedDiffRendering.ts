@@ -75,6 +75,32 @@ export const DIFF_RENDER_UNSAFE_CSS = `
 }
 `;
 
+export const INLINE_FILE_CHANGE_RUNNING_UNSAFE_CSS = `
+[data-title]::after {
+  content: '...';
+  display: inline-block;
+  margin-left: 0.35rem;
+  color: var(--muted-foreground);
+  animation: inline-file-change-dots 1.05s steps(4, end) infinite;
+}
+
+@keyframes inline-file-change-dots {
+  0% {
+    clip-path: inset(0 100% 0 0);
+  }
+  25% {
+    clip-path: inset(0 66% 0 0);
+  }
+  50% {
+    clip-path: inset(0 33% 0 0);
+  }
+  75%,
+  100% {
+    clip-path: inset(0 0 0 0);
+  }
+}
+`;
+
 export type RenderablePatch =
   | {
       kind: "files";

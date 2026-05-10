@@ -97,9 +97,12 @@ vi.mock("@pierre/diffs/react", () => ({
     };
   }) => (
     <div data-testid="inline-file-diff">
-      <button type="button" data-title>
-        {props.fileDiff.name ?? props.fileDiff.prevName}
-      </button>
+      <div data-diffs-header>
+        <button type="button" data-title>
+          {props.fileDiff.name ?? props.fileDiff.prevName}
+        </button>
+        <span data-testid="inline-file-diff-counter">1 change</span>
+      </div>
       {(props.fileDiff.deletionLines ?? []).map((line) => (
         <span key={`deletion:${line}`}>-{line}</span>
       ))}
@@ -716,7 +719,9 @@ describe("MessagesTimeline", () => {
     try {
       await expect.element(page.getByTestId("inline-file-diff")).not.toBeInTheDocument();
       await expect.element(page.getByTestId("inline-diff-toggle")).not.toBeInTheDocument();
-      await expect.element(page.getByText("Patch details unavailable.")).toBeInTheDocument();
+      await expect
+        .element(page.getByTestId("inline-file-change-header"))
+        .toHaveTextContent("src/app.ts");
       expect(getTurnDiff).not.toHaveBeenCalled();
     } finally {
       queryClient.clear();
@@ -811,7 +816,7 @@ describe("MessagesTimeline", () => {
       expect(getTurnDiff).not.toHaveBeenCalled();
       await expect.element(page.getByTestId("inline-diff-toggle")).not.toBeInTheDocument();
       await expect.element(page.getByLabelText("Expand inline file diff")).toBeInTheDocument();
-      await page.getByTestId("inline-file-change-expand-toggle").click();
+      await page.getByTestId("inline-file-diff-counter").click();
       await expect.element(page.getByLabelText("Collapse inline file diff")).toBeInTheDocument();
     } finally {
       queryClient.clear();

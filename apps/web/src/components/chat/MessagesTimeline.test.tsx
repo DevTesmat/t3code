@@ -413,7 +413,9 @@ describe("MessagesTimeline", () => {
       />,
     );
 
-    expect(markup).toContain("Waiting for complete patch metadata.");
+    expect(markup).toContain("inline-file-change-header");
+    expect(markup).toContain("src/app.ts");
+    expect(markup).not.toContain("Waiting for complete patch metadata.");
     expect(markup).not.toContain("+const partial");
     expect(markup).not.toContain("inline-file-change-patch");
   });
@@ -459,9 +461,86 @@ describe("MessagesTimeline", () => {
       />,
     );
 
-    expect(markup).toContain("Waiting for complete patch metadata.");
+    expect(markup).toContain("inline-file-change-header");
+    expect(markup).toContain("src/app.ts");
+    expect(markup).not.toContain("Waiting for complete patch metadata.");
     expect(markup).not.toContain("@@");
     expect(markup).not.toContain("diffs-container");
+  });
+
+  it("keeps the last valid Pierre inline patch when a completed edit remounts with invalid metadata", async () => {
+    const { MessagesTimeline } = await import("./MessagesTimeline");
+    const runningTimelineEntry = {
+      id: "entry-1",
+      kind: "work" as const,
+      createdAt: "2026-03-17T19:12:28.000Z",
+      entry: {
+        id: "work-1",
+        createdAt: "2026-03-17T19:12:28.000Z",
+        label: "Editing files",
+        tone: "tool" as const,
+        itemType: "file_change" as const,
+        status: "running" as const,
+        toolCallId: "file-change-remount",
+        changedFiles: ["src/app.ts"],
+      },
+    };
+
+    hydrateLiveCommandOutputSnapshot(ACTIVE_THREAD_ENVIRONMENT_ID, {
+      threadId: ThreadId.make("thread-1"),
+      turnId: TurnId.make("turn-1"),
+      toolCallId: ProviderItemId.make("file-change-remount"),
+      updatedAt: "2026-03-17T19:12:30.000Z",
+      text: [
+        "diff --git a/src/app.ts b/src/app.ts",
+        "--- a/src/app.ts",
+        "+++ b/src/app.ts",
+        "@@ -1 +1 @@",
+        "-old",
+        "+new",
+      ].join("\n"),
+      truncated: false,
+    });
+
+    renderToStaticMarkup(
+      <MessagesTimeline {...buildProps()} timelineEntries={[runningTimelineEntry]} />,
+    );
+
+    hydrateLiveCommandOutputSnapshot(ACTIVE_THREAD_ENVIRONMENT_ID, {
+      threadId: ThreadId.make("thread-1"),
+      turnId: TurnId.make("turn-1"),
+      toolCallId: ProviderItemId.make("file-change-remount"),
+      updatedAt: "2026-03-17T19:12:31.000Z",
+      text: [
+        "diff --git a/src/app.ts b/src/app.ts",
+        "--- a/src/app.ts",
+        "+++ b/src/app.ts",
+        "@@",
+        "-old",
+        "+new",
+      ].join("\n"),
+      truncated: false,
+    });
+
+    const markup = renderToStaticMarkup(
+      <MessagesTimeline
+        {...buildProps()}
+        timelineEntries={[
+          {
+            ...runningTimelineEntry,
+            entry: {
+              ...runningTimelineEntry.entry,
+              status: "completed" as const,
+            },
+          },
+        ]}
+      />,
+    );
+
+    expect(markup).toContain("inline-file-change-patch");
+    expect(markup).toContain("diffs-container");
+    expect(markup).not.toContain("inline-file-change-header");
+    expect(markup).not.toContain("Waiting for complete patch metadata.");
   });
 
   it("renders codebase exploration as one collapsed expandable row", async () => {

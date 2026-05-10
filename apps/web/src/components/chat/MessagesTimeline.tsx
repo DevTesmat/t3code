@@ -68,6 +68,7 @@ import { resolveDiffThemeName } from "../../lib/diffRendering";
 import { isScrollViewportAtBottom } from "./scrollStickiness";
 import {
   DIFF_RENDER_UNSAFE_CSS,
+  INLINE_FILE_CHANGE_RUNNING_UNSAFE_CSS,
   getRenderablePatch,
   resolveFileDiffPath,
   resolveFileDiffMatchPaths,
@@ -1436,6 +1437,44 @@ function detectSingleDeletedFilePatchPath(text: string): string | null {
   return normalizeDiffMatchPath(deletedPath);
 }
 
+function extractFirstLiveDiffPath(text: string): string | null {
+  const normalized = text.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
+  for (const line of normalized.split("\n")) {
+    if (line.startsWith("+++ ")) {
+      const pathValue = line.slice(4).trim();
+      if (pathValue && pathValue !== "/dev/null") {
+        return normalizeDiffMatchPath(pathValue);
+      }
+    }
+    if (line.startsWith("--- ")) {
+      const pathValue = line.slice(4).trim();
+      if (pathValue && pathValue !== "/dev/null") {
+        return normalizeDiffMatchPath(pathValue);
+      }
+    }
+    if (line.startsWith("diff --git ")) {
+      const match = /^diff --git\s+a\/(.+?)\s+b\/(.+)$/u.exec(line);
+      const pathValue = match?.[2] ?? match?.[1];
+      if (pathValue) {
+        return normalizeDiffMatchPath(pathValue);
+      }
+    }
+  }
+  return null;
+}
+
+function resolveInlineFileChangeHeaderPath(
+  changedFiles: ReadonlyArray<string>,
+  workspaceRoot: string | undefined,
+  liveText: string,
+): string {
+  const firstChangedFile = changedFiles[0];
+  if (firstChangedFile) {
+    return formatWorkspaceRelativePath(firstChangedFile, workspaceRoot);
+  }
+  return extractFirstLiveDiffPath(liveText) ?? "File change";
+}
+
 function getRenderableLiveFileChangePatch(
   text: string,
   cacheScope: string,
@@ -1454,29 +1493,60 @@ function getRenderableLiveFileChangePatch(
   return getRenderablePatch(normalizedText, cacheScope);
 }
 
+const MAX_STABLE_INLINE_FILE_CHANGE_PATCHES = 200;
+const stableInlineFileChangePatches = new Map<string, RenderablePatch>();
+
+function rememberStableInlineFileChangePatch(cacheKey: string, patch: RenderablePatch) {
+  stableInlineFileChangePatches.delete(cacheKey);
+  stableInlineFileChangePatches.set(cacheKey, patch);
+  while (stableInlineFileChangePatches.size > MAX_STABLE_INLINE_FILE_CHANGE_PATCHES) {
+    const oldestKey = stableInlineFileChangePatches.keys().next().value;
+    if (!oldestKey) break;
+    stableInlineFileChangePatches.delete(oldestKey);
+  }
+}
+
 function useStableRenderableLiveFileChangePatch({
   text,
   running,
   resolvedTheme,
+  stableCacheKey,
 }: {
   text: string;
   running: boolean;
   resolvedTheme: string;
+  stableCacheKey?: string | undefined;
 }): RenderablePatch | null {
   const throttledText = useThrottledLiveFileChangeText(text, running);
-  const lastValidPatchRef = useRef<RenderablePatch | null>(null);
+  const patchCacheKey = stableCacheKey
+    ? `inline-file-change:${stableCacheKey}:${resolvedTheme}`
+    : null;
+  const lastValidPatchRef = useRef<RenderablePatch | null>(
+    patchCacheKey ? (stableInlineFileChangePatches.get(patchCacheKey) ?? null) : null,
+  );
   const renderText = running ? throttledText : text;
   const currentPatch = useMemo(
-    () => getRenderableLiveFileChangePatch(renderText, `inline-file-change:${resolvedTheme}`),
-    [renderText, resolvedTheme],
+    () =>
+      getRenderableLiveFileChangePatch(
+        renderText,
+        patchCacheKey ?? `inline-file-change:${resolvedTheme}`,
+      ),
+    [renderText, patchCacheKey, resolvedTheme],
   );
 
   if (currentPatch?.kind === "files") {
     lastValidPatchRef.current = currentPatch;
+    if (patchCacheKey) {
+      rememberStableInlineFileChangePatch(patchCacheKey, currentPatch);
+    }
     return currentPatch;
   }
 
-  return lastValidPatchRef.current ?? currentPatch;
+  return (
+    lastValidPatchRef.current ??
+    (patchCacheKey ? (stableInlineFileChangePatches.get(patchCacheKey) ?? null) : null) ??
+    currentPatch
+  );
 }
 
 const LiveFileChangePreview = memo(function LiveFileChangePreview(props: {
@@ -1486,6 +1556,7 @@ const LiveFileChangePreview = memo(function LiveFileChangePreview(props: {
   changedFiles?: ReadonlyArray<string> | undefined;
   workspaceRoot?: string | undefined;
   standalone?: boolean | undefined;
+  stablePatchCacheKey?: string | undefined;
   onToggleExpanded?: (() => void) | undefined;
   onOpenSelectedFileDiff?: ((filePath: string) => void) | undefined;
 }) {
@@ -1496,6 +1567,7 @@ const LiveFileChangePreview = memo(function LiveFileChangePreview(props: {
     changedFiles = [],
     workspaceRoot,
     standalone,
+    stablePatchCacheKey,
     onToggleExpanded,
     onOpenSelectedFileDiff,
   } = props;
@@ -1506,6 +1578,7 @@ const LiveFileChangePreview = memo(function LiveFileChangePreview(props: {
     text: liveOutput.text,
     running,
     resolvedTheme,
+    stableCacheKey: stablePatchCacheKey,
   });
   const requestedPaths = useMemo(
     () => changedFiles.map((filePath) => normalizeDiffMatchPath(filePath, workspaceRoot)),
@@ -1514,6 +1587,10 @@ const LiveFileChangePreview = memo(function LiveFileChangePreview(props: {
   const deletedFilePath = useMemo(
     () => detectSingleDeletedFilePatchPath(liveOutput.text),
     [liveOutput.text],
+  );
+  const headerFilePath = useMemo(
+    () => resolveInlineFileChangeHeaderPath(changedFiles, workspaceRoot, liveOutput.text),
+    [changedFiles, liveOutput.text, workspaceRoot],
   );
   const selectedFileDiff = useMemo(() => {
     if (renderablePatch?.kind !== "files") {
@@ -1551,9 +1628,18 @@ const LiveFileChangePreview = memo(function LiveFileChangePreview(props: {
 
   if (liveOutput.text.length === 0) {
     return (
-      <InlineDiffMessage minLines={3} standalone={standalone}>
-        {running ? "Waiting for file-change stream..." : "Patch details unavailable."}
-      </InlineDiffMessage>
+      <InlineFileChangeHeader
+        className={containerClassName}
+        filePath={headerFilePath}
+        running={running}
+        expanded={expanded}
+        onToggleExpanded={onToggleExpanded}
+        onOpenSelectedFileDiff={
+          headerFilePath !== "File change" && onOpenSelectedFileDiff
+            ? () => onOpenSelectedFileDiff(headerFilePath)
+            : undefined
+        }
+      />
     );
   }
 
@@ -1570,46 +1656,52 @@ const LiveFileChangePreview = memo(function LiveFileChangePreview(props: {
     }
 
     return (
-      <div className={containerClassName}>
+      <div className={cn(containerClassName, "relative")}>
+        {onToggleExpanded && (
+          <button
+            type="button"
+            aria-label={expanded ? "Collapse inline file diff" : "Expand inline file diff"}
+            className="absolute top-1 -right-1 z-10 flex size-5 items-center justify-center rounded-md text-muted-foreground/60 transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring/45"
+            onClick={(event) => {
+              event.stopPropagation();
+              onToggleExpanded();
+            }}
+            data-testid="inline-file-change-expand-toggle"
+          >
+            <ChevronRightIcon
+              className={cn("size-3.5 transition-transform", expanded && "rotate-90")}
+            />
+          </button>
+        )}
         <div
           onClickCapture={(event) => {
-            if (!onOpenSelectedFileDiff || !selectedFilePath) {
-              return;
-            }
             const nativeEvent = event.nativeEvent as MouseEvent;
             const composedPath = nativeEvent.composedPath?.() ?? [];
             const clickedTitle = composedPath.some((node) => {
               if (!(node instanceof Element)) return false;
               return node.hasAttribute("data-title");
             });
-            if (!clickedTitle) {
+            if (clickedTitle && onOpenSelectedFileDiff && selectedFilePath) {
+              event.preventDefault();
+              event.stopPropagation();
+              onOpenSelectedFileDiff(selectedFilePath);
               return;
             }
-            event.preventDefault();
-            event.stopPropagation();
-            onOpenSelectedFileDiff(selectedFilePath);
+            const clickedHeader = composedPath.some((node) => {
+              if (!(node instanceof Element)) return false;
+              return node.hasAttribute("data-diffs-header") || node.hasAttribute("data-file-info");
+            });
+            if (clickedHeader && onToggleExpanded) {
+              event.preventDefault();
+              event.stopPropagation();
+              onToggleExpanded();
+            }
           }}
           className={cn(
             "relative min-h-14 overflow-auto rounded-md border border-border/55 bg-card/25 [scrollbar-width:thin] [&::-webkit-scrollbar]:h-1.5 [&::-webkit-scrollbar]:w-1.5",
             expanded ? "max-h-80" : "max-h-[7.25rem]",
           )}
         >
-          {onToggleExpanded && (
-            <button
-              type="button"
-              aria-label={expanded ? "Collapse inline file diff" : "Expand inline file diff"}
-              className="absolute top-1.5 right-1.5 z-10 flex size-6 items-center justify-center rounded-md border border-border/50 bg-card/90 text-muted-foreground/65 shadow-xs backdrop-blur transition-colors hover:border-border hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring/45"
-              onClick={(event) => {
-                event.stopPropagation();
-                onToggleExpanded();
-              }}
-              data-testid="inline-file-change-expand-toggle"
-            >
-              <ChevronRightIcon
-                className={cn("size-3.5 transition-transform", expanded && "rotate-90")}
-              />
-            </button>
-          )}
           {liveOutput.truncated && (
             <div className="border-b border-border/45 px-2 py-1 text-[10px] text-muted-foreground/55">
               Earlier streamed edits truncated.
@@ -1624,7 +1716,9 @@ const LiveFileChangePreview = memo(function LiveFileChangePreview(props: {
                 overflow: settings.diffWordWrap ? "wrap" : "scroll",
                 theme: resolveDiffThemeName(resolvedTheme),
                 themeType: resolvedTheme as InlineDiffThemeType,
-                unsafeCSS: DIFF_RENDER_UNSAFE_CSS,
+                unsafeCSS: running
+                  ? `${DIFF_RENDER_UNSAFE_CSS}\n${INLINE_FILE_CHANGE_RUNNING_UNSAFE_CSS}`
+                  : DIFF_RENDER_UNSAFE_CSS,
               }}
             />
           </div>
@@ -1633,22 +1727,83 @@ const LiveFileChangePreview = memo(function LiveFileChangePreview(props: {
     );
   }
 
-  if (renderablePatch?.kind === "raw") {
-    return (
-      <InlineDiffMessage minLines={3} standalone={standalone}>
-        {renderablePatch.reason}
-      </InlineDiffMessage>
-    );
-  }
-
   return (
-    <InlineDiffMessage minLines={3} standalone={standalone}>
-      Waiting for complete patch metadata.
-    </InlineDiffMessage>
+    <InlineFileChangeHeader
+      className={containerClassName}
+      filePath={headerFilePath}
+      running={running}
+      expanded={expanded}
+      onToggleExpanded={onToggleExpanded}
+      onOpenSelectedFileDiff={
+        headerFilePath && onOpenSelectedFileDiff
+          ? () => onOpenSelectedFileDiff(headerFilePath)
+          : undefined
+      }
+    />
   );
 });
 
 type InlineDiffThemeType = "light" | "dark";
+
+const InlineFileChangeHeader = memo(function InlineFileChangeHeader(props: {
+  className: string;
+  filePath: string;
+  running: boolean;
+  expanded: boolean;
+  onToggleExpanded?: (() => void) | undefined;
+  onOpenSelectedFileDiff?: (() => void) | undefined;
+}) {
+  const { className, filePath, running, expanded, onToggleExpanded, onOpenSelectedFileDiff } =
+    props;
+  return (
+    <div className={className}>
+      <div
+        className="flex min-h-8 min-w-0 items-center gap-2 rounded-md border border-border/55 bg-card/25 px-2 text-left"
+        data-testid="inline-file-change-header"
+        onClick={onToggleExpanded}
+      >
+        {onOpenSelectedFileDiff ? (
+          <button
+            type="button"
+            className="min-w-0 truncate font-mono text-[11px] font-medium text-foreground/80 underline decoration-transparent underline-offset-2 transition-colors hover:text-primary hover:decoration-current focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring/45"
+            title={filePath}
+            onClick={(event) => {
+              event.stopPropagation();
+              onOpenSelectedFileDiff();
+            }}
+          >
+            {filePath}
+          </button>
+        ) : (
+          <span
+            className="min-w-0 truncate font-mono text-[11px] font-medium text-foreground/80"
+            title={filePath}
+          >
+            {filePath}
+          </span>
+        )}
+        {running ? <WorkingDots className="shrink-0 text-muted-foreground/55" /> : null}
+        <span className="min-w-0 flex-1" />
+        {onToggleExpanded ? (
+          <button
+            type="button"
+            aria-label={expanded ? "Collapse inline file diff" : "Expand inline file diff"}
+            className="flex size-5 shrink-0 items-center justify-center rounded-md text-muted-foreground/60 transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring/45"
+            onClick={(event) => {
+              event.stopPropagation();
+              onToggleExpanded();
+            }}
+            data-testid="inline-file-change-expand-toggle"
+          >
+            <ChevronRightIcon
+              className={cn("size-3.5 transition-transform", expanded && "rotate-90")}
+            />
+          </button>
+        ) : null}
+      </div>
+    </div>
+  );
+});
 
 const DeletedFileBadge = memo(function DeletedFileBadge(props: {
   className: string;
@@ -1717,6 +1872,7 @@ const InlineChangedFilesDiffPreview = memo(function InlineChangedFilesDiffPrevie
   workspaceRoot: string | undefined;
   liveOutput: LiveCommandOutputSnapshot;
   expanded: boolean;
+  stablePatchCacheKey?: string | undefined;
   onToggleExpanded?: (() => void) | undefined;
   onOpenSelectedFileDiff?: ((filePath: string) => void) | undefined;
 }) {
@@ -1726,6 +1882,7 @@ const InlineChangedFilesDiffPreview = memo(function InlineChangedFilesDiffPrevie
     workspaceRoot,
     liveOutput,
     expanded,
+    stablePatchCacheKey,
     onToggleExpanded,
     onOpenSelectedFileDiff,
   } = props;
@@ -1737,6 +1894,7 @@ const InlineChangedFilesDiffPreview = memo(function InlineChangedFilesDiffPrevie
       expanded={expanded}
       changedFiles={changedFiles}
       workspaceRoot={workspaceRoot}
+      stablePatchCacheKey={stablePatchCacheKey}
       onToggleExpanded={onToggleExpanded}
       onOpenSelectedFileDiff={onOpenSelectedFileDiff}
     />
@@ -1968,6 +2126,11 @@ const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
         expanded={inlineDiffExpanded}
         changedFiles={workEntry.changedFiles ?? []}
         workspaceRoot={workspaceRoot}
+        stablePatchCacheKey={
+          workEntry.toolCallId
+            ? `${ctx.activeThreadEnvironmentId}:${ctx.activeThreadId}:${workEntry.toolCallId}`
+            : undefined
+        }
         onToggleExpanded={() => onToggleInlineDiffExpanded(inlineDiffKey, false)}
         onOpenSelectedFileDiff={workEntry.turnId ? openFileChangeTurnDiff : undefined}
         standalone
@@ -2046,6 +2209,11 @@ const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
               workspaceRoot={workspaceRoot}
               liveOutput={liveOutput}
               expanded={inlineDiffPreviewExpanded}
+              stablePatchCacheKey={
+                workEntry.toolCallId
+                  ? `${ctx.activeThreadEnvironmentId}:${ctx.activeThreadId}:${workEntry.toolCallId}`
+                  : undefined
+              }
             />
           ) : hasChangedFiles ? (
             <InlineDiffMessage minLines={3}>Patch details unavailable.</InlineDiffMessage>
