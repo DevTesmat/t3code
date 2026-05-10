@@ -1911,6 +1911,7 @@ export default function ChatView(props: ChatViewProps) {
         message: {
           messageId,
           role: "user",
+          source: "recovery",
           text: THREAD_RESUME_PROMPT,
           attachments: [],
         },

@@ -206,7 +206,7 @@ export type OrchestrationProject = typeof OrchestrationProject.Type;
 
 export const OrchestrationMessageRole = Schema.Literals(["user", "assistant", "system"]);
 export type OrchestrationMessageRole = typeof OrchestrationMessageRole.Type;
-export const OrchestrationMessageSource = Schema.Literals(["user", "harness"]);
+export const OrchestrationMessageSource = Schema.Literals(["user", "harness", "recovery"]);
 export type OrchestrationMessageSource = typeof OrchestrationMessageSource.Type;
 
 export const OrchestrationMessage = Schema.Struct({
@@ -623,6 +623,9 @@ export const ThreadTurnStartCommand = Schema.Struct({
   message: Schema.Struct({
     messageId: MessageId,
     role: Schema.Literal("user"),
+    source: Schema.optionalKey(OrchestrationMessageSource).pipe(
+      Schema.withDecodingDefault(Effect.succeed("user")),
+    ),
     text: Schema.String,
     attachments: Schema.Array(ChatAttachment),
   }),
@@ -644,6 +647,9 @@ const ClientThreadTurnStartCommand = Schema.Struct({
   message: Schema.Struct({
     messageId: MessageId,
     role: Schema.Literal("user"),
+    source: Schema.optionalKey(OrchestrationMessageSource).pipe(
+      Schema.withDecodingDefault(Effect.succeed("user")),
+    ),
     text: Schema.String,
     attachments: Schema.Array(UploadChatAttachment),
   }),

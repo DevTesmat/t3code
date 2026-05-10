@@ -7,7 +7,11 @@ export interface MessageVisibilityInput {
 
 export function isUserAuthoredMessage(input: MessageVisibilityInput): boolean {
   return (
-    input.source !== "harness" &&
+    (input.source === undefined || input.source === "user") &&
     !input.text.trimStart().startsWith(PLAN_IMPLEMENTATION_PROMPT_PREFIX)
   );
+}
+
+export function isRecoveryMessage(input: MessageVisibilityInput): boolean {
+  return input.source === "recovery";
 }

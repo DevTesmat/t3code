@@ -24,7 +24,7 @@ import type {
   ThreadSession,
   TurnDiffSummary,
 } from "./types";
-import { isUserAuthoredMessage } from "./messageVisibility";
+import { isRecoveryMessage, isUserAuthoredMessage } from "./messageVisibility";
 
 export type ProviderPickerKind = ProviderDriverKind;
 
@@ -180,6 +180,12 @@ export type TimelineEntry =
       kind: "work";
       createdAt: string;
       entry: WorkLogEntry;
+    }
+  | {
+      id: string;
+      kind: "separator";
+      createdAt: string;
+      label: string;
     };
 
 export function formatDuration(durationMs: number): string {
@@ -2209,6 +2215,14 @@ export function deriveTimelineEntries(
       createdAt: message.createdAt,
       message,
     }));
+  const separatorRows: TimelineEntry[] = messages
+    .filter((message) => isRecoveryMessage(message))
+    .map((message) => ({
+      id: `separator:${message.id}`,
+      kind: "separator",
+      createdAt: message.createdAt,
+      label: "Thread resumed",
+    }));
   const proposedPlanRows: TimelineEntry[] = proposedPlans.map((proposedPlan) => ({
     id: proposedPlan.id,
     kind: "proposed-plan",
@@ -2221,7 +2235,7 @@ export function deriveTimelineEntries(
     createdAt: entry.createdAt,
     entry,
   }));
-  return [...messageRows, ...proposedPlanRows, ...workRows].toSorted((a, b) =>
+  return [...messageRows, ...separatorRows, ...proposedPlanRows, ...workRows].toSorted((a, b) =>
     a.createdAt.localeCompare(b.createdAt),
   );
 }

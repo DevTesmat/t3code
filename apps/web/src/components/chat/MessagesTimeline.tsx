@@ -429,6 +429,8 @@ function buildTimelineAutoScrollContentKey(rows: ReadonlyArray<MessagesTimelineR
             row.proposedPlan.implementedAt ?? "",
             row.proposedPlan.implementationThreadId ?? "",
           ].join(":");
+        case "separator":
+          return [row.id, row.kind, row.label].join(":");
         case "work":
           return [
             row.id,
@@ -486,6 +488,16 @@ function TimelineRowContent({ row }: { row: TimelineRow }) {
           groupedEntries={row.groupedEntries}
           activityGroupKind={row.activityGroupKind}
         />
+      )}
+
+      {row.kind === "separator" && (
+        <div className="flex items-center gap-3 py-2 text-muted-foreground text-xs">
+          <div className="h-px flex-1 bg-border/70" />
+          <span className="shrink-0 rounded-full border border-border/70 bg-background px-2 py-0.5">
+            {row.label}
+          </span>
+          <div className="h-px flex-1 bg-border/70" />
+        </div>
       )}
 
       {row.kind === "message" &&

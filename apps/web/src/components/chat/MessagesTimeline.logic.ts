@@ -42,6 +42,12 @@ export type MessagesTimelineRow =
       proposedPlan: ProposedPlan;
     }
   | {
+      kind: "separator";
+      id: string;
+      createdAt: string;
+      label: string;
+    }
+  | {
       kind: "working";
       id: string;
       createdAt: string | null;
@@ -155,6 +161,16 @@ export function deriveMessagesTimelineRows(input: {
         id: timelineEntry.id,
         createdAt: timelineEntry.createdAt,
         proposedPlan: timelineEntry.proposedPlan,
+      });
+      continue;
+    }
+
+    if (timelineEntry.kind === "separator") {
+      nextRows.push({
+        kind: "separator",
+        id: timelineEntry.id,
+        createdAt: timelineEntry.createdAt,
+        label: timelineEntry.label,
       });
       continue;
     }
@@ -320,6 +336,9 @@ function isRowUnchanged(a: MessagesTimelineRow, b: MessagesTimelineRow): boolean
 
     case "proposed-plan":
       return a.proposedPlan === (b as typeof a).proposedPlan;
+
+    case "separator":
+      return a.createdAt === (b as typeof a).createdAt && a.label === (b as typeof a).label;
 
     case "work":
       return (

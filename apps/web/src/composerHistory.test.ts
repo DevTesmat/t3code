@@ -141,7 +141,7 @@ describe("composerHistory", () => {
     ]);
   });
 
-  it("excludes harness and legacy plan implementation prompts from user history", () => {
+  it("excludes non-user and legacy plan implementation prompts from user history", () => {
     expect(
       userPromptHistoryFromMessages([
         {
@@ -149,6 +149,12 @@ describe("composerHistory", () => {
           role: "user",
           source: "harness",
           text: "PLEASE IMPLEMENT THIS PLAN:\n# Ship it",
+        },
+        {
+          id: "recovery",
+          role: "user",
+          source: "recovery",
+          text: "The previous runtime session was interrupted.",
         },
         {
           id: "legacy-plan",

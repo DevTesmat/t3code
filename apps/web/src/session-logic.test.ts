@@ -2472,6 +2472,38 @@ describe("deriveTimelineEntries", () => {
     expect(entries.map((entry) => entry.kind)).toEqual(["proposed-plan", "message"]);
   });
 
+  it("hides recovery prompts and inserts a resume separator", () => {
+    const entries = deriveTimelineEntries(
+      [
+        {
+          id: MessageId.make("message-recovery"),
+          role: "user",
+          source: "recovery",
+          text: "The previous runtime session was interrupted or became unresponsive.",
+          createdAt: "2026-02-23T00:00:02.000Z",
+          streaming: false,
+        },
+        {
+          id: MessageId.make("message-user"),
+          role: "user",
+          source: "user",
+          text: "visible follow-up",
+          createdAt: "2026-02-23T00:00:03.000Z",
+          streaming: false,
+        },
+      ],
+      [],
+      [],
+    );
+
+    expect(entries.map((entry) => entry.kind)).toEqual(["separator", "message"]);
+    expect(entries[0]).toMatchObject({
+      id: "separator:message-recovery",
+      label: "Thread resumed",
+    });
+    expect(entries.map((entry) => entry.id)).not.toContain(MessageId.make("message-recovery"));
+  });
+
   it("anchors the completion divider to latestTurn.assistantMessageId before timestamp fallback", () => {
     const entries = deriveTimelineEntries(
       [
