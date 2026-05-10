@@ -27,6 +27,8 @@ import { afterEach, describe, expect, it } from "vitest";
 import { OrchestrationEventStoreLive } from "../../persistence/Layers/OrchestrationEventStore.ts";
 import { OrchestrationCommandReceiptRepositoryLive } from "../../persistence/Layers/OrchestrationCommandReceipts.ts";
 import { SqlitePersistenceMemory } from "../../persistence/Layers/Sqlite.ts";
+import { ToolCallFileDiffRepositoryLive } from "../../persistence/Layers/ToolCallFileDiffs.ts";
+import { ToolCallFileDiffRepository } from "../../persistence/Services/ToolCallFileDiffs.ts";
 import {
   ProviderService,
   type ProviderServiceShape,
@@ -190,7 +192,7 @@ type ProviderRuntimeTestCheckpoint = ProviderRuntimeTestThread["checkpoints"][nu
 
 describe("ProviderRuntimeIngestion", () => {
   let runtime: ManagedRuntime.ManagedRuntime<
-    OrchestrationEngineService | ProviderRuntimeIngestionService,
+    OrchestrationEngineService | ProviderRuntimeIngestionService | ToolCallFileDiffRepository,
     unknown
   > | null = null;
   let scope: Scope.Closeable | null = null;
@@ -229,7 +231,10 @@ describe("ProviderRuntimeIngestion", () => {
       Layer.provide(RepositoryIdentityResolverLive),
       Layer.provide(SqlitePersistenceMemory),
     );
-    const layer = ProviderRuntimeIngestionLive.pipe(
+    const layer = Layer.mergeAll(
+      ProviderRuntimeIngestionLive,
+      ToolCallFileDiffRepositoryLive.pipe(Layer.provide(SqlitePersistenceMemory)),
+    ).pipe(
       Layer.provideMerge(orchestrationLayer),
       Layer.provideMerge(SqlitePersistenceMemory),
       Layer.provideMerge(Layer.succeed(ProviderService, provider.service)),
@@ -240,6 +245,7 @@ describe("ProviderRuntimeIngestion", () => {
     runtime = ManagedRuntime.make(layer);
     const engine = await runtime.runPromise(Effect.service(OrchestrationEngineService));
     const ingestion = await runtime.runPromise(Effect.service(ProviderRuntimeIngestionService));
+    const fileDiffs = await runtime.runPromise(Effect.service(ToolCallFileDiffRepository));
     scope = await Effect.runPromise(Scope.make("sequential"));
     await Effect.runPromise(ingestion.start().pipe(Scope.provide(scope)));
     const drain = () => Effect.runPromise(ingestion.drain);
@@ -309,6 +315,7 @@ describe("ProviderRuntimeIngestion", () => {
       setProviderSession: provider.setSession,
       drain,
       workspaceRoot,
+      fileDiffs,
     };
   }
 
@@ -2989,7 +2996,6 @@ describe("ProviderRuntimeIngestion", () => {
         text: "diff --git a/src/app.ts b/src/app.ts\n+hello\n",
       }),
     ]);
-
     const thread = await waitForThread(harness.engine, (entry) =>
       entry.activities.some(
         (activity: ProviderRuntimeTestActivity) => activity.id === "evt-file-change-started",
@@ -3082,6 +3088,22 @@ describe("ProviderRuntimeIngestion", () => {
         toolCallId: itemId,
         text: "diff --git a/src/new.ts b/src/new.ts\n+hello\n+again\n",
         updatedAt: "2026-03-17T19:12:32.000Z",
+      }),
+    ]);
+    const persistedDiffs = await Effect.runPromise(
+      harness.fileDiffs.listByThread({
+        threadId,
+        accessedAt: "2026-03-17T19:12:33.000Z",
+      }),
+    );
+    expect(persistedDiffs).toEqual([
+      expect.objectContaining({
+        threadId,
+        turnId,
+        toolCallId: itemId,
+        diff: "diff --git a/src/new.ts b/src/new.ts\n+hello\n+again\n",
+        updatedAt: "2026-03-17T19:12:32.000Z",
+        truncated: false,
       }),
     ]);
 

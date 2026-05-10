@@ -27,6 +27,8 @@ import { OrchestrationCommandReceiptRepository } from "../../persistence/Service
 import { OrchestrationCommandReceiptRepositoryLive } from "../../persistence/Layers/OrchestrationCommandReceipts.ts";
 import { ProjectionTurnRepository } from "../../persistence/Services/ProjectionTurns.ts";
 import { ProjectionTurnRepositoryLive } from "../../persistence/Layers/ProjectionTurns.ts";
+import { ToolCallFileDiffRepositoryLive } from "../../persistence/Layers/ToolCallFileDiffs.ts";
+import { ToolCallFileDiffRepository } from "../../persistence/Services/ToolCallFileDiffs.ts";
 import { resolveThreadWorkspaceCwd } from "../../checkpointing/Utils.ts";
 import { isGitRepository } from "../../git/Utils.ts";
 import { OrchestrationEngineService } from "../Services/OrchestrationEngine.ts";
@@ -84,6 +86,12 @@ const LIVE_FILE_CHANGE_LINE_RESOLVE_MAX_PATCH_CHARS = 256 * 1024;
 const LIVE_FILE_CHANGE_LINE_RESOLVE_MAX_FILE_CHARS = 768 * 1024;
 const LIVE_FILE_CHANGE_LINE_RESOLVE_MAX_HUNK_LINES = 80;
 const LIVE_FILE_CHANGE_SYNTHETIC_DELTA_CHARS = 24;
+const FILE_CHANGE_DIFF_MAX_CHARS = 5 * 1024 * 1024;
+const FILE_CHANGE_DIFF_STALE_AFTER_MS = 7 * 24 * 60 * 60_000;
+const FILE_CHANGE_DIFF_MAX_TOTAL_BYTES = 512 * 1024 * 1024;
+const FILE_CHANGE_DIFF_TARGET_TOTAL_BYTES = 384 * 1024 * 1024;
+const FILE_CHANGE_DIFF_CLEANUP_BATCH_SIZE = 250;
+const FILE_CHANGE_DIFF_CLEANUP_INTERVAL_MS = 60_000;
 
 type TerminalOutputPreviewStream = "stdout" | "stderr" | "mixed" | "unknown";
 
@@ -1247,6 +1255,7 @@ const make = Effect.gen(function* () {
   const commandReceiptRepository = yield* OrchestrationCommandReceiptRepository;
   const providerService = yield* ProviderService;
   const projectionTurnRepository = yield* ProjectionTurnRepository;
+  const toolCallFileDiffRepository = yield* ToolCallFileDiffRepository;
   const serverSettingsService = yield* ServerSettingsService;
 
   const turnMessageIdsByTurnKey = yield* Cache.make<string, Set<MessageId>>({
@@ -1287,12 +1296,48 @@ const make = Effect.gen(function* () {
   const childProviderThreadIdsByThreadId = new Map<string, Set<string>>();
   const liveFileChangeSnapshotCache = new Map<string, WorkspaceFileSnapshot>();
   const liveFileChangeStreamByItemKey = new Map<string, LiveFileChangeStreamState>();
+  let lastFileDiffCleanupAt = 0;
 
   const hasSeenLiveFileChangeActivity = (key: string) =>
     Cache.getOption(liveFileChangeActivityByItemKey, key).pipe(Effect.map(Option.isSome));
 
   const markLiveFileChangeActivitySeen = (key: string) =>
     Cache.set(liveFileChangeActivityByItemKey, key, true);
+
+  const persistToolCallFileDiff = Effect.fn("persistToolCallFileDiff")(function* (input: {
+    readonly threadId: ThreadId;
+    readonly turnId: TurnId | null;
+    readonly itemId: string;
+    readonly updatedAt: string;
+    readonly text: string;
+  }) {
+    const persistText =
+      input.text.length > FILE_CHANGE_DIFF_MAX_CHARS
+        ? input.text.slice(input.text.length - FILE_CHANGE_DIFF_MAX_CHARS)
+        : input.text;
+    yield* toolCallFileDiffRepository.upsert({
+      threadId: input.threadId,
+      turnId: input.turnId,
+      toolCallId: ProviderItemId.make(input.itemId),
+      diff: persistText,
+      truncated: persistText.length !== input.text.length,
+      updatedAt: input.updatedAt,
+    });
+
+    const cleanupAt = Date.parse(input.updatedAt);
+    const nowMs = Number.isFinite(cleanupAt) ? cleanupAt : Date.now();
+    if (nowMs - lastFileDiffCleanupAt < FILE_CHANGE_DIFF_CLEANUP_INTERVAL_MS) {
+      return;
+    }
+    lastFileDiffCleanupAt = nowMs;
+    yield* toolCallFileDiffRepository.cleanupIfOverBudget({
+      now: input.updatedAt,
+      staleAfterMs: FILE_CHANGE_DIFF_STALE_AFTER_MS,
+      maxTotalBytes: FILE_CHANGE_DIFF_MAX_TOTAL_BYTES,
+      targetTotalBytes: FILE_CHANGE_DIFF_TARGET_TOTAL_BYTES,
+      batchSize: FILE_CHANGE_DIFF_CLEANUP_BATCH_SIZE,
+    });
+  });
 
   const publishLiveFileChangeText = Effect.fn("publishLiveFileChangeText")(function* (input: {
     readonly threadId: ThreadId;
@@ -1302,6 +1347,14 @@ const make = Effect.gen(function* () {
     readonly createdAt: string;
     readonly text: string;
   }) {
+    yield* persistToolCallFileDiff({
+      threadId: input.threadId,
+      turnId: input.turnId,
+      itemId: input.itemId,
+      updatedAt: input.createdAt,
+      text: input.text,
+    });
+
     const stateKey = liveFileChangeActivityKey(
       input.threadId,
       input.turnId === null ? undefined : input.turnId,
@@ -2298,6 +2351,22 @@ const make = Effect.gen(function* () {
               text: resolvedOutputDelta,
             });
           } else {
+            if (fileChangeOutputDelta !== undefined) {
+              const stateKey = liveFileChangeActivityKey(thread.id, turnId, event.itemId);
+              const previous = liveFileChangeStreamByItemKey.get(stateKey);
+              const nextText = `${previous?.text ?? ""}${outputDelta}`;
+              liveFileChangeStreamByItemKey.set(stateKey, {
+                text: nextText,
+                nextChunkIndex: previous?.nextChunkIndex ?? 0,
+              });
+              yield* persistToolCallFileDiff({
+                threadId: thread.id,
+                turnId: turnId ?? null,
+                itemId: event.itemId,
+                updatedAt: event.createdAt,
+                text: nextText,
+              });
+            }
             yield* publishCommandOutputDelta({
               threadId: thread.id,
               turnId: turnId ?? null,
@@ -2696,5 +2765,6 @@ export const ProviderRuntimeIngestionLive = Layer.effect(
   make,
 ).pipe(
   Layer.provide(ProjectionTurnRepositoryLive),
+  Layer.provide(ToolCallFileDiffRepositoryLive),
   Layer.provide(OrchestrationCommandReceiptRepositoryLive),
 );

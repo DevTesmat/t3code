@@ -79,6 +79,7 @@ import {
 } from "./orchestration/http.ts";
 import { NetService } from "@t3tools/shared/Net";
 import { ProjectionStateRepositoryLive } from "./persistence/Layers/ProjectionState.ts";
+import { ToolCallFileDiffRepositoryLive } from "./persistence/Layers/ToolCallFileDiffs.ts";
 import { OperationalHealthLive } from "./operationalHealth.ts";
 
 const PtyAdapterLive = Layer.unwrap(
@@ -216,6 +217,7 @@ const RuntimeCoreDependenciesLive = ReactorLayerLive.pipe(
   Layer.provideMerge(TerminalLayerLive),
   Layer.provideMerge(PersistenceLayerLive),
   Layer.provideMerge(ProjectionStateRepositoryLive),
+  Layer.provideMerge(ToolCallFileDiffRepositoryLive),
   Layer.provideMerge(KeybindingsLive),
   Layer.provideMerge(ProviderRegistryLive),
 );

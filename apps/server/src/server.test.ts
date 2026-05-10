@@ -79,6 +79,10 @@ import {
 } from "./orchestration/Services/ProjectionSnapshotQuery.ts";
 import { SqlitePersistenceMemory } from "./persistence/Layers/Sqlite.ts";
 import {
+  ToolCallFileDiffRepository,
+  type ToolCallFileDiffRepositoryShape,
+} from "./persistence/Services/ToolCallFileDiffs.ts";
+import {
   ProviderRegistry,
   type ProviderRegistryShape,
 } from "./provider/Services/ProviderRegistry.ts";
@@ -323,6 +327,7 @@ const buildAppUnderTest = (options?: {
     terminalManager?: Partial<TerminalManagerShape>;
     orchestrationEngine?: Partial<OrchestrationEngineShape>;
     projectionSnapshotQuery?: Partial<ProjectionSnapshotQueryShape>;
+    toolCallFileDiffRepository?: Partial<ToolCallFileDiffRepositoryShape>;
     checkpointDiffQuery?: Partial<CheckpointDiffQueryShape>;
     browserTraceCollector?: Partial<BrowserTraceCollectorShape>;
     serverLifecycleEvents?: Partial<ServerLifecycleEventsShape>;
@@ -475,6 +480,14 @@ const buildAppUnderTest = (options?: {
           getFirstActiveThreadIdByProjectId: () => Effect.succeed(Option.none()),
           getThreadCheckpointContext: () => Effect.succeed(Option.none()),
           ...options?.layers?.projectionSnapshotQuery,
+        }),
+      ),
+      Layer.provide(
+        Layer.mock(ToolCallFileDiffRepository)({
+          upsert: () => Effect.void,
+          listByThread: () => Effect.succeed([]),
+          cleanupIfOverBudget: () => Effect.void,
+          ...options?.layers?.toolCallFileDiffRepository,
         }),
       ),
       Layer.provide(

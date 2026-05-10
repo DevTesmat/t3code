@@ -44,6 +44,7 @@ import {
 } from "./orchestration/Services/CommandOutputDeltaBus.ts";
 import { readCommandOutputSnapshotsForThread } from "./orchestration/Services/CommandOutputBuffer.ts";
 import { ProjectionSnapshotQuery } from "./orchestration/Services/ProjectionSnapshotQuery.ts";
+import { ToolCallFileDiffRepository } from "./persistence/Services/ToolCallFileDiffs.ts";
 import {
   observeRpcEffect,
   observeRpcStream,
@@ -176,6 +177,7 @@ const makeWsRpcLayer = (currentSessionId: AuthSessionId) =>
       const serverAuth = yield* ServerAuth;
       const bootstrapCredentials = yield* BootstrapCredentialService;
       const sessions = yield* SessionCredentialService;
+      const toolCallFileDiffRepository = yield* ToolCallFileDiffRepository;
       const snapshotReloadCoordinator = yield* makeWebSocketSnapshotReloadCoordinator();
       const serverCommandId = (tag: string) =>
         CommandId.make(`server:${tag}:${crypto.randomUUID()}`);
@@ -810,17 +812,45 @@ const makeWsRpcLayer = (currentSessionId: AuthSessionId) =>
                   snapshot,
                 })),
               );
-              const commandOutputSnapshotStream = readCommandOutputSnapshotsForThread(
-                input.threadId,
-              ).pipe(
-                Effect.map((snapshots) =>
-                  Stream.fromIterable(
+              const commandOutputSnapshotStream = Effect.all([
+                readCommandOutputSnapshotsForThread(input.threadId),
+                toolCallFileDiffRepository
+                  .listByThread({
+                    threadId: input.threadId,
+                    accessedAt: new Date().toISOString(),
+                  })
+                  .pipe(
+                    Effect.mapError(
+                      (cause) =>
+                        new OrchestrationGetSnapshotError({
+                          message: `Failed to load persisted file diffs for thread ${input.threadId}`,
+                          cause,
+                        }),
+                    ),
+                  ),
+              ]).pipe(
+                Effect.map(([liveSnapshots, persistedFileDiffs]) => {
+                  const liveKeys = new Set(
+                    liveSnapshots.map((snapshot) => `${snapshot.threadId}:${snapshot.toolCallId}`),
+                  );
+                  const persistedSnapshots = persistedFileDiffs
+                    .filter((diff) => !liveKeys.has(`${diff.threadId}:${diff.toolCallId}`))
+                    .map((diff) => ({
+                      threadId: diff.threadId,
+                      turnId: diff.turnId,
+                      toolCallId: diff.toolCallId,
+                      updatedAt: diff.updatedAt,
+                      text: diff.diff,
+                      truncated: diff.truncated,
+                    }));
+                  const snapshots = [...liveSnapshots, ...persistedSnapshots];
+                  return Stream.fromIterable(
                     snapshots.map((snapshot) => ({
                       kind: "command-output-snapshot" as const,
                       snapshot,
                     })),
-                  ),
-                ),
+                  );
+                }),
                 Stream.unwrap,
               );
               const historySyncSnapshotKey = `thread:${input.threadId}`;
