@@ -500,6 +500,7 @@ function formatFileChangePatchUpdatedPayload(
       if (rawDiff.startsWith("diff --git ")) {
         return rawDiff;
       }
+      const normalizedDiff = normalizeFileChangePatchFragment(rawDiff, change.kind.type);
       const headers = [
         `diff --git a/${path} b/${nextPath}`,
         change.kind.type === "add" ? "new file mode 100644" : undefined,
@@ -509,9 +510,60 @@ function formatFileChangePatchUpdatedPayload(
         `--- ${oldPath}`,
         `+++ ${newPath}`,
       ].filter((line): line is string => line !== undefined);
-      return rawDiff.length > 0 ? `${headers.join("\n")}\n${rawDiff}` : headers.join("\n");
+      return normalizedDiff.length > 0
+        ? `${headers.join("\n")}\n${normalizedDiff}`
+        : headers.join("\n");
     })
     .join("\n");
+}
+
+function normalizeFileChangePatchFragment(
+  rawDiff: string,
+  changeType: EffectCodexSchema.V2FileChangePatchUpdatedNotification__PatchChangeKind["type"],
+): string {
+  if (rawDiff.length === 0 || changeType === "update") {
+    return rawDiff;
+  }
+
+  const lines = rawDiff.split("\n");
+  const hasHunkHeader = lines.some((line) => line.startsWith("@@"));
+  if (!hasHunkHeader) {
+    const bodyLineCount = Math.max(lines.length, 1);
+    const hunkHeader =
+      changeType === "add" ? `@@ -0,0 +1,${bodyLineCount} @@` : `@@ -1,${bodyLineCount} +0,0 @@`;
+    return [
+      hunkHeader,
+      ...lines.map((line) => normalizeWholeFilePatchBodyLine(line, changeType)),
+    ].join("\n");
+  }
+
+  return lines
+    .map((line) => {
+      if (line.startsWith("@@")) {
+        return line;
+      }
+      return normalizeWholeFilePatchBodyLine(line, changeType);
+    })
+    .join("\n");
+}
+
+function normalizeWholeFilePatchBodyLine(
+  line: string,
+  changeType: EffectCodexSchema.V2FileChangePatchUpdatedNotification__PatchChangeKind["type"],
+): string {
+  if (line.startsWith("\\ No newline at end of file")) {
+    return line;
+  }
+  if (changeType === "add") {
+    if (line.startsWith("+") && !line.startsWith("+++")) {
+      return line;
+    }
+    return `+${line.startsWith(" ") ? line.slice(1) : line}`;
+  }
+  if (line.startsWith("-") && !line.startsWith("---")) {
+    return line;
+  }
+  return `-${line.startsWith(" ") ? line.slice(1) : line}`;
 }
 
 function asRuntimeItemId(itemId: ProviderEvent["itemId"] & string): RuntimeItemId {

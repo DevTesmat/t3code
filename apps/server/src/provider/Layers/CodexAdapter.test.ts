@@ -644,6 +644,53 @@ lifecycleLayer("CodexAdapterLive lifecycle", (it) => {
     }),
   );
 
+  it.effect("normalizes add-file patch snapshots into Pierre-parseable unified hunks", () =>
+    Effect.gen(function* () {
+      const { adapter, runtime } = yield* startLifecycleRuntime();
+      const firstEventFiber = yield* Stream.runHead(adapter.streamEvents).pipe(Effect.forkChild);
+
+      yield* runtime.emit({
+        id: asEventId("evt-file-patch-updated-add-body"),
+        kind: "notification",
+        provider: ProviderDriverKind.make("codex"),
+        createdAt: new Date().toISOString(),
+        method: "item/fileChange/patchUpdated",
+        threadId: asThreadId("thread-1"),
+        turnId: asTurnId("turn-1"),
+        itemId: asItemId("patch_1"),
+        payload: {
+          threadId: "thread-1",
+          turnId: "turn-1",
+          itemId: "patch_1",
+          changes: [
+            {
+              path: "src/new.ts",
+              kind: { type: "add" },
+              diff: ["export const value = 1;", "", "export const other = 2;"].join("\n"),
+            },
+          ],
+        },
+      } satisfies ProviderEvent);
+
+      const firstEvent = yield* Fiber.join(firstEventFiber);
+
+      assert.equal(firstEvent._tag, "Some");
+      if (firstEvent._tag !== "Some") {
+        return;
+      }
+      assert.equal(firstEvent.value.type, "content.delta");
+      if (firstEvent.value.type !== "content.delta") {
+        return;
+      }
+      assert.equal(firstEvent.value.payload.streamKind, "file_change_output");
+      assert.match(firstEvent.value.payload.delta, /new file mode 100644/u);
+      assert.match(firstEvent.value.payload.delta, /@@ -0,0 \+1,3 @@/u);
+      assert.match(firstEvent.value.payload.delta, /\+export const value = 1;/u);
+      assert.match(firstEvent.value.payload.delta, /^\+$/mu);
+      assert.match(firstEvent.value.payload.delta, /\+export const other = 2;/u);
+    }),
+  );
+
   it.effect("preserves provider-native turn refs for child-thread notifications", () =>
     Effect.gen(function* () {
       const { adapter, runtime } = yield* startLifecycleRuntime();

@@ -713,10 +713,8 @@ describe("MessagesTimeline", () => {
 
     try {
       await expect.element(page.getByTestId("inline-file-diff")).not.toBeInTheDocument();
-      await page.getByTestId("inline-diff-toggle").click();
-      await expect
-        .element(page.getByText("Per-call patch details are no longer retained for src/app.ts."))
-        .toBeInTheDocument();
+      await expect.element(page.getByTestId("inline-diff-toggle")).not.toBeInTheDocument();
+      await expect.element(page.getByText("Patch details unavailable.")).toBeInTheDocument();
       expect(getTurnDiff).not.toHaveBeenCalled();
     } finally {
       queryClient.clear();
@@ -809,9 +807,7 @@ describe("MessagesTimeline", () => {
       expectBrowserDurationUnder(renderStartedAt, 5_000, "large inline diff render");
       await expect.element(page.getByText("src/generated/file-000.ts")).not.toBeInTheDocument();
       expect(getTurnDiff).not.toHaveBeenCalled();
-
-      await page.getByTestId("inline-diff-toggle").click();
-      await expect.element(page.getByTestId("inline-file-diff")).not.toBeInTheDocument();
+      await expect.element(page.getByTestId("inline-diff-toggle")).not.toBeInTheDocument();
     } finally {
       queryClient.clear();
       await screen.unmount();
@@ -881,13 +877,65 @@ describe("MessagesTimeline", () => {
     );
 
     try {
-      const toggles = page.getByTestId("inline-diff-toggle");
       await expect.element(page.getByText("+first")).toBeInTheDocument();
       await expect.element(page.getByText("+second")).toBeInTheDocument();
+      await expect.element(page.getByTestId("inline-diff-toggle")).not.toBeInTheDocument();
+    } finally {
+      await screen.unmount();
+    }
+  });
 
-      await toggles.nth(0).click();
-      await expect.element(page.getByText("+first")).not.toBeInTheDocument();
-      await expect.element(page.getByText("+second")).toBeInTheDocument();
+  it("normalizes completed add-file patch bodies before rendering with Pierre", async () => {
+    const environmentId = EnvironmentId.make("environment-local");
+    const threadId = ThreadId.make("thread-1");
+    const turnId = TurnId.make("turn-add-file");
+    hydrateLiveCommandOutputSnapshot(environmentId, {
+      threadId,
+      turnId,
+      toolCallId: ProviderItemId.make("patch-add-file"),
+      updatedAt: "2026-04-13T12:00:02.000Z",
+      text: [
+        "diff --git a/src/new.ts b/src/new.ts",
+        "new file mode 100644",
+        "--- /dev/null",
+        "+++ b/src/new.ts",
+        "export const value = 1;",
+        "",
+        "export const other = 2;",
+      ].join("\n"),
+      truncated: false,
+    });
+
+    const screen = await render(
+      <MessagesTimeline
+        {...buildProps()}
+        activeThreadId={threadId}
+        activeThreadEnvironmentId={environmentId}
+        timelineEntries={[
+          {
+            id: "work-add-file",
+            kind: "work",
+            createdAt: "2026-04-13T12:00:00.000Z",
+            entry: {
+              id: "work-add-file",
+              turnId,
+              createdAt: "2026-04-13T12:00:00.000Z",
+              label: "File change",
+              tone: "tool",
+              itemType: "file_change",
+              status: "completed",
+              toolCallId: "patch-add-file",
+              changedFiles: ["src/new.ts"],
+            },
+          },
+        ]}
+      />,
+    );
+
+    try {
+      await expect.element(page.getByTestId("inline-file-diff")).toHaveTextContent("src/new.ts");
+      await expect.element(page.getByText("+export const value = 1;")).toBeInTheDocument();
+      await expect.element(page.getByText("+export const other = 2;")).toBeInTheDocument();
     } finally {
       await screen.unmount();
     }

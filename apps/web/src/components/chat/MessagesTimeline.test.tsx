@@ -326,8 +326,8 @@ describe("MessagesTimeline", () => {
       />,
     );
 
-    expect(markup).toContain("Editing files");
-    expect(markup).toContain("src/app.ts");
+    expect(markup).not.toContain("Editing files");
+    expect(markup).not.toContain("inline-diff-toggle");
     expect(markup).toContain("inline-file-change-patch");
     expect(markup).toContain("diffs-container");
   });
@@ -413,8 +413,55 @@ describe("MessagesTimeline", () => {
       />,
     );
 
-    expect(markup).toContain("+const partial");
-    expect(markup).toContain("inline-file-change-patch");
+    expect(markup).toContain("Waiting for complete patch metadata.");
+    expect(markup).not.toContain("+const partial");
+    expect(markup).not.toContain("inline-file-change-patch");
+  });
+
+  it("does not pass bare live hunk markers to the Pierre diff renderer", async () => {
+    hydrateLiveCommandOutputSnapshot(ACTIVE_THREAD_ENVIRONMENT_ID, {
+      threadId: ThreadId.make("thread-1"),
+      turnId: TurnId.make("turn-1"),
+      toolCallId: ProviderItemId.make("file-change-bare-hunk"),
+      updatedAt: "2026-03-17T19:12:30.000Z",
+      text: [
+        "diff --git a/src/app.ts b/src/app.ts",
+        "--- a/src/app.ts",
+        "+++ b/src/app.ts",
+        "@@",
+        "-old",
+        "+new",
+      ].join("\n"),
+      truncated: false,
+    });
+
+    const { MessagesTimeline } = await import("./MessagesTimeline");
+    const markup = renderToStaticMarkup(
+      <MessagesTimeline
+        {...buildProps()}
+        timelineEntries={[
+          {
+            id: "entry-1",
+            kind: "work",
+            createdAt: "2026-03-17T19:12:28.000Z",
+            entry: {
+              id: "work-1",
+              createdAt: "2026-03-17T19:12:28.000Z",
+              label: "Editing files",
+              tone: "tool",
+              itemType: "file_change",
+              status: "running",
+              toolCallId: "file-change-bare-hunk",
+              changedFiles: ["src/app.ts"],
+            },
+          },
+        ]}
+      />,
+    );
+
+    expect(markup).toContain("Waiting for complete patch metadata.");
+    expect(markup).not.toContain("@@");
+    expect(markup).not.toContain("diffs-container");
   });
 
   it("renders codebase exploration as one collapsed expandable row", async () => {

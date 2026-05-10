@@ -70,6 +70,7 @@ import {
   DIFF_RENDER_UNSAFE_CSS,
   getRenderablePatch,
   resolveFileDiffMatchPaths,
+  type RenderablePatch,
 } from "../../lib/unifiedDiffRendering";
 
 import {
@@ -1386,19 +1387,119 @@ function useRevealedLiveFileChangeText(text: string, animate: boolean): string {
   return displayedText;
 }
 
+function isCompleteLiveUnifiedPatchForDiffRenderer(text: string): boolean {
+  const normalized = text.replace(/\r\n/g, "\n").replace(/\r/g, "\n").trim();
+  if (!normalized.includes("diff --git ")) {
+    return false;
+  }
+
+  for (const line of normalized.split("\n")) {
+    if (!line.startsWith("@@")) {
+      continue;
+    }
+    if (!/^@@\s+-\d+(?:,\d+)?\s+\+\d+(?:,\d+)?\s+@@(?:\s.*)?$/u.test(line)) {
+      return false;
+    }
+  }
+
+  return true;
+}
+
+function normalizeLiveUnifiedPatchForDiffRenderer(text: string): string {
+  const normalized = text.replace(/\r\n/g, "\n").replace(/\r/g, "\n").trimEnd();
+  if (!normalized.includes("diff --git ")) {
+    return normalized;
+  }
+  const blocks = normalized.split(/(?=^diff --git )/mu).filter((block) => block.trim().length > 0);
+  return blocks.map(normalizeLiveUnifiedPatchFileBlock).join("\n");
+}
+
+function normalizeLiveUnifiedPatchFileBlock(block: string): string {
+  const lines = block.split("\n");
+  const changeType = lines.some((line) => line === "new file mode 100644")
+    ? "add"
+    : lines.some((line) => line === "deleted file mode 100644")
+      ? "delete"
+      : null;
+  if (changeType === null) {
+    return block;
+  }
+
+  const headerEndIndex = lines.findIndex((line) => line.startsWith("+++ "));
+  if (headerEndIndex < 0 || headerEndIndex >= lines.length - 1) {
+    return block;
+  }
+
+  const headerLines = lines.slice(0, headerEndIndex + 1);
+  const bodyLines = lines.slice(headerEndIndex + 1);
+  const explicitHunkIndex = bodyLines.findIndex((line) => line.startsWith("@@"));
+  if (explicitHunkIndex >= 0) {
+    const normalizedBody = bodyLines.map((line) =>
+      line.startsWith("@@") ? line : normalizeWholeFilePatchBodyLine(line, changeType),
+    );
+    return [...headerLines, ...normalizedBody].join("\n");
+  }
+
+  const hunkHeader =
+    changeType === "add"
+      ? `@@ -0,0 +1,${Math.max(bodyLines.length, 1)} @@`
+      : `@@ -1,${Math.max(bodyLines.length, 1)} +0,0 @@`;
+  return [
+    ...headerLines,
+    hunkHeader,
+    ...bodyLines.map((line) => normalizeWholeFilePatchBodyLine(line, changeType)),
+  ].join("\n");
+}
+
+function normalizeWholeFilePatchBodyLine(line: string, changeType: "add" | "delete"): string {
+  if (line.startsWith("\\ No newline at end of file")) {
+    return line;
+  }
+  if (changeType === "add") {
+    if (line.startsWith("+") && !line.startsWith("+++")) {
+      return line;
+    }
+    return `+${line.startsWith(" ") ? line.slice(1) : line}`;
+  }
+  if (line.startsWith("-") && !line.startsWith("---")) {
+    return line;
+  }
+  return `-${line.startsWith(" ") ? line.slice(1) : line}`;
+}
+
+function getRenderableLiveFileChangePatch(
+  text: string,
+  cacheScope: string,
+): RenderablePatch | null {
+  if (!text.trim()) {
+    return null;
+  }
+  const normalizedText = normalizeLiveUnifiedPatchForDiffRenderer(text);
+  if (!isCompleteLiveUnifiedPatchForDiffRenderer(normalizedText)) {
+    return {
+      kind: "raw",
+      text: normalizedText,
+      reason: "Waiting for complete patch metadata.",
+    };
+  }
+  return getRenderablePatch(normalizedText, cacheScope);
+}
+
 const LiveFileChangePreview = memo(function LiveFileChangePreview(props: {
   liveOutput: LiveCommandOutputSnapshot;
   running: boolean;
   expanded: boolean;
   changedFiles?: ReadonlyArray<string> | undefined;
   workspaceRoot?: string | undefined;
+  standalone?: boolean | undefined;
 }) {
-  const { liveOutput, running, expanded, changedFiles = [], workspaceRoot } = props;
+  const { liveOutput, running, expanded, changedFiles = [], workspaceRoot, standalone } = props;
   const displayedText = useRevealedLiveFileChangeText(liveOutput.text, running);
   const { resolvedTheme } = useTheme();
   const settings = useSettings();
+  const containerClassName = standalone ? "pb-1" : "pl-7 pr-1 pb-1";
   const renderablePatch = useMemo(
-    () => getRenderablePatch(displayedText, `inline-file-change:${resolvedTheme}`),
+    () => getRenderableLiveFileChangePatch(displayedText, `inline-file-change:${resolvedTheme}`),
     [displayedText, resolvedTheme],
   );
   const requestedPaths = useMemo(
@@ -1464,13 +1565,17 @@ const LiveFileChangePreview = memo(function LiveFileChangePreview(props: {
   }, [displayedText.length, expanded, liveOutput, renderablePatch, running, selectedFileDiff]);
 
   if (displayedText.length === 0) {
-    return <InlineDiffMessage minLines={3}>Waiting for file-change stream...</InlineDiffMessage>;
+    return (
+      <InlineDiffMessage minLines={3} standalone={standalone}>
+        {running ? "Waiting for file-change stream..." : "Patch details unavailable."}
+      </InlineDiffMessage>
+    );
   }
 
   if (selectedFileDiff) {
     const fileKey = buildFileDiffRenderKey(selectedFileDiff);
     return (
-      <div className="pl-7 pr-1 pb-1">
+      <div className={containerClassName}>
         <div
           ref={scrollerRef}
           onScroll={handleScroll}
@@ -1504,54 +1609,16 @@ const LiveFileChangePreview = memo(function LiveFileChangePreview(props: {
 
   if (renderablePatch?.kind === "raw") {
     return (
-      <div className="pl-7 pr-1 pb-1">
-        <div
-          ref={scrollerRef}
-          onScroll={handleScroll}
-          className={cn(
-            "min-h-14 overflow-auto rounded-md border border-border/55 bg-background/80 p-2 shadow-xs [scrollbar-width:thin] [&::-webkit-scrollbar]:h-1.5 [&::-webkit-scrollbar]:w-1.5",
-            expanded ? "max-h-80" : "max-h-48",
-          )}
-          data-testid="inline-file-change-patch"
-        >
-          {liveOutput.truncated && (
-            <div className="mb-1 text-[10px] text-muted-foreground/55">
-              Earlier streamed edits truncated.
-            </div>
-          )}
-          <p className="mb-1 text-[10px] text-muted-foreground/65">{renderablePatch.reason}</p>
-          <pre
-            className={cn(
-              "m-0 font-mono text-[10.5px] leading-4 text-muted-foreground/85",
-              settings.diffWordWrap ? "whitespace-pre-wrap wrap-break-word" : "whitespace-pre",
-            )}
-          >
-            {renderablePatch.text}
-          </pre>
-        </div>
-      </div>
+      <InlineDiffMessage minLines={3} standalone={standalone}>
+        {renderablePatch.reason}
+      </InlineDiffMessage>
     );
   }
 
   return (
-    <div className="pl-7 pr-1 pb-1">
-      <div
-        ref={scrollerRef}
-        onScroll={handleScroll}
-        className={cn(
-          "min-h-14 overflow-auto rounded-md border border-border/55 bg-background/80 p-2 font-mono text-[10.5px] leading-4 shadow-xs [scrollbar-width:thin] [&::-webkit-scrollbar]:h-1.5 [&::-webkit-scrollbar]:w-1.5",
-          expanded ? "max-h-36" : "max-h-[5.75rem]",
-        )}
-        data-testid="inline-file-change-patch"
-      >
-        {liveOutput.truncated && (
-          <div className="mb-1 text-muted-foreground/55">Earlier streamed edits truncated.</div>
-        )}
-        <pre className="m-0 min-w-max font-inherit leading-inherit whitespace-pre">
-          {displayedText}
-        </pre>
-      </div>
-    </div>
+    <InlineDiffMessage minLines={3} standalone={standalone}>
+      Waiting for complete patch metadata.
+    </InlineDiffMessage>
   );
 });
 
@@ -1575,54 +1642,33 @@ const InlineChangedFilesDiffPreview = memo(function InlineChangedFilesDiffPrevie
   workEntry: TimelineWorkEntry;
   changedFiles: ReadonlyArray<string>;
   workspaceRoot: string | undefined;
-  liveOutput?: LiveCommandOutputSnapshot | undefined;
+  liveOutput: LiveCommandOutputSnapshot;
   expanded: boolean;
 }) {
   const { workEntry, changedFiles, workspaceRoot, liveOutput, expanded } = props;
   const isRunningFileChange = workEntry.status === "running";
-  if (liveOutput && (liveOutput.text.length > 0 || isRunningFileChange)) {
-    return (
-      <LiveFileChangePreview
-        liveOutput={liveOutput}
-        running={isRunningFileChange}
-        expanded={expanded}
-        changedFiles={changedFiles}
-        workspaceRoot={workspaceRoot}
-      />
-    );
-  }
-
   return (
-    <CompletedChangedFilesDiffPreview
-      workEntry={workEntry}
+    <LiveFileChangePreview
+      liveOutput={liveOutput}
+      running={isRunningFileChange}
+      expanded={expanded}
       changedFiles={changedFiles}
       workspaceRoot={workspaceRoot}
-      expanded={expanded}
     />
   );
 });
 
-const CompletedChangedFilesDiffPreview = memo(function CompletedChangedFilesDiffPreview(props: {
-  workEntry: TimelineWorkEntry;
-  changedFiles: ReadonlyArray<string>;
-  workspaceRoot: string | undefined;
-  expanded: boolean;
+function InlineDiffMessage({
+  children,
+  minLines = 1,
+  standalone,
+}: {
+  children: ReactNode;
+  minLines?: number;
+  standalone?: boolean | undefined;
 }) {
-  const { changedFiles, workspaceRoot } = props;
   return (
-    <InlineDiffMessage>
-      Per-call patch details are no longer retained for{" "}
-      {changedFiles.length === 1
-        ? formatWorkspaceRelativePath(changedFiles[0] ?? "this file", workspaceRoot)
-        : "these files"}
-      .
-    </InlineDiffMessage>
-  );
-});
-
-function InlineDiffMessage({ children, minLines = 1 }: { children: ReactNode; minLines?: number }) {
-  return (
-    <div className="pl-7 pr-1 pb-1">
+    <div className={standalone ? "pb-1" : "pl-7 pr-1 pb-1"}>
       <div
         className={cn(
           "rounded-md border border-border/45 bg-muted/15 px-2 py-1.5 text-[11px] text-muted-foreground/70",
@@ -1671,10 +1717,11 @@ const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
   const displayText = preview ? `${heading} - ${preview}` : heading;
   const hasChangedFiles = (workEntry.changedFiles?.length ?? 0) > 0;
   const previewIsChangedFiles = hasChangedFiles && !workEntry.command && !workEntry.detail;
-  const hasInlineDiff = hasChangedFiles && !isTerminal;
   const managedFailedEdit = isManagedFailedEdit(workEntry);
   const isFileChange =
     workEntry.itemType === "file_change" || workEntry.requestKind === "file-change";
+  const hasFileChangePatchPreview = isFileChange && Boolean(workEntry.toolCallId);
+  const hasInlineDiff = hasChangedFiles && !isTerminal && !isFileChange;
   const outputPreview =
     (workEntry.itemType === "command_execution" || workEntry.command) &&
     (workEntry.outputPreview?.lines.length ?? 0) > 0
@@ -1818,16 +1865,31 @@ const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
     );
   }
 
+  if (isFileChange && (hasFileChangePatchPreview || hasChangedFiles || hasLiveOutput)) {
+    return (
+      <LiveFileChangePreview
+        liveOutput={liveOutput}
+        running={workEntry.status === "running"}
+        expanded={true}
+        changedFiles={workEntry.changedFiles ?? []}
+        workspaceRoot={workspaceRoot}
+        standalone
+      />
+    );
+  }
+
   if (hasInlineDiff || (isFileChange && hasLiveOutput)) {
     const isRunningLivePatch = isFileChange && workEntry.status === "running";
-    const hasCompletedLivePatch = isFileChange && workEntry.status === "completed" && hasLiveOutput;
-    const defaultInlineDiffExpanded = hasCompletedLivePatch;
+    const defaultInlineDiffExpanded =
+      isFileChange && workEntry.status === "completed" && Boolean(workEntry.toolCallId);
     const showInlineDiffPreview =
       isRunningLivePatch ||
       inlineDiffExpanded ||
       (defaultInlineDiffExpanded && !defaultInlineDiffCollapsed);
     const toggleDefaultExpanded = isRunningLivePatch ? false : defaultInlineDiffExpanded;
-    const inlineDiffControlExpanded = isRunningLivePatch ? false : inlineDiffExpanded;
+    const inlineDiffPreviewExpanded =
+      inlineDiffExpanded || (defaultInlineDiffExpanded && !defaultInlineDiffCollapsed);
+    const inlineDiffControlExpanded = isRunningLivePatch ? false : inlineDiffPreviewExpanded;
     return (
       <div className="group rounded-lg border border-border/35 bg-card/20 px-1 py-0.5 transition-colors duration-150 hover:bg-muted/20 focus-within:bg-muted/20">
         <button
@@ -1880,14 +1942,16 @@ const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
           )}
         </button>
         {showInlineDiffPreview &&
-          (hasChangedFiles ? (
+          (isFileChange ? (
             <InlineChangedFilesDiffPreview
               workEntry={workEntry}
               changedFiles={workEntry.changedFiles ?? []}
               workspaceRoot={workspaceRoot}
-              liveOutput={isFileChange ? liveOutput : undefined}
-              expanded={inlineDiffExpanded}
+              liveOutput={liveOutput}
+              expanded={inlineDiffPreviewExpanded}
             />
+          ) : hasChangedFiles ? (
+            <InlineDiffMessage minLines={3}>Patch details unavailable.</InlineDiffMessage>
           ) : (
             <LiveFileChangePreview
               liveOutput={liveOutput}
