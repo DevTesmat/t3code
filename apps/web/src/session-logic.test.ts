@@ -312,6 +312,92 @@ describe("deriveThreadSubagentTranscripts", () => {
     expect(transcripts[0]?.activities.map((activity) => activity.id)).toEqual(["child-answer"]);
   });
 
+  it("normalizes subagent tool activities so the transcript timeline renders tool calls", () => {
+    const activities: OrchestrationThreadActivity[] = [
+      makeActivity({
+        id: "spawn-child",
+        createdAt: "2026-02-23T00:00:01.000Z",
+        kind: "tool.completed",
+        summary: "Subagent task",
+        payload: {
+          itemType: "collab_agent_tool_call",
+          data: {
+            collabTool: "spawnAgent",
+            receiverThreadIds: ["child-1"],
+            agentsStates: {
+              "child-1": { status: "running" },
+            },
+          },
+        },
+      }),
+      makeActivity({
+        id: "child-command-started",
+        createdAt: "2026-02-23T00:00:02.000Z",
+        kind: "subagent.item.started",
+        summary: "Ran command",
+        tone: "tool",
+        payload: {
+          providerThreadId: "child-1",
+          providerTurnId: "child-turn-1",
+          itemId: "child-command-1",
+          itemType: "command_execution",
+          status: "inProgress",
+          detail: "rg -n subagent apps",
+        },
+      }),
+      makeActivity({
+        id: "child-command-output",
+        createdAt: "2026-02-23T00:00:02.500Z",
+        kind: "subagent.content.delta",
+        summary: "Command output",
+        tone: "tool",
+        payload: {
+          providerThreadId: "child-1",
+          providerTurnId: "child-turn-1",
+          itemId: "child-command-1",
+          itemType: "command_execution",
+          status: "inProgress",
+          text: "apps/web/src/session-logic.ts:866\n",
+        },
+      }),
+      makeActivity({
+        id: "child-command-completed",
+        createdAt: "2026-02-23T00:00:03.000Z",
+        kind: "subagent.item.completed",
+        summary: "Ran command",
+        tone: "tool",
+        payload: {
+          providerThreadId: "child-1",
+          providerTurnId: "child-turn-1",
+          itemId: "child-command-1",
+          itemType: "command_execution",
+          status: "completed",
+          detail: "rg -n subagent apps",
+        },
+      }),
+    ];
+
+    const [transcript] = deriveThreadSubagentTranscripts(activities);
+    const entries = deriveWorkLogEntries(transcript?.activities ?? [], undefined);
+
+    expect(transcript?.activities.map((activity) => activity.kind)).toEqual([
+      "tool.started",
+      "tool.updated",
+      "tool.completed",
+    ]);
+    expect(entries).toHaveLength(1);
+    expect(entries[0]).toMatchObject({
+      itemType: "command_execution",
+      status: "completed",
+      detail: "rg -n subagent apps",
+      outputPreview: {
+        lines: ["apps/web/src/session-logic.ts:866"],
+        stream: "unknown",
+        truncated: false,
+      },
+    });
+  });
+
   it("upserts streaming subagent assistant rows and suppresses duplicate wait fallback messages", () => {
     const activities: OrchestrationThreadActivity[] = [
       makeActivity({

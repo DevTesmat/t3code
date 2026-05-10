@@ -1168,30 +1168,49 @@ function runtimeEventToSubagentTranscriptActivity(
     readonly childProviderThreadIds: ReadonlySet<string>;
   },
 ): OrchestrationThreadActivity | null {
-  if (
-    event.type === "content.delta" &&
-    event.payload.streamKind === "assistant_text" &&
-    typeof event.payload.delta === "string" &&
-    event.payload.delta.length > 0
-  ) {
+  if (event.type === "content.delta" && typeof event.payload.delta === "string") {
+    const text = event.payload.delta;
+    if (text.length === 0) {
+      return null;
+    }
     const providerThreadId = providerThreadIdFromRuntimeEvent(event);
     if (!providerThreadId || providerThreadScopeFromRuntimeEvent(event, input) !== "knownChild") {
       return null;
     }
     const providerTurnId = event.providerRefs?.providerTurnId;
+    const itemType = (() => {
+      switch (event.payload.streamKind) {
+        case "assistant_text":
+          return "assistant_message";
+        case "command_output":
+          return "command_execution";
+        case "file_change_output":
+          return "file_change";
+        default:
+          return undefined;
+      }
+    })();
+    if (!itemType) {
+      return null;
+    }
     return {
       id: EventId.make(`${event.eventId}:subagent-transcript`),
       createdAt: event.createdAt,
-      tone: "info",
+      tone: itemType === "assistant_message" ? "info" : "tool",
       kind: "subagent.content.delta",
-      summary: "Assistant message",
+      summary:
+        itemType === "assistant_message"
+          ? "Assistant message"
+          : itemType === "command_execution"
+            ? "Command output"
+            : "File change output",
       payload: {
         providerThreadId,
-        itemType: "assistant_message",
+        itemType,
         ...(event.itemId ? { itemId: event.itemId } : {}),
         ...(providerTurnId ? { providerTurnId } : {}),
         status: "inProgress",
-        text: event.payload.delta,
+        text,
       },
       turnId: toTurnId(event.turnId) ?? null,
       ...(() => {

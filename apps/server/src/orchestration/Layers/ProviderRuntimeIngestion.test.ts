@@ -1273,7 +1273,7 @@ describe("ProviderRuntimeIngestion", () => {
       thread.activities.filter((activity: ProviderRuntimeTestActivity) =>
         activity.kind.startsWith("subagent."),
       ),
-    ).toHaveLength(3);
+    ).toHaveLength(4);
     const childAssistantDelta = thread.activities.find(
       (activity: ProviderRuntimeTestActivity) =>
         activity.id === "evt-child-assistant-delta:subagent-transcript",
@@ -1295,6 +1295,20 @@ describe("ProviderRuntimeIngestion", () => {
       providerThreadId: "child-a",
       providerTurnId: "child-a-turn",
       text: "Child final finding.",
+    });
+    const childCommandOutput = thread.activities.find(
+      (activity: ProviderRuntimeTestActivity) =>
+        activity.id === "evt-child-command-output:subagent-transcript",
+    );
+    expect(childCommandOutput?.kind).toBe("subagent.content.delta");
+    expect(childCommandOutput?.tone).toBe("tool");
+    expect(childCommandOutput?.payload).toMatchObject({
+      providerThreadId: "child-b",
+      providerTurnId: "child-b-turn",
+      itemId: "child-command",
+      itemType: "command_execution",
+      text: "child command output",
+      status: "inProgress",
     });
   });
 

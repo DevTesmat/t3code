@@ -1070,6 +1070,45 @@ function retainThreadActivitiesAfterRevert(
   );
 }
 
+function mergeThreadDetailActivities(
+  previousActivities: ReadonlyArray<OrchestrationThreadActivity>,
+  serverActivities: ReadonlyArray<OrchestrationThreadActivity>,
+): OrchestrationThreadActivity[] {
+  if (previousActivities.length === 0) {
+    return [...serverActivities];
+  }
+  if (serverActivities.length === 0) {
+    return [...previousActivities];
+  }
+
+  const nextById = new Map(serverActivities.map((activity) => [activity.id, activity]));
+  const maxServerSequence = serverActivities.reduce(
+    (max, activity) =>
+      activity.sequence !== undefined && activity.sequence > max ? activity.sequence : max,
+    -1,
+  );
+  const maxServerCreatedAt = serverActivities.reduce(
+    (max, activity) => (activity.createdAt > max ? activity.createdAt : max),
+    "",
+  );
+
+  for (const activity of previousActivities) {
+    if (nextById.has(activity.id)) {
+      continue;
+    }
+    const isNewerBySequence =
+      activity.sequence !== undefined &&
+      maxServerSequence >= 0 &&
+      activity.sequence > maxServerSequence;
+    const isNewerByTime = maxServerSequence < 0 && activity.createdAt > maxServerCreatedAt;
+    if (isNewerBySequence || isNewerByTime) {
+      nextById.set(activity.id, activity);
+    }
+  }
+
+  return [...nextById.values()].toSorted(compareActivities);
+}
+
 function retainThreadProposedPlansAfterRevert(
   proposedPlans: ReadonlyArray<ProposedPlan>,
   retainedTurnIds: ReadonlySet<string>,
@@ -1231,10 +1270,21 @@ export function syncServerThreadDetail(
 ): AppState {
   const environmentState = getStoredEnvironmentState(state, environmentId);
   const previousThread = getThreadFromEnvironmentState(environmentState, thread.id);
+  const mappedThread = mapThread(thread, environmentId);
+  const nextThread =
+    previousThread && previousThread.activities.length > mappedThread.activities.length
+      ? {
+          ...mappedThread,
+          activities: mergeThreadDetailActivities(
+            previousThread.activities,
+            mappedThread.activities,
+          ),
+        }
+      : mappedThread;
   return commitEnvironmentState(
     state,
     environmentId,
-    writeThreadState(environmentState, mapThread(thread, environmentId), previousThread),
+    writeThreadState(environmentState, nextThread, previousThread),
   );
 }
 

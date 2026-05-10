@@ -759,6 +759,75 @@ describe("incremental orchestration updates", () => {
     });
   });
 
+  it("retains newer live activities when a stale detail snapshot syncs", () => {
+    const serverThread = makeServerThread({
+      activities: [
+        {
+          id: EventId.make("spawn-child"),
+          createdAt: "2026-02-27T00:00:00.000Z",
+          turnId: null,
+          sequence: 1,
+          kind: "tool.completed",
+          summary: "Subagent task",
+          tone: "tool",
+          payload: {
+            itemType: "collab_agent_tool_call",
+            data: {
+              collabTool: "spawnAgent",
+              receiverThreadIds: ["child-1"],
+            },
+          },
+        },
+      ],
+    });
+    const initial = syncServerThreadDetail(
+      makeEmptyState({ activeEnvironmentId: localEnvironmentId }),
+      serverThread,
+      localEnvironmentId,
+    );
+    const withLiveActivity = applyOrchestrationEvent(
+      initial,
+      makeEvent(
+        "thread.activity-appended",
+        {
+          threadId: serverThread.id,
+          activity: {
+            id: EventId.make("child-tool-started"),
+            createdAt: "2026-02-27T00:00:01.000Z",
+            turnId: null,
+            sequence: 2,
+            kind: "subagent.item.started",
+            summary: "Ran command",
+            tone: "tool",
+            payload: {
+              providerThreadId: "child-1",
+              itemId: "child-command-1",
+              itemType: "command_execution",
+              status: "inProgress",
+            },
+          },
+        },
+        { sequence: 2 },
+      ),
+      localEnvironmentId,
+    );
+
+    const afterStaleDetail = syncServerThreadDetail(
+      withLiveActivity,
+      serverThread,
+      localEnvironmentId,
+    );
+    const projectedThread = selectThreadByRef(
+      afterStaleDetail,
+      scopeThreadRef(localEnvironmentId, serverThread.id),
+    );
+
+    expect(projectedThread?.activities.map((activity) => activity.id)).toEqual([
+      "spawn-child",
+      "child-tool-started",
+    ]);
+  });
+
   it("streams proposed plan deltas and replaces them with the completed plan", () => {
     const thread = makeThread();
     const state = makeState(thread);

@@ -862,6 +862,76 @@ export function deriveThreadSubagents(
   );
 }
 
+function normalizeSubagentTranscriptActivityForTimeline(
+  activity: OrchestrationThreadActivity,
+): OrchestrationThreadActivity {
+  const payload = asRecord(activity.payload);
+  const itemType = asTrimmedString(payload?.itemType);
+  if (!itemType || !isToolLifecycleItemType(itemType)) {
+    return activity;
+  }
+
+  const itemId = asTrimmedString(payload?.itemId);
+  const status = asTrimmedString(payload?.status);
+  const data = asRecord(payload?.data);
+  const normalizedData: Record<string, unknown> = data ? { ...data } : {};
+  if (itemId && typeof data?.toolCallId !== "string") {
+    normalizedData.toolCallId = itemId;
+  }
+
+  if (
+    activity.kind === "subagent.content.delta" &&
+    (itemType === "command_execution" || itemType === "file_change")
+  ) {
+    const text = asString(payload?.text ?? payload?.detail);
+    const outputPreview = text ? outputPreviewFromText(text, "unknown") : null;
+    return {
+      ...activity,
+      kind: "tool.updated",
+      summary: itemType === "command_execution" ? "Command output" : "File change output",
+      payload: {
+        itemType,
+        status: status ?? "running",
+        ...(payload?.detail ? { detail: payload.detail } : {}),
+        data: {
+          ...normalizedData,
+          ...(outputPreview ? { outputPreview } : {}),
+        },
+      },
+    };
+  }
+
+  const lifecycleKind =
+    activity.kind === "subagent.item.started"
+      ? "tool.started"
+      : activity.kind === "subagent.item.updated"
+        ? "tool.updated"
+        : activity.kind === "subagent.item.completed"
+          ? "tool.completed"
+          : null;
+  if (!lifecycleKind) {
+    return activity;
+  }
+
+  return {
+    ...activity,
+    kind: lifecycleKind,
+    summary:
+      activity.summary ||
+      (lifecycleKind === "tool.started"
+        ? "Tool started"
+        : lifecycleKind === "tool.updated"
+          ? "Tool updated"
+          : "Tool"),
+    payload: {
+      itemType,
+      ...(status ? { status } : {}),
+      ...(payload?.detail ? { detail: payload.detail } : {}),
+      data: normalizedData,
+    },
+  };
+}
+
 export function deriveThreadSubagentTranscripts(
   activities: ReadonlyArray<OrchestrationThreadActivity>,
 ): ThreadSubagentTranscript[] {
@@ -892,7 +962,9 @@ export function deriveThreadSubagentTranscripts(
     const payload = asRecord(activity.payload);
     const providerThreadId = asTrimmedString(payload?.providerThreadId);
     if (providerThreadId && knownSubagentIds.has(providerThreadId)) {
-      activitiesByThreadId.get(providerThreadId)?.push(activity);
+      activitiesByThreadId
+        .get(providerThreadId)
+        ?.push(normalizeSubagentTranscriptActivityForTimeline(activity));
       const itemType = asTrimmedString(payload?.itemType);
       const text =
         activity.kind === "subagent.content.delta"

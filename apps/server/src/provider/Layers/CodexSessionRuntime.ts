@@ -636,8 +636,6 @@ function shouldDropBufferedChildConversationNotification(
   method: CodexRpc.ServerNotificationMethod,
 ): boolean {
   return (
-    method === "item/commandExecution/outputDelta" ||
-    method === "item/fileChange/outputDelta" ||
     method === "item/reasoning/summaryTextDelta" ||
     method === "item/reasoning/textDelta" ||
     method === "item/plan/delta"
@@ -647,7 +645,15 @@ function shouldDropBufferedChildConversationNotification(
 function shouldEmitLiveChildConversationNotification(
   method: CodexRpc.ServerNotificationMethod,
 ): boolean {
-  return method === "item/agentMessage/delta";
+  return (
+    method === "item/agentMessage/delta" ||
+    method === "item/started" ||
+    method === "item/completed" ||
+    method === "item/commandExecution/outputDelta" ||
+    method === "item/commandExecution/terminalInteraction" ||
+    method === "item/fileChange/outputDelta" ||
+    method === "item/fileChange/patchUpdated"
+  );
 }
 
 function shouldSuppressChildConversationNotification(
