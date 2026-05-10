@@ -38,6 +38,11 @@ function createTestClient() {
     },
     orchestration: {
       dispatchCommand: vi.fn(async () => undefined),
+      replayEvents: vi.fn(async (input: { fromSequenceExclusive: number }) => ({
+        events: [],
+        nextSequence: input.fromSequenceExclusive,
+        hasMore: false,
+      })),
       getTurnDiff: vi.fn(async () => undefined),
       getFullThreadDiff: vi.fn(async () => undefined),
       subscribeShell: vi.fn(
@@ -139,6 +144,11 @@ function createTestClient() {
         });
       }
     },
+    emitShellEvent: (event: any) => {
+      for (const listener of shellListeners) {
+        listener(event);
+      }
+    },
   };
 }
 
@@ -162,6 +172,7 @@ describe("createEnvironmentConnection", () => {
       },
       client,
       applyShellEvent: vi.fn(),
+      applyReplayEvents: vi.fn(),
       syncShellSnapshot,
       applyTerminalEvent: vi.fn(),
     });
@@ -194,6 +205,7 @@ describe("createEnvironmentConnection", () => {
       },
       client,
       applyShellEvent: vi.fn(),
+      applyReplayEvents: vi.fn(),
       syncShellSnapshot: vi.fn(),
       applyTerminalEvent: vi.fn(),
     });
@@ -224,6 +236,7 @@ describe("createEnvironmentConnection", () => {
       },
       client,
       applyShellEvent: vi.fn(),
+      applyReplayEvents: vi.fn(),
       syncShellSnapshot,
       applyTerminalEvent: vi.fn(),
     });
@@ -241,6 +254,71 @@ describe("createEnvironmentConnection", () => {
     expect(syncShellSnapshot).toHaveBeenCalledTimes(2);
     expect(syncShellSnapshot).toHaveBeenLastCalledWith(
       expect.objectContaining({ snapshotSequence: 2 }),
+      environmentId,
+    );
+
+    await connection.dispose();
+  });
+
+  it("replays missing orchestration pages before applying a gapped shell event", async () => {
+    const environmentId = EnvironmentId.make("env-1");
+    const { client, emitShellEvent } = createTestClient();
+    const applyShellEvent = vi.fn();
+    const applyReplayEvents = vi.fn();
+    vi.mocked(client.orchestration.replayEvents)
+      .mockResolvedValueOnce({
+        events: [{ sequence: 2 }, { sequence: 3 }] as any,
+        nextSequence: 3,
+        hasMore: true,
+      })
+      .mockResolvedValueOnce({
+        events: [{ sequence: 4 }] as any,
+        nextSequence: 4,
+        hasMore: false,
+      });
+
+    const connection = createEnvironmentConnection({
+      kind: "saved",
+      knownEnvironment: {
+        id: "env-1",
+        label: "Remote env",
+        source: "manual",
+        target: {
+          httpBaseUrl: "http://example.test",
+          wsBaseUrl: "ws://example.test",
+        },
+        environmentId,
+      },
+      client,
+      applyShellEvent,
+      applyReplayEvents,
+      syncShellSnapshot: vi.fn(),
+      applyTerminalEvent: vi.fn(),
+    });
+
+    await connection.ensureBootstrapped();
+
+    emitShellEvent({
+      kind: "thread-upserted",
+      sequence: 5,
+      thread: { id: "thread-1" },
+    });
+    await expect.poll(() => applyShellEvent.mock.calls.length).toBe(1);
+
+    expect(client.orchestration.replayEvents).toHaveBeenNthCalledWith(1, {
+      fromSequenceExclusive: 1,
+    });
+    expect(client.orchestration.replayEvents).toHaveBeenNthCalledWith(2, {
+      fromSequenceExclusive: 3,
+    });
+    expect(applyReplayEvents).toHaveBeenNthCalledWith(
+      1,
+      [{ sequence: 2 }, { sequence: 3 }],
+      environmentId,
+    );
+    expect(applyReplayEvents).toHaveBeenNthCalledWith(2, [{ sequence: 4 }], environmentId);
+    expect(applyShellEvent).toHaveBeenCalledWith(
+      expect.objectContaining({ sequence: 5 }),
       environmentId,
     );
 

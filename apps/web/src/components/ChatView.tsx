@@ -199,6 +199,7 @@ import {
   distanceFromScrollViewportBottom,
   isScrollViewportAtBottom,
 } from "./chat/scrollStickiness";
+import { replayAllOrchestrationEvents } from "~/orchestrationReplay";
 
 const IMAGE_ONLY_BOOTSTRAP_PROMPT =
   "[User attached one or more images without additional text. Respond using the conversation context and the attached image(s).]";
@@ -234,7 +235,7 @@ async function replayCommittedCommandEvents(input: {
   commandId: CommandId;
   sequence: number;
 }): Promise<ReadonlyArray<OrchestrationEvent>> {
-  const narrowEvents = await input.api.orchestration.replayEvents({
+  const narrowEvents = await replayAllOrchestrationEvents(input.api.orchestration, {
     fromSequenceExclusive: Math.max(0, input.sequence - 1),
   });
   const matchingNarrowEvents = narrowEvents.filter((event) => event.commandId === input.commandId);
@@ -242,7 +243,9 @@ async function replayCommittedCommandEvents(input: {
     return matchingNarrowEvents;
   }
 
-  const allEvents = await input.api.orchestration.replayEvents({ fromSequenceExclusive: 0 });
+  const allEvents = await replayAllOrchestrationEvents(input.api.orchestration, {
+    fromSequenceExclusive: 0,
+  });
   return allEvents.filter((event) => event.commandId === input.commandId);
 }
 

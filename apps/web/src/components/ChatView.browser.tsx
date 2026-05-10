@@ -210,7 +210,11 @@ function createMockEnvironmentApi(input: {
     git: {} as EnvironmentApi["git"],
     orchestration: {
       dispatchCommand: input.dispatchCommand,
-      replayEvents: async () => [],
+      replayEvents: async (input) => ({
+        events: [],
+        nextSequence: input.fromSequenceExclusive,
+        hasMore: false,
+      }),
       getTurnDiff: (() => {
         throw new Error("Not implemented in browser test.");
       }) as EnvironmentApi["orchestration"]["getTurnDiff"],

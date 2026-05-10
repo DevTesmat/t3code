@@ -14,6 +14,8 @@ import {
   ProjectCreatedPayload,
   ProjectMetaUpdatedPayload,
   OrchestrationProposedPlan,
+  OrchestrationReplayEventsInput,
+  OrchestrationRpcSchemas,
   OrchestrationSession,
   OrchestrationThread,
   OrchestrationThreadStreamItem,
@@ -46,6 +48,10 @@ const decodeOrchestrationThread = Schema.decodeUnknownEffect(OrchestrationThread
 const decodeOrchestrationThreadShell = Schema.decodeUnknownEffect(OrchestrationThreadShell);
 const decodeOrchestrationThreadStreamItem = Schema.decodeUnknownEffect(
   OrchestrationThreadStreamItem,
+);
+const decodeReplayEventsInput = Schema.decodeUnknownEffect(OrchestrationReplayEventsInput);
+const decodeReplayEventsResult = Schema.decodeUnknownEffect(
+  OrchestrationRpcSchemas.replayEvents.output,
 );
 
 function getOptionValue(
@@ -763,6 +769,62 @@ it.effect("decodes orchestration session runtime mode defaults", () =>
       updatedAt: "2026-01-01T00:00:00.000Z",
     });
     assert.strictEqual(parsed.runtimeMode, DEFAULT_RUNTIME_MODE);
+  }),
+);
+
+it.effect("decodes paged replay input and output", () =>
+  Effect.gen(function* () {
+    const input = yield* decodeReplayEventsInput({
+      fromSequenceExclusive: 10,
+      limit: 100,
+    });
+    assert.strictEqual(input.fromSequenceExclusive, 10);
+    assert.strictEqual(input.limit, 100);
+
+    const result = yield* decodeReplayEventsResult({
+      events: [
+        {
+          sequence: 11,
+          eventId: "event-11",
+          aggregateKind: "project",
+          aggregateId: "project-1",
+          occurredAt: "2026-01-01T00:00:00.000Z",
+          commandId: null,
+          causationEventId: null,
+          correlationId: null,
+          metadata: {},
+          type: "project.created",
+          payload: {
+            projectId: "project-1",
+            title: "Project",
+            workspaceRoot: "/tmp/project",
+            defaultModelSelection: { instanceId: "codex", model: "gpt-5.2" },
+            scripts: [],
+            createdAt: "2026-01-01T00:00:00.000Z",
+            updatedAt: "2026-01-01T00:00:00.000Z",
+          },
+        },
+      ],
+      nextSequence: 11,
+      hasMore: true,
+    });
+    assert.strictEqual(result.events.length, 1);
+    assert.strictEqual(result.nextSequence, 11);
+    assert.strictEqual(result.hasMore, true);
+  }),
+);
+
+it.effect("rejects invalid replay pagination input", () =>
+  Effect.gen(function* () {
+    const negativeCursor = yield* Effect.exit(
+      decodeReplayEventsInput({ fromSequenceExclusive: -1, limit: 10 }),
+    );
+    assert.strictEqual(negativeCursor._tag, "Failure");
+
+    const zeroLimit = yield* Effect.exit(
+      decodeReplayEventsInput({ fromSequenceExclusive: 0, limit: 0 }),
+    );
+    assert.strictEqual(zeroLimit._tag, "Failure");
   }),
 );
 

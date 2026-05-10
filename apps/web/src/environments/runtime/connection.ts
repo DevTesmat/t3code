@@ -1,5 +1,6 @@
 import type {
   EnvironmentId,
+  OrchestrationEvent,
   OrchestrationShellSnapshot,
   OrchestrationShellStreamEvent,
   ServerConfig,
@@ -9,6 +10,7 @@ import type {
 import type { KnownEnvironment } from "@t3tools/client-runtime";
 
 import type { WsRpcClient } from "~/rpc/wsRpcClient";
+import { replayOrchestrationEventPages } from "~/orchestrationReplay";
 
 export interface EnvironmentConnection {
   readonly kind: "primary" | "saved";
@@ -29,7 +31,12 @@ interface OrchestrationHandlers {
     snapshot: OrchestrationShellSnapshot,
     environmentId: EnvironmentId,
   ) => void;
+  readonly applyReplayEvents: (
+    events: ReadonlyArray<OrchestrationEvent>,
+    environmentId: EnvironmentId,
+  ) => void;
   readonly applyTerminalEvent: (event: TerminalEvent, environmentId: EnvironmentId) => void;
+  readonly onReplayError?: (error: unknown, environmentId: EnvironmentId) => void;
 }
 
 interface EnvironmentConnectionInput extends OrchestrationHandlers {
@@ -82,6 +89,8 @@ export function createEnvironmentConnection(
   }
 
   let disposed = false;
+  let latestShellSequence = 0;
+  let shellItemQueue: Promise<void> = Promise.resolve();
   const bootstrapGate = createBootstrapGate();
 
   const observeEnvironmentIdentity = (nextEnvironmentId: EnvironmentId, source: string) => {
@@ -115,14 +124,56 @@ export function createEnvironmentConnection(
     },
   );
 
+  const processShellItem = async (
+    item: Parameters<Parameters<WsRpcClient["orchestration"]["subscribeShell"]>[0]>[0],
+  ) => {
+    if (item.kind === "snapshot") {
+      input.syncShellSnapshot(item.snapshot, environmentId);
+      latestShellSequence = Math.max(latestShellSequence, item.snapshot.snapshotSequence);
+      bootstrapGate.resolve();
+      return;
+    }
+
+    if (item.sequence > latestShellSequence + 1) {
+      latestShellSequence = await replayOrchestrationEventPages(
+        input.client.orchestration,
+        { fromSequenceExclusive: latestShellSequence },
+        (events) => {
+          input.applyReplayEvents(events, environmentId);
+        },
+      );
+      if (item.sequence > latestShellSequence + 1) {
+        throw new Error(
+          `Replay ended at sequence ${latestShellSequence}, before live shell event ${item.sequence}.`,
+        );
+      }
+    }
+
+    if (item.sequence <= latestShellSequence) {
+      return;
+    }
+
+    input.applyShellEvent(item, environmentId);
+    latestShellSequence = item.sequence;
+  };
+
+  const enqueueShellItem = (
+    item: Parameters<Parameters<WsRpcClient["orchestration"]["subscribeShell"]>[0]>[0],
+  ) => {
+    shellItemQueue = shellItemQueue
+      .then(() => processShellItem(item))
+      .catch((error: unknown) => {
+        if (disposed) {
+          return;
+        }
+        input.onReplayError?.(error, environmentId);
+        bootstrapGate.reject(error);
+      });
+  };
+
   const unsubShell = input.client.orchestration.subscribeShell(
     (item: Parameters<Parameters<WsRpcClient["orchestration"]["subscribeShell"]>[0]>[0]) => {
-      if (item.kind === "snapshot") {
-        input.syncShellSnapshot(item.snapshot, environmentId);
-        bootstrapGate.resolve();
-        return;
-      }
-      input.applyShellEvent(item, environmentId);
+      enqueueShellItem(item);
     },
     {
       onResubscribe: () => {

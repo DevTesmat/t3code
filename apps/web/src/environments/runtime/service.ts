@@ -832,6 +832,21 @@ export function applyEnvironmentThreadDetailEvent(
   markAppliedThreadDetailEvent(environmentId, event);
 }
 
+function applyReplayEvents(
+  events: ReadonlyArray<OrchestrationEvent>,
+  environmentId: EnvironmentId,
+) {
+  if (events.length === 0) {
+    return;
+  }
+
+  applyRecoveredEventBatch(events, environmentId);
+  for (const event of events) {
+    markAppliedProjectionEvent(environmentId, event.sequence);
+    markAppliedThreadDetailEvent(environmentId, event);
+  }
+}
+
 function applyShellEvent(event: OrchestrationShellStreamEvent, environmentId: EnvironmentId) {
   if (
     !shouldApplyProjectionEvent({
@@ -891,6 +906,7 @@ function applyShellEvent(event: OrchestrationShellStreamEvent, environmentId: En
 function createEnvironmentConnectionHandlers() {
   return {
     applyShellEvent,
+    applyReplayEvents,
     syncShellSnapshot: (snapshot: OrchestrationShellSnapshot, environmentId: EnvironmentId) => {
       const previousProjectionVersion = readLastAppliedProjectionVersion(environmentId);
       if (
@@ -930,6 +946,9 @@ function createEnvironmentConnectionHandlers() {
         return;
       }
       useTerminalStateStore.getState().applyTerminalEvent(threadRef, event);
+    },
+    onReplayError: (error: unknown, environmentId: EnvironmentId) => {
+      setRuntimeError(environmentId, error);
     },
   };
 }

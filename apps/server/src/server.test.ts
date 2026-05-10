@@ -2990,7 +2990,11 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
           }),
         ),
       );
-      assert.deepEqual(replayResult, []);
+      assert.deepEqual(replayResult, {
+        events: [],
+        nextSequence: 0,
+        hasMore: false,
+      });
     }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );
 
@@ -3050,7 +3054,7 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
         ),
       );
 
-      const replayedEvent = replayResult[0];
+      const replayedEvent = replayResult.events[0];
       assert.equal(replayedEvent?.type, "project.created");
       assert.deepEqual(
         replayedEvent && replayedEvent.type === "project.created"
@@ -3058,6 +3062,65 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
           : null,
         repositoryIdentity,
       );
+    }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
+
+  it.effect("pages replayed orchestration events with an explicit continuation cursor", () =>
+    Effect.gen(function* () {
+      const calls: Array<{ fromSequenceExclusive: number; limit: number | undefined }> = [];
+      const makeMessageEvent = (sequence: number) =>
+        ({
+          sequence,
+          eventId: EventId.make(`event-${sequence}`),
+          aggregateKind: "thread",
+          aggregateId: ThreadId.make("thread-1"),
+          occurredAt: "2026-04-05T00:00:00.000Z",
+          commandId: CommandId.make(`cmd-${sequence}`),
+          causationEventId: null,
+          correlationId: null,
+          metadata: {},
+          type: "thread.message-sent",
+          payload: {
+            threadId: ThreadId.make("thread-1"),
+            messageId: MessageId.make(`message-${sequence}`),
+            turnId: null,
+            role: "user",
+            source: "user",
+            text: `message ${sequence}`,
+            streaming: false,
+            createdAt: "2026-04-05T00:00:00.000Z",
+            updatedAt: "2026-04-05T00:00:00.000Z",
+          },
+        }) satisfies Extract<OrchestrationEvent, { type: "thread.message-sent" }>;
+
+      yield* buildAppUnderTest({
+        layers: {
+          orchestrationEngine: {
+            readEvents: (fromSequenceExclusive, limit) => {
+              calls.push({ fromSequenceExclusive, limit });
+              return Stream.fromIterable([11, 12, 13].map(makeMessageEvent));
+            },
+          },
+        },
+      });
+
+      const wsUrl = yield* getWsServerUrl("/ws");
+      const replayResult = yield* Effect.scoped(
+        withWsRpcClient(wsUrl, (client) =>
+          client[ORCHESTRATION_WS_METHODS.replayEvents]({
+            fromSequenceExclusive: 10,
+            limit: 2,
+          }),
+        ),
+      );
+
+      assert.deepEqual(calls, [{ fromSequenceExclusive: 10, limit: 3 }]);
+      assert.deepEqual(
+        replayResult.events.map((event) => event.sequence),
+        [11, 12],
+      );
+      assert.equal(replayResult.nextSequence, 12);
+      assert.equal(replayResult.hasMore, true);
     }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );
 

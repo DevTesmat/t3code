@@ -4,7 +4,7 @@
 
 This file is the source of truth for the scalability work from the May 2026 audit. Keep it updated whenever scope, ordering, implementation details, or completion status changes.
 
-Current state: not started.
+Current state: Stage 1 mostly complete. Replay RPC pagination is implemented, current callers loop through pages, and shell-stream sequence gaps trigger paged domain-event replay before applying the gapped live shell event. Retry policy for interrupted live replay remains open.
 
 ## Goal
 
@@ -130,16 +130,28 @@ Relevant files:
 
 ### Stage 1: Lossless Replay Protocol
 
-- [ ] Replace array-only replay with a paged result:
+Status: in progress.
+
+- [x] Replace array-only replay with a paged result:
   - `events`
   - `nextSequence`
   - `hasMore`
   - optional server-side `limit`
-- [ ] Update contracts and server implementation together.
-- [ ] Update web recovery callers to loop until `hasMore === false`.
-- [ ] Make incomplete replay explicit in UI/runtime state if a page fails.
-- [ ] Add tests for replaying more than 1,000 events.
-- [ ] Add tests for interrupted paged replay and retry behavior.
+- [x] Update contracts and server implementation together.
+- [x] Update current web replay callers to loop until `hasMore === false`.
+- [x] Wire paged replay into live environment gap recovery.
+- [x] Make incomplete live replay explicit in UI/runtime state if a page fails.
+- [x] Add tests for replay pagination beyond a single response page.
+- [ ] Add tests for interrupted live paged replay and retry behavior.
+
+Progress notes:
+
+- `orchestration.replayEvents` now returns `{ events, nextSequence, hasMore }`.
+- The server fetches `limit + 1` events, returns only the requested page, and uses the extra event to compute `hasMore`.
+- `ChatView` command-event replay now loops through all pages via `apps/web/src/orchestrationReplay.ts`.
+- Environment shell subscriptions now detect sequence gaps and replay missing domain-event pages before applying the gapped shell event.
+- Replay failures are surfaced to the saved environment runtime state as connection errors.
+- Focused coverage exists for contract decoding, server WebSocket paging, and the web replay loop.
 
 Expected outcome: reconnect recovery is complete, bounded per request, and protocol-visible.
 

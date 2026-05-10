@@ -86,6 +86,9 @@ import {
 import { respondToAuthError } from "./auth/http.ts";
 import { makeWebSocketSnapshotReloadCoordinator } from "./wsSnapshotReloadCoordinator.ts";
 
+const ORCHESTRATION_REPLAY_DEFAULT_LIMIT = 1_000;
+const ORCHESTRATION_REPLAY_MAX_LIMIT = 5_000;
+
 function isThreadDetailEvent(event: OrchestrationEvent): event is Extract<
   OrchestrationEvent,
   {
@@ -670,16 +673,29 @@ const makeWsRpcLayer = (currentSessionId: AuthSessionId) =>
         [ORCHESTRATION_WS_METHODS.replayEvents]: (input) =>
           observeRpcEffect(
             ORCHESTRATION_WS_METHODS.replayEvents,
-            Stream.runCollect(
-              orchestrationEngine.readEvents(
-                clamp(input.fromSequenceExclusive, {
-                  maximum: Number.MAX_SAFE_INTEGER,
-                  minimum: 0,
-                }),
-              ),
-            ).pipe(
-              Effect.map((events) => Array.from(events)),
-              Effect.flatMap(enrichOrchestrationEvents),
+            Effect.gen(function* () {
+              const fromSequenceExclusive = clamp(input.fromSequenceExclusive, {
+                maximum: Number.MAX_SAFE_INTEGER,
+                minimum: 0,
+              });
+              const requestedLimit = input.limit ?? ORCHESTRATION_REPLAY_DEFAULT_LIMIT;
+              const limit = clamp(requestedLimit, {
+                maximum: ORCHESTRATION_REPLAY_MAX_LIMIT,
+                minimum: 1,
+              });
+              const collectedEvents = yield* Stream.runCollect(
+                orchestrationEngine.readEvents(fromSequenceExclusive, limit + 1),
+              );
+              const events = Array.from(collectedEvents);
+              const hasMore = events.length > limit;
+              const pageEvents = hasMore ? events.slice(0, limit) : events;
+              const enrichedEvents = yield* enrichOrchestrationEvents(pageEvents);
+              return {
+                events: enrichedEvents,
+                nextSequence: pageEvents.at(-1)?.sequence ?? fromSequenceExclusive,
+                hasMore,
+              };
+            }).pipe(
               Effect.mapError(
                 (cause) =>
                   new OrchestrationReplayEventsError({

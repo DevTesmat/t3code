@@ -53,10 +53,10 @@ import type {
 import type { ServerUpsertKeybindingInput } from "./server.ts";
 import type {
   ClientOrchestrationCommand,
-  OrchestrationEvent,
   OrchestrationGetFullThreadDiffInput,
   OrchestrationGetFullThreadDiffResult,
   OrchestrationReplayEventsInput,
+  OrchestrationReplayEventsResult,
   OrchestrationGetTurnDiffInput,
   OrchestrationGetTurnDiffResult,
   OrchestrationShellStreamItem,
@@ -321,7 +321,7 @@ export interface EnvironmentApi {
     dispatchCommand: (command: ClientOrchestrationCommand) => Promise<{ sequence: number }>;
     replayEvents: (
       input: OrchestrationReplayEventsInput,
-    ) => Promise<ReadonlyArray<OrchestrationEvent>>;
+    ) => Promise<OrchestrationReplayEventsResult>;
     getTurnDiff: (input: OrchestrationGetTurnDiffInput) => Promise<OrchestrationGetTurnDiffResult>;
     getFullThreadDiff: (
       input: OrchestrationGetFullThreadDiffInput,
