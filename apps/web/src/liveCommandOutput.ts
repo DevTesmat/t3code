@@ -205,7 +205,6 @@ export function appendLiveCommandOutputDelta(
   });
   const entry = getOrCreateEntry(key);
   const chunkId = String(delta.chunkId);
-  const isFileChangeSyntheticChunk = chunkId.includes(":file-change");
   if (isResetChunkId(chunkId)) {
     totalChars -= entry.text.length;
     entry.text = "";
@@ -233,7 +232,7 @@ export function appendLiveCommandOutputDelta(
   totalChars += entry.text.length - previousLength;
   touchEntry(entry, Date.now());
   evictLru();
-  queueNotify(entry, isFileChangeSyntheticChunk ? "microtask" : "frame");
+  queueNotify(entry);
 }
 
 export function hydrateLiveCommandOutputSnapshot(

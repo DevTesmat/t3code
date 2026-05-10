@@ -66,7 +66,6 @@ import { useTheme } from "../../hooks/useTheme";
 import { resolveDiffThemeName } from "../../lib/diffRendering";
 import { isScrollViewportAtBottom } from "./scrollStickiness";
 import {
-  buildFileDiffRenderKey,
   DIFF_RENDER_UNSAFE_CSS,
   getRenderablePatch,
   resolveFileDiffMatchPaths,
@@ -1527,29 +1526,6 @@ const LiveFileChangePreview = memo(function LiveFileChangePreview(props: {
     }
     return renderablePatch.files[0] ?? null;
   }, [renderablePatch, requestedPaths, workspaceRoot]);
-  const scrollerRef = useRef<HTMLDivElement | null>(null);
-  const userScrolledAwayRef = useRef(false);
-
-  const handleScroll = useCallback(() => {
-    const element = scrollerRef.current;
-    if (!element) {
-      return;
-    }
-    userScrolledAwayRef.current =
-      element.scrollHeight - element.scrollTop - element.clientHeight > 24;
-  }, []);
-
-  useEffect(() => {
-    if (!running || userScrolledAwayRef.current) {
-      return;
-    }
-    const element = scrollerRef.current;
-    if (!element) {
-      return;
-    }
-    element.scrollTop = element.scrollHeight;
-  }, [displayedText, running]);
-
   useEffect(() => {
     debugFileChangeStream("preview-render", {
       sourceLength: liveOutput.text.length,
@@ -1573,12 +1549,9 @@ const LiveFileChangePreview = memo(function LiveFileChangePreview(props: {
   }
 
   if (selectedFileDiff) {
-    const fileKey = buildFileDiffRenderKey(selectedFileDiff);
     return (
       <div className={containerClassName}>
         <div
-          ref={scrollerRef}
-          onScroll={handleScroll}
           className={cn(
             "min-h-14 overflow-auto rounded-md border border-border/55 bg-card/25 [scrollbar-width:thin] [&::-webkit-scrollbar]:h-1.5 [&::-webkit-scrollbar]:w-1.5",
             expanded ? "max-h-80" : "max-h-48",
@@ -1589,7 +1562,7 @@ const LiveFileChangePreview = memo(function LiveFileChangePreview(props: {
               Earlier streamed edits truncated.
             </div>
           )}
-          <div key={`${fileKey}:${resolvedTheme}`} data-testid="inline-file-change-patch">
+          <div data-testid="inline-file-change-patch">
             <FileDiff
               fileDiff={selectedFileDiff}
               options={{
