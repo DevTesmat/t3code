@@ -36,6 +36,7 @@ import {
   TerminalIcon,
   Undo2Icon,
   WrenchIcon,
+  XIcon,
   ZapIcon,
 } from "lucide-react";
 import { Button } from "../ui/button";
@@ -68,6 +69,7 @@ import { isScrollViewportAtBottom } from "./scrollStickiness";
 import {
   DIFF_RENDER_UNSAFE_CSS,
   getRenderablePatch,
+  resolveFileDiffPath,
   resolveFileDiffMatchPaths,
   type RenderablePatch,
 } from "../../lib/unifiedDiffRendering";
@@ -107,6 +109,7 @@ interface TimelineRowSharedState {
   onRevertUserMessage: (messageId: MessageId) => void;
   onImageExpand: (preview: ExpandedImagePreview) => void;
   onPreserveViewportRequest?: ((anchor: HTMLElement, mutate: () => void) => void) | undefined;
+  onOpenTurnDiff?: ((turnId: TurnId, filePath?: string) => void) | undefined;
 }
 
 const TimelineRowCtx = createContext<TimelineRowSharedState>(null!);
@@ -131,6 +134,7 @@ interface MessagesTimelineProps {
   onRevertUserMessage: (messageId: MessageId) => void;
   isRevertingCheckpoint: boolean;
   onImageExpand: (preview: ExpandedImagePreview) => void;
+  onOpenTurnDiff?: ((turnId: TurnId, filePath?: string) => void) | undefined;
   activeThreadId: ThreadId;
   activeThreadEnvironmentId: EnvironmentId;
   markdownCwd: string | undefined;
@@ -163,6 +167,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   onRevertUserMessage,
   isRevertingCheckpoint,
   onImageExpand,
+  onOpenTurnDiff,
   activeThreadId,
   activeThreadEnvironmentId,
   markdownCwd,
@@ -329,6 +334,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       inferredCheckpointTurnCountByTurnId,
       onRevertUserMessage,
       onImageExpand,
+      onOpenTurnDiff,
       onPreserveViewportRequest,
     }),
     [
@@ -345,6 +351,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       inferredCheckpointTurnCountByTurnId,
       onRevertUserMessage,
       onImageExpand,
+      onOpenTurnDiff,
       onPreserveViewportRequest,
     ],
   );
@@ -1270,120 +1277,51 @@ const ManagedFailedEditPreview = memo(function ManagedFailedEditPreview(props: {
   );
 });
 
-const LIVE_FILE_CHANGE_REVEAL_CHARS_PER_SECOND = 9_000;
-const LIVE_FILE_CHANGE_REVEAL_MIN_STEP = 24;
+const LIVE_FILE_CHANGE_RENDER_THROTTLE_MS = 120;
 
-function commonPrefixLength(left: string, right: string): number {
-  const limit = Math.min(left.length, right.length);
-  let index = 0;
-  while (index < limit && left.charCodeAt(index) === right.charCodeAt(index)) {
-    index += 1;
-  }
-  return index;
-}
-
-function shouldAnimateLiveFileChangeSnapshot(previous: string, next: string): boolean {
-  if (previous.length === 0 || next.length <= previous.length) {
-    return false;
-  }
-  if (next.startsWith(previous)) {
-    return true;
-  }
-
-  const prefixLength = commonPrefixLength(previous, next);
-  return prefixLength >= Math.min(previous.length, 512);
-}
-
-function useRevealedLiveFileChangeText(text: string, animate: boolean): string {
-  const [displayedText, setDisplayedText] = useState(text);
-  const displayedTextRef = useRef(text);
-  const targetTextRef = useRef(text);
-  const frameRef = useRef<number | null>(null);
-  const lastFrameAtRef = useRef<number | null>(null);
+function useThrottledLiveFileChangeText(text: string, throttle: boolean): string {
+  const [throttledText, setThrottledText] = useState(text);
+  const pendingTextRef = useRef(text);
+  const timeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const lastCommitAtRef = useRef(0);
 
   useEffect(() => {
-    targetTextRef.current = text;
+    pendingTextRef.current = text;
 
-    const cancelFrame = () => {
-      if (
-        frameRef.current !== null &&
-        typeof window !== "undefined" &&
-        typeof window.cancelAnimationFrame === "function"
-      ) {
-        window.cancelAnimationFrame(frameRef.current);
-      }
-      frameRef.current = null;
-      lastFrameAtRef.current = null;
-    };
-
-    if (
-      !animate ||
-      typeof window === "undefined" ||
-      typeof window.requestAnimationFrame !== "function" ||
-      !shouldAnimateLiveFileChangeSnapshot(displayedTextRef.current, text)
-    ) {
-      cancelFrame();
-      debugFileChangeStream("preview-reveal-jump", {
-        previousDisplayedLength: displayedTextRef.current.length,
-        targetLength: text.length,
-        animate,
-      });
-      displayedTextRef.current = text;
-      setDisplayedText(text);
-      return cancelFrame;
-    }
-
-    if (!text.startsWith(displayedTextRef.current)) {
-      const prefixLength = commonPrefixLength(displayedTextRef.current, text);
-      const prefixText = text.slice(0, prefixLength);
-      displayedTextRef.current = prefixText;
-      setDisplayedText(prefixText);
-    }
-
-    const step = (timestamp: number) => {
-      const targetText = targetTextRef.current;
-      const currentText = displayedTextRef.current;
-      if (currentText === targetText || !targetText.startsWith(currentText)) {
-        frameRef.current = null;
-        lastFrameAtRef.current = null;
-        if (currentText !== targetText) {
-          displayedTextRef.current = targetText;
-          setDisplayedText(targetText);
-        }
-        return;
-      }
-
-      const elapsedMs = Math.max(16, timestamp - (lastFrameAtRef.current ?? timestamp - 16));
-      lastFrameAtRef.current = timestamp;
-      const stepChars = Math.max(
-        LIVE_FILE_CHANGE_REVEAL_MIN_STEP,
-        Math.ceil((LIVE_FILE_CHANGE_REVEAL_CHARS_PER_SECOND * elapsedMs) / 1000),
-      );
-      const nextLength = Math.min(targetText.length, currentText.length + stepChars);
-      const nextText = targetText.slice(0, nextLength);
-      displayedTextRef.current = nextText;
-      setDisplayedText(nextText);
-
-      if (nextText.length < targetText.length) {
-        frameRef.current = window.requestAnimationFrame(step);
-      } else {
-        frameRef.current = null;
-        lastFrameAtRef.current = null;
+    const clearPendingTimeout = () => {
+      if (timeoutRef.current !== null) {
+        clearTimeout(timeoutRef.current);
+        timeoutRef.current = null;
       }
     };
 
-    if (frameRef.current === null) {
-      debugFileChangeStream("preview-reveal-start", {
-        displayedLength: displayedTextRef.current.length,
-        targetLength: text.length,
-      });
-      frameRef.current = window.requestAnimationFrame(step);
+    const commit = () => {
+      timeoutRef.current = null;
+      lastCommitAtRef.current = Date.now();
+      setThrottledText(pendingTextRef.current);
+    };
+
+    if (!throttle || typeof window === "undefined") {
+      clearPendingTimeout();
+      commit();
+      return clearPendingTimeout;
     }
 
-    return cancelFrame;
-  }, [animate, text]);
+    const elapsedMs = Date.now() - lastCommitAtRef.current;
+    if (elapsedMs >= LIVE_FILE_CHANGE_RENDER_THROTTLE_MS) {
+      clearPendingTimeout();
+      commit();
+      return clearPendingTimeout;
+    }
 
-  return displayedText;
+    if (timeoutRef.current === null) {
+      timeoutRef.current = setTimeout(commit, LIVE_FILE_CHANGE_RENDER_THROTTLE_MS - elapsedMs);
+    }
+
+    return clearPendingTimeout;
+  }, [text, throttle]);
+
+  return throttledText;
 }
 
 function isCompleteLiveUnifiedPatchForDiffRenderer(text: string): boolean {
@@ -1466,6 +1404,38 @@ function normalizeWholeFilePatchBodyLine(line: string, changeType: "add" | "dele
   return `-${line.startsWith(" ") ? line.slice(1) : line}`;
 }
 
+function detectSingleDeletedFilePatchPath(text: string): string | null {
+  const normalizedText = normalizeLiveUnifiedPatchForDiffRenderer(text);
+  if (!isCompleteLiveUnifiedPatchForDiffRenderer(normalizedText)) {
+    return null;
+  }
+
+  const blocks = normalizedText
+    .split(/(?=^diff --git )/mu)
+    .filter((block) => block.trim().length > 0);
+  if (blocks.length !== 1) {
+    return null;
+  }
+
+  const lines = blocks[0]?.split("\n") ?? [];
+  const isDeletedFile = lines.some((line) => /^deleted file mode \d+$/u.test(line));
+  const oldPath = lines
+    .find((line) => line.startsWith("--- "))
+    ?.slice(4)
+    .trim();
+  const newPath = lines
+    .find((line) => line.startsWith("+++ "))
+    ?.slice(4)
+    .trim();
+  if (!isDeletedFile || newPath !== "/dev/null" || !oldPath || oldPath === "/dev/null") {
+    return null;
+  }
+
+  const deletedPath =
+    oldPath.startsWith("a/") || oldPath.startsWith("b/") ? oldPath.slice(2) : oldPath;
+  return normalizeDiffMatchPath(deletedPath);
+}
+
 function getRenderableLiveFileChangePatch(
   text: string,
   cacheScope: string,
@@ -1484,6 +1454,31 @@ function getRenderableLiveFileChangePatch(
   return getRenderablePatch(normalizedText, cacheScope);
 }
 
+function useStableRenderableLiveFileChangePatch({
+  text,
+  running,
+  resolvedTheme,
+}: {
+  text: string;
+  running: boolean;
+  resolvedTheme: string;
+}): RenderablePatch | null {
+  const throttledText = useThrottledLiveFileChangeText(text, running);
+  const lastValidPatchRef = useRef<RenderablePatch | null>(null);
+  const renderText = running ? throttledText : text;
+  const currentPatch = useMemo(
+    () => getRenderableLiveFileChangePatch(renderText, `inline-file-change:${resolvedTheme}`),
+    [renderText, resolvedTheme],
+  );
+
+  if (currentPatch?.kind === "files") {
+    lastValidPatchRef.current = currentPatch;
+    return currentPatch;
+  }
+
+  return lastValidPatchRef.current ?? currentPatch;
+}
+
 const LiveFileChangePreview = memo(function LiveFileChangePreview(props: {
   liveOutput: LiveCommandOutputSnapshot;
   running: boolean;
@@ -1491,19 +1486,34 @@ const LiveFileChangePreview = memo(function LiveFileChangePreview(props: {
   changedFiles?: ReadonlyArray<string> | undefined;
   workspaceRoot?: string | undefined;
   standalone?: boolean | undefined;
+  onToggleExpanded?: (() => void) | undefined;
+  onOpenSelectedFileDiff?: ((filePath: string) => void) | undefined;
 }) {
-  const { liveOutput, running, expanded, changedFiles = [], workspaceRoot, standalone } = props;
-  const displayedText = useRevealedLiveFileChangeText(liveOutput.text, running);
+  const {
+    liveOutput,
+    running,
+    expanded,
+    changedFiles = [],
+    workspaceRoot,
+    standalone,
+    onToggleExpanded,
+    onOpenSelectedFileDiff,
+  } = props;
   const { resolvedTheme } = useTheme();
   const settings = useSettings();
   const containerClassName = standalone ? "pb-1" : "pl-7 pr-1 pb-1";
-  const renderablePatch = useMemo(
-    () => getRenderableLiveFileChangePatch(displayedText, `inline-file-change:${resolvedTheme}`),
-    [displayedText, resolvedTheme],
-  );
+  const renderablePatch = useStableRenderableLiveFileChangePatch({
+    text: liveOutput.text,
+    running,
+    resolvedTheme,
+  });
   const requestedPaths = useMemo(
     () => changedFiles.map((filePath) => normalizeDiffMatchPath(filePath, workspaceRoot)),
     [changedFiles, workspaceRoot],
+  );
+  const deletedFilePath = useMemo(
+    () => detectSingleDeletedFilePatchPath(liveOutput.text),
+    [liveOutput.text],
   );
   const selectedFileDiff = useMemo(() => {
     if (renderablePatch?.kind !== "files") {
@@ -1529,7 +1539,6 @@ const LiveFileChangePreview = memo(function LiveFileChangePreview(props: {
   useEffect(() => {
     debugFileChangeStream("preview-render", {
       sourceLength: liveOutput.text.length,
-      displayedLength: displayedText.length,
       version: liveOutput.version,
       updatedAt: liveOutput.updatedAt,
       running,
@@ -1538,9 +1547,9 @@ const LiveFileChangePreview = memo(function LiveFileChangePreview(props: {
       selectedFile:
         selectedFileDiff === null ? null : resolveFileDiffMatchPaths(selectedFileDiff).join(","),
     });
-  }, [displayedText.length, expanded, liveOutput, renderablePatch, running, selectedFileDiff]);
+  }, [expanded, liveOutput, renderablePatch, running, selectedFileDiff]);
 
-  if (displayedText.length === 0) {
+  if (liveOutput.text.length === 0) {
     return (
       <InlineDiffMessage minLines={3} standalone={standalone}>
         {running ? "Waiting for file-change stream..." : "Patch details unavailable."}
@@ -1549,14 +1558,58 @@ const LiveFileChangePreview = memo(function LiveFileChangePreview(props: {
   }
 
   if (selectedFileDiff) {
+    const selectedFilePath = resolveFileDiffPath(selectedFileDiff);
+    if (deletedFilePath !== null && normalizeDiffMatchPath(selectedFilePath) === deletedFilePath) {
+      return (
+        <DeletedFileBadge
+          className={containerClassName}
+          filePath={selectedFilePath}
+          onOpenSelectedFileDiff={onOpenSelectedFileDiff}
+        />
+      );
+    }
+
     return (
       <div className={containerClassName}>
         <div
+          onClickCapture={(event) => {
+            if (!onOpenSelectedFileDiff || !selectedFilePath) {
+              return;
+            }
+            const nativeEvent = event.nativeEvent as MouseEvent;
+            const composedPath = nativeEvent.composedPath?.() ?? [];
+            const clickedTitle = composedPath.some((node) => {
+              if (!(node instanceof Element)) return false;
+              return node.hasAttribute("data-title");
+            });
+            if (!clickedTitle) {
+              return;
+            }
+            event.preventDefault();
+            event.stopPropagation();
+            onOpenSelectedFileDiff(selectedFilePath);
+          }}
           className={cn(
-            "min-h-14 overflow-auto rounded-md border border-border/55 bg-card/25 [scrollbar-width:thin] [&::-webkit-scrollbar]:h-1.5 [&::-webkit-scrollbar]:w-1.5",
-            expanded ? "max-h-80" : "max-h-48",
+            "relative min-h-14 overflow-auto rounded-md border border-border/55 bg-card/25 [scrollbar-width:thin] [&::-webkit-scrollbar]:h-1.5 [&::-webkit-scrollbar]:w-1.5",
+            expanded ? "max-h-80" : "max-h-[7.25rem]",
           )}
         >
+          {onToggleExpanded && (
+            <button
+              type="button"
+              aria-label={expanded ? "Collapse inline file diff" : "Expand inline file diff"}
+              className="absolute top-1.5 right-1.5 z-10 flex size-6 items-center justify-center rounded-md border border-border/50 bg-card/90 text-muted-foreground/65 shadow-xs backdrop-blur transition-colors hover:border-border hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring/45"
+              onClick={(event) => {
+                event.stopPropagation();
+                onToggleExpanded();
+              }}
+              data-testid="inline-file-change-expand-toggle"
+            >
+              <ChevronRightIcon
+                className={cn("size-3.5 transition-transform", expanded && "rotate-90")}
+              />
+            </button>
+          )}
           {liveOutput.truncated && (
             <div className="border-b border-border/45 px-2 py-1 text-[10px] text-muted-foreground/55">
               Earlier streamed edits truncated.
@@ -1597,7 +1650,54 @@ const LiveFileChangePreview = memo(function LiveFileChangePreview(props: {
 
 type InlineDiffThemeType = "light" | "dark";
 
-function normalizeDiffMatchPath(pathValue: string, workspaceRoot: string | undefined): string {
+const DeletedFileBadge = memo(function DeletedFileBadge(props: {
+  className: string;
+  filePath: string;
+  onOpenSelectedFileDiff?: ((filePath: string) => void) | undefined;
+}) {
+  const { className, filePath, onOpenSelectedFileDiff } = props;
+  const content = (
+    <>
+      <span className="flex size-4 shrink-0 items-center justify-center rounded-sm border border-destructive/55 bg-destructive/10 text-destructive">
+        <XIcon aria-hidden="true" className="size-3" strokeWidth={2.4} />
+      </span>
+      <span className="min-w-0 truncate font-mono text-[11px] font-medium text-destructive/90">
+        {filePath}
+      </span>
+    </>
+  );
+
+  if (onOpenSelectedFileDiff) {
+    return (
+      <div className={className}>
+        <button
+          type="button"
+          className="flex min-h-9 w-full min-w-0 items-center gap-2 rounded-md border border-destructive/25 bg-destructive/8 px-2.5 py-2 text-left transition-colors hover:border-destructive/35 hover:bg-destructive/12 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-destructive/35"
+          title={filePath}
+          aria-label={`Deleted ${filePath}`}
+          data-testid="inline-file-delete-badge"
+          onClick={() => onOpenSelectedFileDiff(filePath)}
+        >
+          {content}
+        </button>
+      </div>
+    );
+  }
+
+  return (
+    <div className={className}>
+      <div
+        className="flex min-h-9 min-w-0 items-center gap-2 rounded-md border border-destructive/25 bg-destructive/8 px-2.5 py-2"
+        title={filePath}
+        data-testid="inline-file-delete-badge"
+      >
+        {content}
+      </div>
+    </div>
+  );
+});
+
+function normalizeDiffMatchPath(pathValue: string, workspaceRoot?: string | undefined): string {
   let normalized = pathValue.replace(/\\/g, "/").trim();
   if (normalized.startsWith("./")) {
     normalized = normalized.slice(2);
@@ -1617,8 +1717,18 @@ const InlineChangedFilesDiffPreview = memo(function InlineChangedFilesDiffPrevie
   workspaceRoot: string | undefined;
   liveOutput: LiveCommandOutputSnapshot;
   expanded: boolean;
+  onToggleExpanded?: (() => void) | undefined;
+  onOpenSelectedFileDiff?: ((filePath: string) => void) | undefined;
 }) {
-  const { workEntry, changedFiles, workspaceRoot, liveOutput, expanded } = props;
+  const {
+    workEntry,
+    changedFiles,
+    workspaceRoot,
+    liveOutput,
+    expanded,
+    onToggleExpanded,
+    onOpenSelectedFileDiff,
+  } = props;
   const isRunningFileChange = workEntry.status === "running";
   return (
     <LiveFileChangePreview
@@ -1627,6 +1737,8 @@ const InlineChangedFilesDiffPreview = memo(function InlineChangedFilesDiffPrevie
       expanded={expanded}
       changedFiles={changedFiles}
       workspaceRoot={workspaceRoot}
+      onToggleExpanded={onToggleExpanded}
+      onOpenSelectedFileDiff={onOpenSelectedFileDiff}
     />
   );
 });
@@ -1721,6 +1833,15 @@ const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
   const defaultOutputExpanded = isTerminal && shouldAutoShowTerminalOutput(workEntry, liveOutput);
   const showOutputPreview =
     isExpandable && (outputExpanded || (defaultOutputExpanded && !defaultOutputCollapsed));
+  const openFileChangeTurnDiff = useCallback(
+    (filePath: string) => {
+      if (!workEntry.turnId) {
+        return;
+      }
+      ctx.onOpenTurnDiff?.(workEntry.turnId, filePath);
+    },
+    [ctx, workEntry.turnId],
+  );
 
   if (isTerminal) {
     const commandLabel = terminalPrimaryLabel(workEntry);
@@ -1839,13 +1960,16 @@ const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
   }
 
   if (isFileChange && (hasFileChangePatchPreview || hasChangedFiles || hasLiveOutput)) {
+    const inlineDiffKey = workEntryToolKey(workEntry);
     return (
       <LiveFileChangePreview
         liveOutput={liveOutput}
         running={workEntry.status === "running"}
-        expanded={true}
+        expanded={inlineDiffExpanded}
         changedFiles={workEntry.changedFiles ?? []}
         workspaceRoot={workspaceRoot}
+        onToggleExpanded={() => onToggleInlineDiffExpanded(inlineDiffKey, false)}
+        onOpenSelectedFileDiff={workEntry.turnId ? openFileChangeTurnDiff : undefined}
         standalone
       />
     );

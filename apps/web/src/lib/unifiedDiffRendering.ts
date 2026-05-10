@@ -38,21 +38,29 @@ export const DIFF_RENDER_UNSAFE_CSS = `
 }
 
 [data-file-info] {
-  background-color: color-mix(in srgb, var(--card) 94%, var(--foreground)) !important;
+  min-height: 1.75rem !important;
+  background-color: color-mix(in srgb, var(--card) 96%, var(--background)) !important;
   border-block-color: var(--border) !important;
   color: var(--foreground) !important;
+  font-size: 11px !important;
+  font-weight: 500 !important;
 }
 
 [data-diffs-header] {
   position: sticky !important;
   top: 0;
   z-index: 4;
-  background-color: color-mix(in srgb, var(--card) 94%, var(--foreground)) !important;
+  min-height: 1.75rem !important;
+  background-color: color-mix(in srgb, var(--card) 96%, var(--background)) !important;
   border-bottom: 1px solid var(--border) !important;
+  box-shadow: none !important;
 }
 
 [data-title] {
   cursor: pointer;
+  color: color-mix(in srgb, var(--foreground) 86%, var(--muted-foreground)) !important;
+  font-size: 11px !important;
+  font-weight: 500 !important;
   transition:
     color 120ms ease,
     text-decoration-color 120ms ease;

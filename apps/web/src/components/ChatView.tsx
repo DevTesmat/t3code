@@ -4214,6 +4214,7 @@ export default function ChatView(props: ChatViewProps) {
               onRevertUserMessage={onRevertUserMessage}
               isRevertingCheckpoint={isRevertingCheckpoint}
               onImageExpand={onExpandTimelineImage}
+              onOpenTurnDiff={selectedSubagentTranscript ? undefined : onOpenTurnDiff}
               markdownCwd={gitCwd ?? undefined}
               timestampFormat={timestampFormat}
               workspaceRoot={activeWorkspaceRoot}

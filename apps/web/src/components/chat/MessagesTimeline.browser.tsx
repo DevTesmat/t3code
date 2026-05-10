@@ -97,7 +97,9 @@ vi.mock("@pierre/diffs/react", () => ({
     };
   }) => (
     <div data-testid="inline-file-diff">
-      {props.fileDiff.name ?? props.fileDiff.prevName}
+      <button type="button" data-title>
+        {props.fileDiff.name ?? props.fileDiff.prevName}
+      </button>
       {(props.fileDiff.deletionLines ?? []).map((line) => (
         <span key={`deletion:${line}`}>-{line}</span>
       ))}
@@ -808,6 +810,9 @@ describe("MessagesTimeline", () => {
       await expect.element(page.getByText("src/generated/file-000.ts")).not.toBeInTheDocument();
       expect(getTurnDiff).not.toHaveBeenCalled();
       await expect.element(page.getByTestId("inline-diff-toggle")).not.toBeInTheDocument();
+      await expect.element(page.getByLabelText("Expand inline file diff")).toBeInTheDocument();
+      await page.getByTestId("inline-file-change-expand-toggle").click();
+      await expect.element(page.getByLabelText("Collapse inline file diff")).toBeInTheDocument();
     } finally {
       queryClient.clear();
       await screen.unmount();
@@ -833,10 +838,12 @@ describe("MessagesTimeline", () => {
       text: "diff --git a/src/app.ts b/src/app.ts\n@@ -1 +1 @@\n-first\n+second\n",
       truncated: false,
     });
+    const onOpenTurnDiff = vi.fn();
 
     const screen = await render(
       <MessagesTimeline
         {...buildProps()}
+        onOpenTurnDiff={onOpenTurnDiff}
         activeThreadId={threadId}
         activeThreadEnvironmentId={environmentId}
         timelineEntries={[
@@ -889,6 +896,7 @@ describe("MessagesTimeline", () => {
     const environmentId = EnvironmentId.make("environment-local");
     const threadId = ThreadId.make("thread-1");
     const turnId = TurnId.make("turn-add-file");
+    const onOpenTurnDiff = vi.fn();
     hydrateLiveCommandOutputSnapshot(environmentId, {
       threadId,
       turnId,
@@ -909,6 +917,7 @@ describe("MessagesTimeline", () => {
     const screen = await render(
       <MessagesTimeline
         {...buildProps()}
+        onOpenTurnDiff={onOpenTurnDiff}
         activeThreadId={threadId}
         activeThreadEnvironmentId={environmentId}
         timelineEntries={[
@@ -936,6 +945,138 @@ describe("MessagesTimeline", () => {
       await expect.element(page.getByTestId("inline-file-diff")).toHaveTextContent("src/new.ts");
       await expect.element(page.getByText("+export const value = 1;")).toBeInTheDocument();
       await expect.element(page.getByText("+export const other = 2;")).toBeInTheDocument();
+      await page.getByRole("button", { name: "src/new.ts" }).click();
+      expect(onOpenTurnDiff).toHaveBeenCalledWith(turnId, "src/new.ts");
+    } finally {
+      await screen.unmount();
+    }
+  });
+
+  it("renders a deleted-file badge instead of an inline diff preview", async () => {
+    const environmentId = EnvironmentId.make("environment-local");
+    const threadId = ThreadId.make("thread-1");
+    const turnId = TurnId.make("turn-delete-file");
+    const onOpenTurnDiff = vi.fn();
+    hydrateLiveCommandOutputSnapshot(environmentId, {
+      threadId,
+      turnId,
+      toolCallId: ProviderItemId.make("patch-delete-file"),
+      updatedAt: "2026-04-13T12:00:02.000Z",
+      text: [
+        "diff --git a/src/deleted.ts b/src/deleted.ts",
+        "deleted file mode 100644",
+        "--- a/src/deleted.ts",
+        "+++ /dev/null",
+        "export const value = 1;",
+      ].join("\n"),
+      truncated: false,
+    });
+
+    const screen = await render(
+      <MessagesTimeline
+        {...buildProps()}
+        onOpenTurnDiff={onOpenTurnDiff}
+        activeThreadId={threadId}
+        activeThreadEnvironmentId={environmentId}
+        timelineEntries={[
+          {
+            id: "work-delete-file",
+            kind: "work",
+            createdAt: "2026-04-13T12:00:00.000Z",
+            entry: {
+              id: "work-delete-file",
+              turnId,
+              createdAt: "2026-04-13T12:00:00.000Z",
+              label: "File change",
+              tone: "tool",
+              itemType: "file_change",
+              status: "completed",
+              toolCallId: "patch-delete-file",
+              changedFiles: ["src/deleted.ts"],
+            },
+          },
+        ]}
+      />,
+    );
+
+    try {
+      await expect.element(page.getByTestId("inline-file-delete-badge")).toBeVisible();
+      await expect.element(page.getByText("src/deleted.ts")).toBeVisible();
+      await expect.element(page.getByTestId("inline-file-diff")).not.toBeInTheDocument();
+      await page.getByRole("button", { name: "Deleted src/deleted.ts" }).click();
+      expect(onOpenTurnDiff).toHaveBeenCalledWith(turnId, "src/deleted.ts");
+    } finally {
+      await screen.unmount();
+    }
+  });
+
+  it("keeps the last valid inline file diff while streamed metadata is incomplete", async () => {
+    const environmentId = EnvironmentId.make("environment-local");
+    const threadId = ThreadId.make("thread-1");
+    const turnId = TurnId.make("turn-stable-stream");
+    const toolCallId = ProviderItemId.make("patch-stable-stream");
+    hydrateLiveCommandOutputSnapshot(environmentId, {
+      threadId,
+      turnId,
+      toolCallId,
+      updatedAt: "2026-04-13T12:00:01.000Z",
+      text: "diff --git a/src/app.ts b/src/app.ts\n@@ -1 +1 @@\n-old\n+first\n",
+      truncated: false,
+    });
+
+    const screen = await render(
+      <MessagesTimeline
+        {...buildProps()}
+        activeThreadId={threadId}
+        activeThreadEnvironmentId={environmentId}
+        timelineEntries={[
+          {
+            id: "work-stable-stream",
+            kind: "work",
+            createdAt: "2026-04-13T12:00:00.000Z",
+            entry: {
+              id: "work-stable-stream",
+              turnId,
+              createdAt: "2026-04-13T12:00:00.000Z",
+              label: "File change",
+              tone: "tool",
+              itemType: "file_change",
+              status: "running",
+              toolCallId,
+              changedFiles: ["src/app.ts"],
+            },
+          },
+        ]}
+      />,
+    );
+
+    try {
+      await expect.element(page.getByText("+first")).toBeInTheDocument();
+
+      hydrateLiveCommandOutputSnapshot(environmentId, {
+        threadId,
+        turnId,
+        toolCallId,
+        updatedAt: "2026-04-13T12:00:02.000Z",
+        text: "diff --git a/src/app.ts b/src/app.ts\n--- a/src/app.ts\n+++ b/src/app.ts\n@@\n-old\n+partial\n",
+        truncated: false,
+      });
+
+      await expect.element(page.getByText("+first")).toBeInTheDocument();
+      await expect
+        .element(page.getByText("Waiting for complete patch metadata."))
+        .not.toBeInTheDocument();
+
+      hydrateLiveCommandOutputSnapshot(environmentId, {
+        threadId,
+        turnId,
+        toolCallId,
+        updatedAt: "2026-04-13T12:00:03.000Z",
+        text: "diff --git a/src/app.ts b/src/app.ts\n@@ -1 +1 @@\n-first\n+second\n",
+        truncated: false,
+      });
+
+      await expect.element(page.getByText("+second")).toBeInTheDocument();
     } finally {
       await screen.unmount();
     }
