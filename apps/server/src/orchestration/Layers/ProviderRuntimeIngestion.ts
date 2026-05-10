@@ -1296,6 +1296,7 @@ const make = Effect.gen(function* () {
   const childProviderThreadIdsByThreadId = new Map<string, Set<string>>();
   const liveFileChangeSnapshotCache = new Map<string, WorkspaceFileSnapshot>();
   const liveFileChangeStreamByItemKey = new Map<string, LiveFileChangeStreamState>();
+  const persistedFileChangeTextByItemKey = new Map<string, string>();
   let lastFileDiffCleanupAt = 0;
 
   const hasSeenLiveFileChangeActivity = (key: string) =>
@@ -1304,40 +1305,86 @@ const make = Effect.gen(function* () {
   const markLiveFileChangeActivitySeen = (key: string) =>
     Cache.set(liveFileChangeActivityByItemKey, key, true);
 
-  const persistToolCallFileDiff = Effect.fn("persistToolCallFileDiff")(function* (input: {
+  const persistToolCallFileDiffBestEffort = (input: {
     readonly threadId: ThreadId;
     readonly turnId: TurnId | null;
     readonly itemId: string;
     readonly updatedAt: string;
     readonly text: string;
-  }) {
-    const persistText =
-      input.text.length > FILE_CHANGE_DIFF_MAX_CHARS
-        ? input.text.slice(input.text.length - FILE_CHANGE_DIFF_MAX_CHARS)
-        : input.text;
-    yield* toolCallFileDiffRepository.upsert({
-      threadId: input.threadId,
-      turnId: input.turnId,
-      toolCallId: ProviderItemId.make(input.itemId),
-      diff: persistText,
-      truncated: persistText.length !== input.text.length,
-      updatedAt: input.updatedAt,
-    });
+  }) =>
+    Effect.gen(function* () {
+      const persistText =
+        input.text.length > FILE_CHANGE_DIFF_MAX_CHARS
+          ? input.text.slice(input.text.length - FILE_CHANGE_DIFF_MAX_CHARS)
+          : input.text;
+      yield* toolCallFileDiffRepository.upsert({
+        threadId: input.threadId,
+        turnId: input.turnId,
+        toolCallId: ProviderItemId.make(input.itemId),
+        diff: persistText,
+        truncated: persistText.length !== input.text.length,
+        updatedAt: input.updatedAt,
+      });
 
-    const cleanupAt = Date.parse(input.updatedAt);
-    const nowMs = Number.isFinite(cleanupAt) ? cleanupAt : Date.now();
-    if (nowMs - lastFileDiffCleanupAt < FILE_CHANGE_DIFF_CLEANUP_INTERVAL_MS) {
-      return;
-    }
-    lastFileDiffCleanupAt = nowMs;
-    yield* toolCallFileDiffRepository.cleanupIfOverBudget({
-      now: input.updatedAt,
-      staleAfterMs: FILE_CHANGE_DIFF_STALE_AFTER_MS,
-      maxTotalBytes: FILE_CHANGE_DIFF_MAX_TOTAL_BYTES,
-      targetTotalBytes: FILE_CHANGE_DIFF_TARGET_TOTAL_BYTES,
-      batchSize: FILE_CHANGE_DIFF_CLEANUP_BATCH_SIZE,
+      const cleanupAt = Date.parse(input.updatedAt);
+      const nowMs = Number.isFinite(cleanupAt) ? cleanupAt : Date.now();
+      if (nowMs - lastFileDiffCleanupAt < FILE_CHANGE_DIFF_CLEANUP_INTERVAL_MS) {
+        return;
+      }
+      lastFileDiffCleanupAt = nowMs;
+      yield* toolCallFileDiffRepository.cleanupIfOverBudget({
+        now: input.updatedAt,
+        staleAfterMs: FILE_CHANGE_DIFF_STALE_AFTER_MS,
+        maxTotalBytes: FILE_CHANGE_DIFF_MAX_TOTAL_BYTES,
+        targetTotalBytes: FILE_CHANGE_DIFF_TARGET_TOTAL_BYTES,
+        batchSize: FILE_CHANGE_DIFF_CLEANUP_BATCH_SIZE,
+      });
+    }).pipe(
+      Effect.catchCause((cause) =>
+        Effect.logWarning("failed to persist file-change diff", {
+          threadId: input.threadId,
+          turnId: input.turnId,
+          itemId: input.itemId,
+          cause: Cause.pretty(cause),
+        }),
+      ),
+    );
+
+  const rememberPersistedFileChangeText = (input: {
+    readonly threadId: ThreadId;
+    readonly turnId: TurnId | null;
+    readonly itemId: string;
+    readonly updatedAt: string;
+    readonly text: string;
+  }) => {
+    const stateKey = liveFileChangeActivityKey(
+      input.threadId,
+      input.turnId === null ? undefined : input.turnId,
+      input.itemId,
+    );
+    persistedFileChangeTextByItemKey.set(stateKey, input.text);
+    return persistToolCallFileDiffBestEffort(input);
+  };
+
+  const appendPersistedFileChangeText = (input: {
+    readonly threadId: ThreadId;
+    readonly turnId: TurnId | null;
+    readonly itemId: string;
+    readonly updatedAt: string;
+    readonly delta: string;
+  }) => {
+    const stateKey = liveFileChangeActivityKey(
+      input.threadId,
+      input.turnId === null ? undefined : input.turnId,
+      input.itemId,
+    );
+    const nextText = `${persistedFileChangeTextByItemKey.get(stateKey) ?? ""}${input.delta}`;
+    persistedFileChangeTextByItemKey.set(stateKey, nextText);
+    return persistToolCallFileDiffBestEffort({
+      ...input,
+      text: nextText,
     });
-  });
+  };
 
   const publishLiveFileChangeText = Effect.fn("publishLiveFileChangeText")(function* (input: {
     readonly threadId: ThreadId;
@@ -1347,14 +1394,6 @@ const make = Effect.gen(function* () {
     readonly createdAt: string;
     readonly text: string;
   }) {
-    yield* persistToolCallFileDiff({
-      threadId: input.threadId,
-      turnId: input.turnId,
-      itemId: input.itemId,
-      updatedAt: input.createdAt,
-      text: input.text,
-    });
-
     const stateKey = liveFileChangeActivityKey(
       input.threadId,
       input.turnId === null ? undefined : input.turnId,
@@ -1413,6 +1452,13 @@ const make = Effect.gen(function* () {
     liveFileChangeStreamByItemKey.set(stateKey, {
       text: input.text,
       nextChunkIndex,
+    });
+    yield* rememberPersistedFileChangeText({
+      threadId: input.threadId,
+      turnId: input.turnId,
+      itemId: input.itemId,
+      updatedAt: input.createdAt,
+      text: input.text,
     });
   });
 
@@ -2351,22 +2397,6 @@ const make = Effect.gen(function* () {
               text: resolvedOutputDelta,
             });
           } else {
-            if (fileChangeOutputDelta !== undefined) {
-              const stateKey = liveFileChangeActivityKey(thread.id, turnId, event.itemId);
-              const previous = liveFileChangeStreamByItemKey.get(stateKey);
-              const nextText = `${previous?.text ?? ""}${outputDelta}`;
-              liveFileChangeStreamByItemKey.set(stateKey, {
-                text: nextText,
-                nextChunkIndex: previous?.nextChunkIndex ?? 0,
-              });
-              yield* persistToolCallFileDiff({
-                threadId: thread.id,
-                turnId: turnId ?? null,
-                itemId: event.itemId,
-                updatedAt: event.createdAt,
-                text: nextText,
-              });
-            }
             yield* publishCommandOutputDelta({
               threadId: thread.id,
               turnId: turnId ?? null,
@@ -2375,6 +2405,15 @@ const make = Effect.gen(function* () {
               createdAt: event.createdAt,
               delta: outputDelta,
             });
+            if (fileChangeOutputDelta !== undefined) {
+              yield* appendPersistedFileChangeText({
+                threadId: thread.id,
+                turnId: turnId ?? null,
+                itemId: event.itemId,
+                updatedAt: event.createdAt,
+                delta: outputDelta,
+              });
+            }
           }
         }
       }
