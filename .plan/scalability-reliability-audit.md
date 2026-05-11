@@ -219,12 +219,27 @@ Expected outcome: opening a huge thread is bounded, and older content loads on d
 ### Stage 4: Shell-Only Hot Read Model
 
 - [ ] Define a shell read model for command decisions and global subscriptions.
+  - [x] Decouple thread subscription snapshot sequencing from `OrchestrationEngine.getReadModel()` by adding a projection-state-only snapshot sequence query.
 - [ ] Move thread body access behind targeted query APIs.
 - [ ] Audit `decider.ts`, provider ingestion, checkpointing, and project setup for thread-body assumptions.
 - [ ] Keep only fields needed for command invariants, sidebar state, active sessions, and latest turn state in the hot model.
 - [ ] Add regression tests for command decisions after removing full bodies from the hot model.
 
 Expected outcome: total historical messages/activities are no longer baseline server heap.
+
+Progress notes:
+
+- `ProjectionSnapshotQuery.getSnapshotSequence()` now reads only projector cursor state and computes the same safe minimum snapshot sequence used by shell/full snapshots.
+- `orchestration.subscribeThread` initial and history-sync reload snapshots now use the sequence-only projection query instead of touching the engine's in-memory read model for `snapshotSequence`.
+- Provider turn start now reads the requested user message and user-message count through `ProjectionSnapshotQuery.getThreadTurnStartContext()` instead of scanning `thread.messages` from the hot model.
+- Provider session stop now reads collaboration receiver thread ids through `ProjectionSnapshotQuery.getThreadCollabReceiverThreadIds()` instead of scanning `thread.activities` from the hot model.
+- Orchestration command decisions now support `ProjectionSnapshotQuery.getThreadProposedPlanById()` for source proposed-plan validation, and the live engine path uses that targeted query instead of scanning the source thread's `proposedPlans` body.
+- Provider runtime ingestion now uses `ProjectionSnapshotQuery.getThreadCheckpointProgress()` to decide provider diff placeholder checkpoint existence and next turn count instead of scanning `thread.checkpoints`.
+- Provider runtime ingestion assistant-message completion now uses `ProjectionSnapshotQuery.getThreadAssistantMessageContext()` instead of scanning `thread.messages` to detect existing turn assistant output, streaming rows, and empty projected assistant messages.
+- Provider runtime ingestion proposed-plan finalization now reuses `ProjectionSnapshotQuery.getThreadProposedPlanById()` to preserve existing implementation metadata instead of passing `thread.proposedPlans` through the hot event handler.
+- Checkpoint diff finalization now uses `ProjectionSnapshotQuery.getLatestAssistantMessageIdForTurn()` for the assistant-message fallback instead of scanning `thread.messages`.
+- Checkpoint capture and baseline paths now use the bounded checkpoint-progress projection query for real/placeholder checkpoint detection and max turn count instead of scanning `thread.checkpoints`.
+- Checkpoint revert now uses `ProjectionSnapshotQuery.getThreadCheckpointRevertContext()` to read only the current turn count, target checkpoint ref, and stale checkpoint refs needed for restore/delete/rollback decisions.
 
 ### Stage 5: Incremental Shell Summary Projection
 

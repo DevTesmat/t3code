@@ -141,6 +141,18 @@ const makeOrchestrationEngine = Effect.gen(function* () {
         const eventBase = yield* decideOrchestrationCommand({
           command: envelope.command,
           readModel,
+          lookups: {
+            getThreadProposedPlanById: (input) =>
+              projectionSnapshotQuery.getThreadProposedPlanById(input).pipe(
+                Effect.mapError(
+                  (cause) =>
+                    new OrchestrationCommandInvariantError({
+                      commandType: envelope.command.type,
+                      detail: `Failed to load proposed plan '${input.planId}' for thread '${input.threadId}': ${String(cause)}`,
+                    }),
+                ),
+              ),
+          },
         });
         const eventBases = Array.isArray(eventBase) ? eventBase : [eventBase];
         const committedCommand = yield* sql

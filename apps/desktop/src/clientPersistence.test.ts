@@ -54,6 +54,7 @@ const clientSettings: ClientSettings = {
   confirmThreadDelete: false,
   diffWordWrap: true,
   notificationSoundsEnabled: true,
+  showThreadStatsInStatusBar: true,
   gitQuickActionPreference: "commit_push",
   favorites: [],
   providerModelPreferences: {},

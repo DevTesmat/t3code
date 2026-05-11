@@ -2,13 +2,14 @@ import {
   CheckpointRef,
   EventId,
   MessageId,
+  OrchestrationProposedPlanId,
   ProjectId,
   ThreadId,
   TurnId,
   ProviderInstanceId,
 } from "@t3tools/contracts";
 import { assert, it } from "@effect/vitest";
-import { Effect, Layer } from "effect";
+import { Effect, Layer, Option } from "effect";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 
 import { SqlitePersistenceMemory } from "../../persistence/Layers/Sqlite.ts";
@@ -27,6 +28,8 @@ const asProjectId = (value: string): ProjectId => ProjectId.make(value);
 const asTurnId = (value: string): TurnId => TurnId.make(value);
 const asMessageId = (value: string): MessageId => MessageId.make(value);
 const asEventId = (value: string): EventId => EventId.make(value);
+const asProposedPlanId = (value: string): OrchestrationProposedPlanId =>
+  OrchestrationProposedPlanId.make(value);
 const asCheckpointRef = (value: string): CheckpointRef => CheckpointRef.make(value);
 
 const projectionSnapshotLayer = it.layer(
@@ -373,6 +376,7 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
 
       const shellSnapshot = yield* snapshotQuery.getShellSnapshot();
       assert.equal(shellSnapshot.snapshotSequence, 5);
+      assert.equal(yield* snapshotQuery.getSnapshotSequence(), 5);
       assert.deepEqual(shellSnapshot.projects, [
         {
           id: asProjectId("project-1"),
@@ -448,6 +452,81 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
       if (threadDetail._tag === "Some") {
         assert.deepEqual(threadDetail.value, snapshot.threads[0]);
       }
+
+      const proposedPlan = yield* snapshotQuery.getThreadProposedPlanById({
+        threadId: ThreadId.make("thread-1"),
+        planId: asProposedPlanId("plan-1"),
+      });
+      assert.equal(proposedPlan._tag, "Some");
+      if (proposedPlan._tag === "Some") {
+        assert.deepEqual(proposedPlan.value, snapshot.threads[0]?.proposedPlans[0]);
+      }
+
+      const turnStartContext = yield* snapshotQuery.getThreadTurnStartContext({
+        threadId: ThreadId.make("thread-1"),
+        messageId: MessageId.make("message-1"),
+      });
+      assert.equal(turnStartContext.userMessage, null);
+      assert.equal(turnStartContext.userMessageCount, 0);
+      assert.deepEqual(
+        yield* snapshotQuery.getThreadCollabReceiverThreadIds(ThreadId.make("thread-1")),
+        [],
+      );
+      assert.deepEqual(
+        yield* snapshotQuery.getThreadCheckpointProgress({
+          threadId: ThreadId.make("thread-1"),
+          turnId: asTurnId("turn-1"),
+        }),
+        {
+          threadId: ThreadId.make("thread-1"),
+          turnId: asTurnId("turn-1"),
+          hasCheckpointForTurn: true,
+          hasRealCheckpointForTurn: true,
+          placeholderCheckpointTurnCount: null,
+          maxCheckpointTurnCount: 1,
+          nextCheckpointTurnCount: 2,
+        },
+      );
+      assert.deepEqual(
+        yield* snapshotQuery.getThreadCheckpointProgress({
+          threadId: ThreadId.make("thread-1"),
+          turnId: asTurnId("turn-2"),
+        }),
+        {
+          threadId: ThreadId.make("thread-1"),
+          turnId: asTurnId("turn-2"),
+          hasCheckpointForTurn: false,
+          hasRealCheckpointForTurn: false,
+          placeholderCheckpointTurnCount: null,
+          maxCheckpointTurnCount: 1,
+          nextCheckpointTurnCount: 2,
+        },
+      );
+      assert.deepEqual(
+        yield* snapshotQuery.getThreadAssistantMessageContext({
+          threadId: ThreadId.make("thread-1"),
+          turnId: asTurnId("turn-1"),
+          messageId: asMessageId("message-1"),
+        }),
+        {
+          threadId: ThreadId.make("thread-1"),
+          turnId: asTurnId("turn-1"),
+          messageId: asMessageId("message-1"),
+          hasAssistantMessagesForTurn: true,
+          hasStreamingAssistantMessagesForTurn: false,
+          projectedMessage: {
+            messageId: asMessageId("message-1"),
+            textLength: "hello from projection".length,
+          },
+        },
+      );
+      assert.deepEqual(
+        yield* snapshotQuery.getLatestAssistantMessageIdForTurn({
+          threadId: ThreadId.make("thread-1"),
+          turnId: asTurnId("turn-1"),
+        }),
+        Option.some(asMessageId("message-1")),
+      );
     }),
   );
 
@@ -896,6 +975,36 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
               completedAt: "2026-03-02T00:00:05.000Z",
             },
           ],
+        });
+      }
+
+      const revertContext = yield* snapshotQuery.getThreadCheckpointRevertContext({
+        threadId: ThreadId.make("thread-context"),
+        targetTurnCount: 1,
+      });
+      assert.equal(revertContext._tag, "Some");
+      if (revertContext._tag === "Some") {
+        assert.deepEqual(revertContext.value, {
+          threadId: ThreadId.make("thread-context"),
+          targetTurnCount: 1,
+          currentTurnCount: 2,
+          targetCheckpointRef: asCheckpointRef("checkpoint-a"),
+          staleCheckpointRefs: [asCheckpointRef("checkpoint-b")],
+        });
+      }
+
+      const baselineRevertContext = yield* snapshotQuery.getThreadCheckpointRevertContext({
+        threadId: ThreadId.make("thread-context"),
+        targetTurnCount: 0,
+      });
+      assert.equal(baselineRevertContext._tag, "Some");
+      if (baselineRevertContext._tag === "Some") {
+        assert.deepEqual(baselineRevertContext.value, {
+          threadId: ThreadId.make("thread-context"),
+          targetTurnCount: 0,
+          currentTurnCount: 2,
+          targetCheckpointRef: null,
+          staleCheckpointRefs: [asCheckpointRef("checkpoint-a"), asCheckpointRef("checkpoint-b")],
         });
       }
     }),

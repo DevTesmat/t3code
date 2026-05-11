@@ -303,6 +303,12 @@ describe("CheckpointReactor", () => {
     });
 
     const layer = CheckpointReactorLive.pipe(
+      Layer.provideMerge(
+        OrchestrationProjectionSnapshotQueryLive.pipe(
+          Layer.provideMerge(RepositoryIdentityResolverLive),
+          Layer.provideMerge(SqlitePersistenceMemory),
+        ),
+      ),
       Layer.provideMerge(orchestrationLayer),
       Layer.provideMerge(RuntimeReceiptBusLive),
       Layer.provideMerge(Layer.succeed(ProviderService, provider.service)),

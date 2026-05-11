@@ -47,6 +47,7 @@ import {
   type TerminalContextDraft,
 } from "../lib/terminalContext";
 import { isMacPlatform } from "../lib/utils";
+import { resetClientSettingsForTests } from "../hooks/useSettings";
 import { __resetLocalApiForTests } from "../localApi";
 import { AppAtomRegistryProvider } from "../rpc/atomRegistry";
 import { getServerConfig } from "../rpc/serverState";
@@ -421,6 +422,51 @@ function createSnapshotWithChangedFilesBar(): OrchestrationReadModel {
                   additions: index + 1,
                   deletions: index % 3,
                 })),
+              },
+            ],
+          })
+        : thread,
+    ),
+  };
+}
+
+function createSnapshotWithThreadStats(): OrchestrationReadModel {
+  const snapshot = createSnapshotForTargetUser({
+    targetMessageId: "msg-user-thread-stats-target" as MessageId,
+    targetText: "thread stats target",
+  });
+
+  return {
+    ...snapshot,
+    threads: snapshot.threads.map((thread) =>
+      thread.id === THREAD_ID
+        ? Object.assign({}, thread, {
+            activities: [
+              {
+                id: EventId.make("evt-thread-stats-1"),
+                createdAt: isoAt(20),
+                tone: "info",
+                kind: "context-window.updated",
+                summary: "Context window updated",
+                payload: {
+                  usedTokens: 4_000,
+                  lastOutputTokens: 100,
+                  durationMs: 4_000,
+                },
+                turnId: null,
+              },
+              {
+                id: EventId.make("evt-thread-stats-2"),
+                createdAt: isoAt(24),
+                tone: "info",
+                kind: "context-window.updated",
+                summary: "Context window updated",
+                payload: {
+                  usedTokens: 5_000,
+                  lastOutputTokens: 200,
+                  durationMs: 4_000,
+                },
+                turnId: null,
               },
             ],
           })
@@ -1746,6 +1792,7 @@ describe("ChatView timeline estimator parity (full app)", () => {
       },
     });
     await __resetLocalApiForTests();
+    resetClientSettingsForTests();
     await setViewport(DEFAULT_VIEWPORT);
     localStorage.clear();
     document.body.innerHTML = "";
@@ -1787,6 +1834,47 @@ describe("ChatView timeline estimator parity (full app)", () => {
   afterEach(() => {
     customWsRpcResolver = null;
     document.body.innerHTML = "";
+  });
+
+  it("shows bottom bar thread stats only when enabled", async () => {
+    const snapshot = createSnapshotWithThreadStats();
+    const mountedDefault = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot,
+    });
+
+    try {
+      await expect.element(page.getByText("Agent work")).toBeInTheDocument();
+      expect(document.body.textContent).not.toContain("50 tok/s");
+    } finally {
+      await mountedDefault.cleanup();
+    }
+
+    resetClientSettingsForTests();
+    localStorage.setItem(
+      "t3code:client-settings:v1",
+      JSON.stringify({
+        ...DEFAULT_CLIENT_SETTINGS,
+        showThreadStatsInStatusBar: true,
+      }),
+    );
+
+    const mountedEnabled = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot,
+    });
+
+    try {
+      await vi.waitFor(
+        () => {
+          expect(document.body.textContent).toContain("Loaded ");
+          expect(document.body.textContent).toContain("50 tok/s");
+        },
+        { timeout: 8_000, interval: 16 },
+      );
+    } finally {
+      await mountedEnabled.cleanup();
+    }
   });
 
   it("hides the scroll-to-bottom button when composer changed-files expansion leaves the viewport at bottom", async () => {

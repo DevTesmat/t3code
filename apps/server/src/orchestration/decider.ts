@@ -1,9 +1,12 @@
 import type {
   OrchestrationCommand,
   OrchestrationEvent,
+  OrchestrationProposedPlan,
+  OrchestrationProposedPlanId,
   OrchestrationReadModel,
+  ThreadId,
 } from "@t3tools/contracts";
-import { Effect } from "effect";
+import { Effect, Option } from "effect";
 
 import { OrchestrationCommandInvariantError } from "./Errors.ts";
 import {
@@ -55,12 +58,56 @@ type DecideOrchestrationCommandResult =
   | PlannedOrchestrationEvent
   | ReadonlyArray<PlannedOrchestrationEvent>;
 
+interface OrchestrationDecisionLookups {
+  readonly getThreadProposedPlanById?: (input: {
+    readonly threadId: ThreadId;
+    readonly planId: OrchestrationProposedPlanId;
+  }) => Effect.Effect<Option.Option<OrchestrationProposedPlan>, OrchestrationCommandInvariantError>;
+}
+
+function findProposedPlanInReadModel(
+  readModel: OrchestrationReadModel,
+  input: {
+    readonly threadId: ThreadId;
+    readonly planId: OrchestrationProposedPlanId;
+  },
+): OrchestrationProposedPlan | null {
+  return (
+    readModel.threads
+      .find((thread) => thread.id === input.threadId)
+      ?.proposedPlans.find((entry) => entry.id === input.planId) ?? null
+  );
+}
+
+const resolveProposedPlan = Effect.fn("resolveProposedPlan")(function* ({
+  readModel,
+  lookups,
+  threadId,
+  planId,
+}: {
+  readonly readModel: OrchestrationReadModel;
+  readonly lookups?: OrchestrationDecisionLookups | undefined;
+  readonly threadId: ThreadId;
+  readonly planId: OrchestrationProposedPlanId;
+}): Effect.fn.Return<OrchestrationProposedPlan | null, OrchestrationCommandInvariantError> {
+  if (lookups?.getThreadProposedPlanById) {
+    const proposedPlan = yield* lookups.getThreadProposedPlanById({ threadId, planId });
+    if (Option.isSome(proposedPlan)) {
+      return proposedPlan.value;
+    }
+    return null;
+  }
+  return findProposedPlanInReadModel(readModel, { threadId, planId });
+});
+
 const decideCommandSequence = Effect.fn("decideCommandSequence")(function* ({
   commands,
   readModel,
+  lookups,
 }: {
   readonly commands: ReadonlyArray<OrchestrationCommand>;
   readonly readModel: OrchestrationReadModel;
+  readonly lookups?: OrchestrationDecisionLookups | undefined;
 }): Effect.fn.Return<ReadonlyArray<PlannedOrchestrationEvent>, OrchestrationCommandInvariantError> {
   let nextReadModel = readModel;
   let nextSequence = readModel.snapshotSequence;
@@ -70,6 +117,7 @@ const decideCommandSequence = Effect.fn("decideCommandSequence")(function* ({
     const decided = yield* decideOrchestrationCommand({
       command: nextCommand,
       readModel: nextReadModel,
+      lookups,
     });
     const nextEvents = Array.isArray(decided) ? decided : [decided];
     for (const nextEvent of nextEvents) {
@@ -88,9 +136,11 @@ const decideCommandSequence = Effect.fn("decideCommandSequence")(function* ({
 export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand")(function* ({
   command,
   readModel,
+  lookups,
 }: {
   readonly command: OrchestrationCommand;
   readonly readModel: OrchestrationReadModel;
+  readonly lookups?: OrchestrationDecisionLookups | undefined;
 }): Effect.fn.Return<DecideOrchestrationCommandResult, OrchestrationCommandInvariantError> {
   switch (command.type) {
     case "project.create": {
@@ -166,6 +216,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
       if (activeThreads.length > 0) {
         return yield* decideCommandSequence({
           readModel,
+          lookups,
           commands: [
             ...activeThreads.map(
               (thread): Extract<OrchestrationCommand, { type: "thread.delete" }> => ({
@@ -443,7 +494,12 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         : null;
       const sourcePlan =
         sourceProposedPlan && sourceThread
-          ? sourceThread.proposedPlans.find((entry) => entry.id === sourceProposedPlan.planId)
+          ? yield* resolveProposedPlan({
+              readModel,
+              lookups,
+              threadId: sourceProposedPlan.threadId,
+              planId: sourceProposedPlan.planId,
+            })
           : null;
       if (sourceProposedPlan && !sourcePlan) {
         return yield* new OrchestrationCommandInvariantError({

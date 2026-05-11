@@ -19,11 +19,13 @@ import type {
   OrchestrationThreadDetailPageInfo,
   OrchestrationThreadDetailResourcePageInfo,
   OrchestrationThreadShell,
+  CheckpointRef,
   EventId,
   MessageId,
   OrchestrationProposedPlanId,
   ProjectId,
   ThreadId,
+  TurnId,
 } from "@t3tools/contracts";
 import { Context } from "effect";
 import type { Option } from "effect";
@@ -73,6 +75,42 @@ export interface ProjectionThreadCheckpointsPage {
   readonly pageInfo: OrchestrationThreadDetailResourcePageInfo;
 }
 
+export interface ProjectionThreadTurnStartContext {
+  readonly threadId: ThreadId;
+  readonly userMessage: OrchestrationMessage | null;
+  readonly userMessageCount: number;
+}
+
+export interface ProjectionThreadCheckpointProgress {
+  readonly threadId: ThreadId;
+  readonly turnId: TurnId;
+  readonly hasCheckpointForTurn: boolean;
+  readonly hasRealCheckpointForTurn: boolean;
+  readonly placeholderCheckpointTurnCount: number | null;
+  readonly maxCheckpointTurnCount: number;
+  readonly nextCheckpointTurnCount: number;
+}
+
+export interface ProjectionThreadCheckpointRevertContext {
+  readonly threadId: ThreadId;
+  readonly targetTurnCount: number;
+  readonly currentTurnCount: number;
+  readonly targetCheckpointRef: CheckpointRef | null;
+  readonly staleCheckpointRefs: ReadonlyArray<CheckpointRef>;
+}
+
+export interface ProjectionThreadAssistantMessageContext {
+  readonly threadId: ThreadId;
+  readonly turnId: TurnId | null;
+  readonly messageId: MessageId;
+  readonly hasAssistantMessagesForTurn: boolean;
+  readonly hasStreamingAssistantMessagesForTurn: boolean;
+  readonly projectedMessage: {
+    readonly messageId: MessageId;
+    readonly textLength: number;
+  } | null;
+}
+
 /**
  * ProjectionSnapshotQueryShape - Service API for read-model snapshots.
  */
@@ -95,6 +133,12 @@ export interface ProjectionSnapshotQueryShape {
     OrchestrationShellSnapshot,
     ProjectionRepositoryError
   >;
+
+  /**
+   * Read the latest projection snapshot sequence without hydrating shell or
+   * thread detail rows.
+   */
+  readonly getSnapshotSequence: () => Effect.Effect<number, ProjectionRepositoryError>;
 
   /**
    * Read aggregate projection counts without hydrating the full read model.
@@ -121,6 +165,69 @@ export interface ProjectionSnapshotQueryShape {
   readonly getFirstActiveThreadIdByProjectId: (
     projectId: ProjectId,
   ) => Effect.Effect<Option.Option<ThreadId>, ProjectionRepositoryError>;
+
+  /**
+   * Read the bounded message context needed to start a provider turn.
+   */
+  readonly getThreadTurnStartContext: (input: {
+    readonly threadId: ThreadId;
+    readonly messageId: MessageId;
+  }) => Effect.Effect<ProjectionThreadTurnStartContext, ProjectionRepositoryError>;
+
+  /**
+   * Read receiver thread ids from persisted collaboration activity payloads for
+   * a single thread.
+   */
+  readonly getThreadCollabReceiverThreadIds: (
+    threadId: ThreadId,
+  ) => Effect.Effect<ReadonlyArray<string>, ProjectionRepositoryError>;
+
+  /**
+   * Read one proposed plan for source-plan validation without hydrating the
+   * source thread body.
+   */
+  readonly getThreadProposedPlanById: (input: {
+    readonly threadId: ThreadId;
+    readonly planId: OrchestrationProposedPlanId;
+  }) => Effect.Effect<Option.Option<OrchestrationProposedPlan>, ProjectionRepositoryError>;
+
+  /**
+   * Read bounded checkpoint progress for provider diff placeholder decisions.
+   */
+  readonly getThreadCheckpointProgress: (input: {
+    readonly threadId: ThreadId;
+    readonly turnId: TurnId;
+  }) => Effect.Effect<ProjectionThreadCheckpointProgress, ProjectionRepositoryError>;
+
+  /**
+   * Read bounded checkpoint refs needed to revert a thread without hydrating
+   * the full checkpoint history.
+   */
+  readonly getThreadCheckpointRevertContext: (input: {
+    readonly threadId: ThreadId;
+    readonly targetTurnCount: number;
+  }) => Effect.Effect<
+    Option.Option<ProjectionThreadCheckpointRevertContext>,
+    ProjectionRepositoryError
+  >;
+
+  /**
+   * Read bounded assistant-message state for provider completion decisions.
+   */
+  readonly getThreadAssistantMessageContext: (input: {
+    readonly threadId: ThreadId;
+    readonly turnId: TurnId | null;
+    readonly messageId: MessageId;
+  }) => Effect.Effect<ProjectionThreadAssistantMessageContext, ProjectionRepositoryError>;
+
+  /**
+   * Read the latest assistant message id for one turn without hydrating the
+   * thread message body.
+   */
+  readonly getLatestAssistantMessageIdForTurn: (input: {
+    readonly threadId: ThreadId;
+    readonly turnId: TurnId;
+  }) => Effect.Effect<Option.Option<MessageId>, ProjectionRepositoryError>;
 
   /**
    * Read the checkpoint context needed to resolve a single thread diff.

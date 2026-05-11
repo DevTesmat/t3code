@@ -84,10 +84,37 @@ describe("CheckpointDiffQueryLive", () => {
             Effect.die("CheckpointDiffQuery should not request the full orchestration snapshot"),
           getShellSnapshot: () =>
             Effect.die("CheckpointDiffQuery should not request the orchestration shell snapshot"),
+          getSnapshotSequence: () =>
+            Effect.die("CheckpointDiffQuery should not request the snapshot sequence"),
           getCounts: () => Effect.succeed({ projectCount: 0, threadCount: 0 }),
           getActiveProjectByWorkspaceRoot: () => Effect.succeed(Option.none()),
           getProjectShellById: () => Effect.succeed(Option.none()),
           getFirstActiveThreadIdByProjectId: () => Effect.succeed(Option.none()),
+          getThreadTurnStartContext: ({ threadId }) =>
+            Effect.succeed({ threadId, userMessage: null, userMessageCount: 0 }),
+          getThreadCollabReceiverThreadIds: () => Effect.succeed([]),
+          getThreadProposedPlanById: () => Effect.succeed(Option.none()),
+          getThreadCheckpointProgress: ({ threadId, turnId }) =>
+            Effect.succeed({
+              threadId,
+              turnId,
+              hasCheckpointForTurn: false,
+              hasRealCheckpointForTurn: false,
+              placeholderCheckpointTurnCount: null,
+              maxCheckpointTurnCount: 0,
+              nextCheckpointTurnCount: 1,
+            }),
+          getThreadAssistantMessageContext: ({ threadId, turnId, messageId }) =>
+            Effect.succeed({
+              threadId,
+              turnId,
+              messageId,
+              hasAssistantMessagesForTurn: false,
+              hasStreamingAssistantMessagesForTurn: false,
+              projectedMessage: null,
+            }),
+          getLatestAssistantMessageIdForTurn: () => Effect.succeed(Option.none()),
+          getThreadCheckpointRevertContext: () => Effect.succeed(Option.none()),
           getThreadCheckpointContext: () => Effect.succeed(Option.some(threadCheckpointContext)),
           getThreadShellById: () => Effect.succeed(Option.none()),
           getThreadDetailById: () => Effect.succeed(Option.none()),
@@ -148,10 +175,37 @@ describe("CheckpointDiffQueryLive", () => {
             Effect.die("CheckpointDiffQuery should not request the full orchestration snapshot"),
           getShellSnapshot: () =>
             Effect.die("CheckpointDiffQuery should not request the orchestration shell snapshot"),
+          getSnapshotSequence: () =>
+            Effect.die("CheckpointDiffQuery should not request the snapshot sequence"),
           getCounts: () => Effect.succeed({ projectCount: 0, threadCount: 0 }),
           getActiveProjectByWorkspaceRoot: () => Effect.succeed(Option.none()),
           getProjectShellById: () => Effect.succeed(Option.none()),
           getFirstActiveThreadIdByProjectId: () => Effect.succeed(Option.none()),
+          getThreadTurnStartContext: ({ threadId }) =>
+            Effect.succeed({ threadId, userMessage: null, userMessageCount: 0 }),
+          getThreadCollabReceiverThreadIds: () => Effect.succeed([]),
+          getThreadProposedPlanById: () => Effect.succeed(Option.none()),
+          getThreadCheckpointProgress: ({ threadId, turnId }) =>
+            Effect.succeed({
+              threadId,
+              turnId,
+              hasCheckpointForTurn: false,
+              hasRealCheckpointForTurn: false,
+              placeholderCheckpointTurnCount: null,
+              maxCheckpointTurnCount: 0,
+              nextCheckpointTurnCount: 1,
+            }),
+          getThreadAssistantMessageContext: ({ threadId, turnId, messageId }) =>
+            Effect.succeed({
+              threadId,
+              turnId,
+              messageId,
+              hasAssistantMessagesForTurn: false,
+              hasStreamingAssistantMessagesForTurn: false,
+              projectedMessage: null,
+            }),
+          getLatestAssistantMessageIdForTurn: () => Effect.succeed(Option.none()),
+          getThreadCheckpointRevertContext: () => Effect.succeed(Option.none()),
           getThreadCheckpointContext: () => Effect.succeed(Option.none()),
           getThreadShellById: () => Effect.succeed(Option.none()),
           getThreadDetailById: () => Effect.succeed(Option.none()),

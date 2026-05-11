@@ -28,31 +28,10 @@ import {
   ProviderCommandReactor,
   type ProviderCommandReactorShape,
 } from "../Services/ProviderCommandReactor.ts";
+import { ProjectionSnapshotQuery } from "../Services/ProjectionSnapshotQuery.ts";
 import { ServerSettingsService } from "../../serverSettings.ts";
 
 const PROVIDER_COMMAND_REACTOR_QUEUE_CAPACITY = 2_000;
-
-function asRecord(value: unknown): Record<string, unknown> | null {
-  return value && typeof value === "object" ? (value as Record<string, unknown>) : null;
-}
-
-function collectCollabReceiverThreadIds(activities: ReadonlyArray<{ payload: unknown }>): string[] {
-  const ids = new Set<string>();
-  for (const activity of activities) {
-    const payload = asRecord(activity.payload);
-    if (payload?.itemType !== "collab_agent_tool_call") {
-      continue;
-    }
-    const data = asRecord(payload.data);
-    const receiverThreadIds = Array.isArray(data?.receiverThreadIds)
-      ? data.receiverThreadIds.filter((value): value is string => typeof value === "string")
-      : [];
-    for (const receiverThreadId of receiverThreadIds) {
-      ids.add(receiverThreadId);
-    }
-  }
-  return [...ids];
-}
 
 type ProviderIntentEvent = Extract<
   OrchestrationEvent,
@@ -191,6 +170,7 @@ function buildGeneratedWorktreeBranchName(raw: string): string {
 
 const make = Effect.gen(function* () {
   const orchestrationEngine = yield* OrchestrationEngineService;
+  const projectionSnapshotQuery = yield* ProjectionSnapshotQuery;
   const providerService = yield* ProviderService;
   const git = yield* GitCore;
   const gitStatusBroadcaster = yield* GitStatusBroadcaster;
@@ -690,8 +670,12 @@ const make = Effect.gen(function* () {
       return;
     }
 
-    const message = thread.messages.find((entry) => entry.id === event.payload.messageId);
-    if (!message || message.role !== "user") {
+    const turnStartContext = yield* projectionSnapshotQuery.getThreadTurnStartContext({
+      threadId: event.payload.threadId,
+      messageId: event.payload.messageId,
+    });
+    const message = turnStartContext.userMessage;
+    if (!message) {
       yield* appendProviderFailureActivity({
         threadId: event.payload.threadId,
         kind: "provider.turn.start.failed",
@@ -703,8 +687,7 @@ const make = Effect.gen(function* () {
       return;
     }
 
-    const isFirstUserMessageTurn =
-      thread.messages.filter((entry) => entry.role === "user").length === 1;
+    const isFirstUserMessageTurn = turnStartContext.userMessageCount === 1;
     if (isFirstUserMessageTurn) {
       const generationCwd =
         resolveThreadWorkspaceCwd({
@@ -920,7 +903,9 @@ const make = Effect.gen(function* () {
       yield* providerService.stopSession({ threadId: thread.id });
     }
 
-    const receiverThreadIds = collectCollabReceiverThreadIds(thread.activities);
+    const receiverThreadIds = yield* projectionSnapshotQuery.getThreadCollabReceiverThreadIds(
+      thread.id,
+    );
     if (receiverThreadIds.length > 0) {
       yield* orchestrationEngine.dispatch({
         type: "thread.activity.append",

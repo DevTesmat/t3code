@@ -29,6 +29,19 @@ describe("ClientSettings.notificationSoundsEnabled", () => {
   });
 });
 
+describe("ClientSettings.showThreadStatsInStatusBar", () => {
+  it("defaults bottom bar thread stats off for legacy client settings", () => {
+    expect(DEFAULT_CLIENT_SETTINGS.showThreadStatsInStatusBar).toBe(false);
+    expect(decodeClientSettings({}).showThreadStatsInStatusBar).toBe(false);
+  });
+
+  it("allows bottom bar thread stats to be patched on", () => {
+    expect(decodeClientSettingsPatch({ showThreadStatsInStatusBar: true })).toEqual({
+      showThreadStatsInStatusBar: true,
+    });
+  });
+});
+
 describe("ServerSettings.providerInstances (slice-2 invariant)", () => {
   it("defaults to an empty record so legacy configs without the key still decode", () => {
     expect(DEFAULT_SERVER_SETTINGS.providerInstances).toEqual({});

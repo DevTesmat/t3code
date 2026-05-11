@@ -81,6 +81,7 @@ it.effect("launchStartupHeartbeat does not block the caller while counts are loa
         Effect.provideService(ProjectionSnapshotQuery, {
           getSnapshot: () => Effect.die("unused"),
           getShellSnapshot: () => Effect.die("unused"),
+          getSnapshotSequence: () => Effect.die("unused"),
           getCounts: () =>
             Deferred.await(releaseCounts).pipe(
               Effect.as({
@@ -91,6 +92,31 @@ it.effect("launchStartupHeartbeat does not block the caller while counts are loa
           getActiveProjectByWorkspaceRoot: () => Effect.succeed(Option.none()),
           getProjectShellById: () => Effect.succeed(Option.none()),
           getFirstActiveThreadIdByProjectId: () => Effect.succeed(Option.none()),
+          getThreadTurnStartContext: ({ threadId }) =>
+            Effect.succeed({ threadId, userMessage: null, userMessageCount: 0 }),
+          getThreadCollabReceiverThreadIds: () => Effect.succeed([]),
+          getThreadProposedPlanById: () => Effect.succeed(Option.none()),
+          getThreadCheckpointProgress: ({ threadId, turnId }) =>
+            Effect.succeed({
+              threadId,
+              turnId,
+              hasCheckpointForTurn: false,
+              hasRealCheckpointForTurn: false,
+              placeholderCheckpointTurnCount: null,
+              maxCheckpointTurnCount: 0,
+              nextCheckpointTurnCount: 1,
+            }),
+          getThreadAssistantMessageContext: ({ threadId, turnId, messageId }) =>
+            Effect.succeed({
+              threadId,
+              turnId,
+              messageId,
+              hasAssistantMessagesForTurn: false,
+              hasStreamingAssistantMessagesForTurn: false,
+              projectedMessage: null,
+            }),
+          getLatestAssistantMessageIdForTurn: () => Effect.succeed(Option.none()),
+          getThreadCheckpointRevertContext: () => Effect.succeed(Option.none()),
           getThreadCheckpointContext: () => Effect.succeed(Option.none()),
           getThreadShellById: () => Effect.succeed(Option.none()),
           getThreadDetailById: () => Effect.succeed(Option.none()),
@@ -138,6 +164,7 @@ it.effect("resolveAutoBootstrapWelcomeTargets returns existing project and threa
       Effect.provideService(ProjectionSnapshotQuery, {
         getSnapshot: () => Effect.die("unused"),
         getShellSnapshot: () => Effect.die("unused"),
+        getSnapshotSequence: () => Effect.die("unused"),
         getCounts: () => Effect.die("unused"),
         getActiveProjectByWorkspaceRoot: () =>
           Effect.succeed(
@@ -154,6 +181,14 @@ it.effect("resolveAutoBootstrapWelcomeTargets returns existing project and threa
           ),
         getProjectShellById: () => Effect.die("unused"),
         getFirstActiveThreadIdByProjectId: () => Effect.succeed(Option.some(bootstrapThreadId)),
+        getThreadTurnStartContext: ({ threadId }) =>
+          Effect.succeed({ threadId, userMessage: null, userMessageCount: 0 }),
+        getThreadCollabReceiverThreadIds: () => Effect.succeed([]),
+        getThreadProposedPlanById: () => Effect.die("unused"),
+        getThreadCheckpointProgress: () => Effect.die("unused"),
+        getThreadAssistantMessageContext: () => Effect.die("unused"),
+        getLatestAssistantMessageIdForTurn: () => Effect.die("unused"),
+        getThreadCheckpointRevertContext: () => Effect.die("unused"),
         getThreadCheckpointContext: () => Effect.succeed(Option.none()),
         getThreadShellById: () => Effect.die("unused"),
         getThreadDetailById: () => Effect.die("unused"),
@@ -194,10 +229,19 @@ it.effect("resolveAutoBootstrapWelcomeTargets creates a project and thread when 
       Effect.provideService(ProjectionSnapshotQuery, {
         getSnapshot: () => Effect.die("unused"),
         getShellSnapshot: () => Effect.die("unused"),
+        getSnapshotSequence: () => Effect.die("unused"),
         getCounts: () => Effect.die("unused"),
         getActiveProjectByWorkspaceRoot: () => Effect.succeed(Option.none()),
         getProjectShellById: () => Effect.die("unused"),
         getFirstActiveThreadIdByProjectId: () => Effect.succeed(Option.none()),
+        getThreadTurnStartContext: ({ threadId }) =>
+          Effect.succeed({ threadId, userMessage: null, userMessageCount: 0 }),
+        getThreadCollabReceiverThreadIds: () => Effect.succeed([]),
+        getThreadProposedPlanById: () => Effect.die("unused"),
+        getThreadCheckpointProgress: () => Effect.die("unused"),
+        getThreadAssistantMessageContext: () => Effect.die("unused"),
+        getLatestAssistantMessageIdForTurn: () => Effect.die("unused"),
+        getThreadCheckpointRevertContext: () => Effect.die("unused"),
         getThreadCheckpointContext: () => Effect.succeed(Option.none()),
         getThreadShellById: () => Effect.die("unused"),
         getThreadDetailById: () => Effect.die("unused"),

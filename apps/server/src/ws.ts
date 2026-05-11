@@ -964,9 +964,15 @@ const makeWsRpcLayer = (currentSessionId: AuthSessionId) =>
                       }),
                   ),
                 ),
-                orchestrationEngine
-                  .getReadModel()
-                  .pipe(Effect.map((readModel) => readModel.snapshotSequence)),
+                projectionSnapshotQuery.getSnapshotSequence().pipe(
+                  Effect.mapError(
+                    (cause) =>
+                      new OrchestrationGetSnapshotError({
+                        message: "Failed to load orchestration snapshot sequence",
+                        cause,
+                      }),
+                  ),
+                ),
               ]);
 
               if (Option.isNone(threadDetailSnapshot)) {
@@ -1066,9 +1072,7 @@ const makeWsRpcLayer = (currentSessionId: AuthSessionId) =>
                           historySyncSnapshotKey,
                           Effect.all([
                             projectionSnapshotQuery.getThreadDetailSnapshotById(input.threadId),
-                            orchestrationEngine
-                              .getReadModel()
-                              .pipe(Effect.map((readModel) => readModel.snapshotSequence)),
+                            projectionSnapshotQuery.getSnapshotSequence(),
                           ]),
                         )
                         .pipe(

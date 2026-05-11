@@ -1129,6 +1129,33 @@ export function GeneralSettingsPanel() {
         />
 
         <SettingsRow
+          title="Thread stats"
+          description="Show loaded thread data and token throughput in the chat bottom bar."
+          resetAction={
+            settings.showThreadStatsInStatusBar !==
+            DEFAULT_UNIFIED_SETTINGS.showThreadStatsInStatusBar ? (
+              <SettingResetButton
+                label="thread stats"
+                onClick={() =>
+                  updateSettings({
+                    showThreadStatsInStatusBar: DEFAULT_UNIFIED_SETTINGS.showThreadStatsInStatusBar,
+                  })
+                }
+              />
+            ) : null
+          }
+          control={
+            <Switch
+              checked={settings.showThreadStatsInStatusBar}
+              onCheckedChange={(checked) =>
+                updateSettings({ showThreadStatsInStatusBar: Boolean(checked) })
+              }
+              aria-label="Show thread stats in the bottom bar"
+            />
+          }
+        />
+
+        <SettingsRow
           title="Auto-open task panel"
           description="Open the right-side plan and task panel automatically when steps appear."
           resetAction={

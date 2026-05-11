@@ -188,6 +188,12 @@ import {
 import { useLocalStorage } from "~/hooks/useLocalStorage";
 import { useComposerHandleContext } from "../composerHandleContext";
 import {
+  deriveThreadStatusStats,
+  formatThreadStatusStats,
+  withTokensPerSecond,
+  type ThreadStatusStats,
+} from "../threadStatusStats";
+import {
   useServerAvailableEditors,
   useServerConfig,
   useServerKeybindings,
@@ -726,6 +732,7 @@ export default function ChatView(props: ChatViewProps) {
   );
   const timestampFormat = settings.timestampFormat;
   const autoOpenPlanSidebar = settings.autoOpenPlanSidebar;
+  const showThreadStatsInStatusBar = settings.showThreadStatsInStatusBar;
   const navigate = useNavigate();
   const rawSearch = useSearch({
     strict: false,
@@ -4472,6 +4479,7 @@ export default function ChatView(props: ChatViewProps) {
                   activities={threadActivities}
                   isWorking={isWorking}
                   activityState={activeTurnActivityState}
+                  statsThread={showThreadStatsInStatusBar ? activeThread : null}
                 />
               ) : null}
               <ComposerChangedFilesBar
@@ -4681,8 +4689,15 @@ function ComposerStatusRow(props: {
   activities: ReadonlyArray<OrchestrationThreadActivity>;
   isWorking: boolean;
   activityState?: ActiveTurnActivityState | undefined;
+  statsThread?: Thread | null | undefined;
 }) {
   const [nowMs, setNowMs] = useState(() => Date.now());
+  const [sampledStats, setSampledStats] = useState<ThreadStatusStats | null>(null);
+  const statsThreadRef = useRef<Thread | null>(props.statsThread ?? null);
+  const isWorkingRef = useRef(props.isWorking);
+  const lastLiveTokensPerSecondRef = useRef<number | null>(null);
+  const statsThreadId = props.statsThread?.id;
+  const statsEnabled = props.statsThread !== null && props.statsThread !== undefined;
   const workDuration = deriveThreadWorkDurationMs({
     totalWorkDurationMs: props.totalWorkDurationMs,
     latestTurn: props.latestTurn,
@@ -4698,11 +4713,60 @@ function ComposerStatusRow(props: {
     return () => window.clearInterval(id);
   }, [workDuration.ticking]);
 
+  useEffect(() => {
+    statsThreadRef.current = props.statsThread ?? null;
+  }, [props.statsThread]);
+
+  useEffect(() => {
+    isWorkingRef.current = props.isWorking;
+  }, [props.isWorking]);
+
+  useEffect(() => {
+    lastLiveTokensPerSecondRef.current = null;
+  }, [statsThreadId]);
+
+  useEffect(() => {
+    if (!statsEnabled) {
+      setSampledStats(null);
+      lastLiveTokensPerSecondRef.current = null;
+      return;
+    }
+
+    const sampleStats = () => {
+      const thread = statsThreadRef.current;
+      if (!thread) {
+        setSampledStats(null);
+        lastLiveTokensPerSecondRef.current = null;
+        return;
+      }
+
+      const next = deriveThreadStatusStats(thread);
+      if (isWorkingRef.current) {
+        if (next.tokensPerSecond !== null) {
+          lastLiveTokensPerSecondRef.current = next.tokensPerSecond;
+        }
+        setSampledStats(next);
+        return;
+      }
+
+      setSampledStats(
+        lastLiveTokensPerSecondRef.current !== null
+          ? withTokensPerSecond(next, lastLiveTokensPerSecondRef.current)
+          : next,
+      );
+    };
+
+    sampleStats();
+    const id = window.setInterval(sampleStats, 1000);
+    return () => window.clearInterval(id);
+  }, [statsEnabled, statsThreadId]);
+
   const statusLabel = props.isWorking ? (props.activityState?.label ?? "Working") : null;
+  const statsLabel = sampledStats ? formatThreadStatusStats(sampledStats) : null;
 
   return (
-    <div className="pointer-events-none absolute inset-x-0 top-0 z-40 flex min-h-5 items-center justify-between gap-3 text-[10px] text-muted-foreground">
-      <div className="flex min-w-0 items-center gap-1.5">
+    <div className="pointer-events-none absolute inset-x-0 top-0 z-40 grid min-h-5 grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center gap-3 text-[10px] text-muted-foreground">
+      <div className="flex min-w-0 items-center gap-1.5 justify-self-start">
         {statusLabel ? (
           <>
             <span className="truncate">{statusLabel}</span>
@@ -4710,7 +4774,17 @@ function ComposerStatusRow(props: {
           </>
         ) : null}
       </div>
-      <div className="inline-flex shrink-0 items-center gap-1.5 rounded-full border border-border/60 bg-background/90 px-2 py-0.5 shadow-sm backdrop-blur">
+      {statsLabel ? (
+        <div
+          className="max-w-[36vw] truncate rounded-full border border-border/60 bg-background/90 px-2 py-0.5 shadow-sm backdrop-blur sm:max-w-[45vw]"
+          title="Loaded thread data estimate for the currently loaded messages and events, not process RAM."
+        >
+          {statsLabel}
+        </div>
+      ) : (
+        <div aria-hidden="true" />
+      )}
+      <div className="inline-flex shrink-0 items-center gap-1.5 justify-self-end rounded-full border border-border/60 bg-background/90 px-2 py-0.5 shadow-sm backdrop-blur">
         <span>Agent work</span>
         <span className="font-mono tabular-nums">
           {formatThreadWorkDuration(workDuration.durationMs)}

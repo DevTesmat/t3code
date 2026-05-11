@@ -235,7 +235,13 @@ describe("ProviderRuntimeIngestion", () => {
       Layer.provide(SqlitePersistenceMemory),
     );
     const layer = Layer.mergeAll(
-      ProviderRuntimeIngestionLive,
+      ProviderRuntimeIngestionLive.pipe(
+        Layer.provideMerge(
+          OrchestrationProjectionSnapshotQueryLive.pipe(
+            Layer.provideMerge(RepositoryIdentityResolverLive),
+          ),
+        ),
+      ),
       ToolCallFileDiffRepositoryLive.pipe(Layer.provide(SqlitePersistenceMemory)),
     ).pipe(
       Layer.provideMerge(orchestrationLayer),

@@ -132,6 +132,13 @@ export function getClientSettings(): ClientSettings {
   return getClientSettingsSnapshot();
 }
 
+export function resetClientSettingsForTests(): void {
+  clientSettingsSnapshot = DEFAULT_CLIENT_SETTINGS;
+  clientSettingsHydrated = false;
+  clientSettingsHydrationPromise = null;
+  emitClientSettingsChange();
+}
+
 export function useSettings<T = UnifiedSettings>(selector?: (s: UnifiedSettings) => T): T {
   const serverSettings = useServerSettings();
   const clientSettings = useSyncExternalStore(
