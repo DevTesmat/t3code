@@ -16,7 +16,10 @@ import { RepositoryIdentityResolverLive } from "../../project/Layers/RepositoryI
 import { ORCHESTRATION_PROJECTOR_NAMES } from "./ProjectionPipeline.ts";
 import {
   OrchestrationProjectionSnapshotQueryLive,
+  THREAD_DETAIL_INITIAL_ACTIVITY_LIMIT,
+  THREAD_DETAIL_INITIAL_CHECKPOINT_LIMIT,
   THREAD_DETAIL_INITIAL_MESSAGE_LIMIT,
+  THREAD_DETAIL_INITIAL_PROPOSED_PLAN_LIMIT,
 } from "./ProjectionSnapshotQuery.ts";
 import { ProjectionSnapshotQuery } from "../Services/ProjectionSnapshotQuery.ts";
 
@@ -1068,6 +1071,9 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
       yield* sql`DELETE FROM projection_projects`;
       yield* sql`DELETE FROM projection_threads`;
       yield* sql`DELETE FROM projection_thread_messages`;
+      yield* sql`DELETE FROM projection_thread_activities`;
+      yield* sql`DELETE FROM projection_thread_proposed_plans`;
+      yield* sql`DELETE FROM projection_turns`;
 
       yield* sql`
         INSERT INTO projection_projects (
@@ -1159,6 +1165,102 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
         FROM counter
       `;
 
+      yield* sql`
+        WITH RECURSIVE counter(value) AS (
+          SELECT 0
+          UNION ALL
+          SELECT value + 1 FROM counter WHERE value < ${THREAD_DETAIL_INITIAL_ACTIVITY_LIMIT + 9}
+        )
+        INSERT INTO projection_thread_activities (
+          activity_id,
+          thread_id,
+          turn_id,
+          tone,
+          kind,
+          summary,
+          payload_json,
+          sequence,
+          created_at
+        )
+        SELECT
+          printf('activity-%04d', value),
+          'thread-1',
+          NULL,
+          'info',
+          'test.activity',
+          printf('activity %04d', value),
+          '{}',
+          value,
+          printf('2026-04-01T01:%02d:%02d.000Z', value / 60, value % 60)
+        FROM counter
+      `;
+
+      yield* sql`
+        WITH RECURSIVE counter(value) AS (
+          SELECT 0
+          UNION ALL
+          SELECT value + 1 FROM counter WHERE value < ${
+            THREAD_DETAIL_INITIAL_PROPOSED_PLAN_LIMIT + 9
+          }
+        )
+        INSERT INTO projection_thread_proposed_plans (
+          plan_id,
+          thread_id,
+          turn_id,
+          plan_markdown,
+          implemented_at,
+          implementation_thread_id,
+          created_at,
+          updated_at
+        )
+        SELECT
+          printf('plan-%04d', value),
+          'thread-1',
+          NULL,
+          printf('plan %04d', value),
+          NULL,
+          NULL,
+          printf('2026-04-01T02:%02d:%02d.000Z', value / 60, value % 60),
+          printf('2026-04-01T02:%02d:%02d.000Z', value / 60, value % 60)
+        FROM counter
+      `;
+
+      yield* sql`
+        WITH RECURSIVE counter(value) AS (
+          SELECT 0
+          UNION ALL
+          SELECT value + 1 FROM counter WHERE value < ${THREAD_DETAIL_INITIAL_CHECKPOINT_LIMIT + 9}
+        )
+        INSERT INTO projection_turns (
+          thread_id,
+          turn_id,
+          pending_message_id,
+          assistant_message_id,
+          state,
+          requested_at,
+          started_at,
+          completed_at,
+          checkpoint_turn_count,
+          checkpoint_ref,
+          checkpoint_status,
+          checkpoint_files_json
+        )
+        SELECT
+          'thread-1',
+          printf('turn-%04d', value),
+          NULL,
+          NULL,
+          'completed',
+          printf('2026-04-01T03:%02d:%02d.000Z', value / 60, value % 60),
+          printf('2026-04-01T03:%02d:%02d.000Z', value / 60, value % 60),
+          printf('2026-04-01T03:%02d:%02d.000Z', value / 60, value % 60),
+          value,
+          printf('checkpoint-%04d', value),
+          'ready',
+          '[]'
+        FROM counter
+      `;
+
       const fullDetail = yield* snapshotQuery.getThreadDetailById(ThreadId.make("thread-1"));
       const subscriptionSnapshot = yield* snapshotQuery.getThreadDetailSnapshotById(
         ThreadId.make("thread-1"),
@@ -1168,6 +1270,15 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
       assert.equal(subscriptionSnapshot._tag, "Some");
       if (fullDetail._tag === "Some" && subscriptionSnapshot._tag === "Some") {
         assert.equal(fullDetail.value.messages.length, THREAD_DETAIL_INITIAL_MESSAGE_LIMIT + 10);
+        assert.equal(fullDetail.value.activities.length, THREAD_DETAIL_INITIAL_ACTIVITY_LIMIT + 10);
+        assert.equal(
+          fullDetail.value.proposedPlans.length,
+          THREAD_DETAIL_INITIAL_PROPOSED_PLAN_LIMIT + 10,
+        );
+        assert.equal(
+          fullDetail.value.checkpoints.length,
+          THREAD_DETAIL_INITIAL_CHECKPOINT_LIMIT + 10,
+        );
         assert.equal(
           subscriptionSnapshot.value.thread.messages.length,
           THREAD_DETAIL_INITIAL_MESSAGE_LIMIT,
@@ -1183,6 +1294,51 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
         assert.deepEqual(subscriptionSnapshot.value.pageInfo.messages, {
           limit: THREAD_DETAIL_INITIAL_MESSAGE_LIMIT,
           included: THREAD_DETAIL_INITIAL_MESSAGE_LIMIT,
+          hasMoreBefore: true,
+        });
+        assert.equal(
+          subscriptionSnapshot.value.thread.activities.length,
+          THREAD_DETAIL_INITIAL_ACTIVITY_LIMIT,
+        );
+        assert.equal(
+          subscriptionSnapshot.value.thread.activities[0]?.id,
+          asEventId("activity-0010"),
+        );
+        assert.equal(
+          subscriptionSnapshot.value.thread.activities.at(-1)?.id,
+          asEventId("activity-0509"),
+        );
+        assert.deepEqual(subscriptionSnapshot.value.pageInfo.activities, {
+          limit: THREAD_DETAIL_INITIAL_ACTIVITY_LIMIT,
+          included: THREAD_DETAIL_INITIAL_ACTIVITY_LIMIT,
+          hasMoreBefore: true,
+        });
+        assert.equal(
+          subscriptionSnapshot.value.thread.proposedPlans.length,
+          THREAD_DETAIL_INITIAL_PROPOSED_PLAN_LIMIT,
+        );
+        assert.equal(subscriptionSnapshot.value.thread.proposedPlans[0]?.id, "plan-0010");
+        assert.equal(subscriptionSnapshot.value.thread.proposedPlans.at(-1)?.id, "plan-0509");
+        assert.deepEqual(subscriptionSnapshot.value.pageInfo.proposedPlans, {
+          limit: THREAD_DETAIL_INITIAL_PROPOSED_PLAN_LIMIT,
+          included: THREAD_DETAIL_INITIAL_PROPOSED_PLAN_LIMIT,
+          hasMoreBefore: true,
+        });
+        assert.equal(
+          subscriptionSnapshot.value.thread.checkpoints.length,
+          THREAD_DETAIL_INITIAL_CHECKPOINT_LIMIT,
+        );
+        assert.equal(
+          subscriptionSnapshot.value.thread.checkpoints[0]?.checkpointRef,
+          asCheckpointRef("checkpoint-0010"),
+        );
+        assert.equal(
+          subscriptionSnapshot.value.thread.checkpoints.at(-1)?.checkpointRef,
+          asCheckpointRef("checkpoint-0509"),
+        );
+        assert.deepEqual(subscriptionSnapshot.value.pageInfo.checkpoints, {
+          limit: THREAD_DETAIL_INITIAL_CHECKPOINT_LIMIT,
+          included: THREAD_DETAIL_INITIAL_CHECKPOINT_LIMIT,
           hasMoreBefore: true,
         });
 
@@ -1210,6 +1366,231 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
             hasMoreBefore: true,
           });
         }
+
+        const olderActivitiesPage = yield* snapshotQuery.getThreadActivitiesPageBefore({
+          threadId: ThreadId.make("thread-1"),
+          beforeActivityId: asEventId("activity-0010"),
+          limit: 6,
+        });
+        assert.equal(olderActivitiesPage._tag, "Some");
+        if (olderActivitiesPage._tag === "Some") {
+          assert.deepEqual(
+            olderActivitiesPage.value.activities.map((activity) => activity.id),
+            [
+              asEventId("activity-0004"),
+              asEventId("activity-0005"),
+              asEventId("activity-0006"),
+              asEventId("activity-0007"),
+              asEventId("activity-0008"),
+              asEventId("activity-0009"),
+            ],
+          );
+          assert.deepEqual(olderActivitiesPage.value.pageInfo, {
+            limit: 6,
+            included: 6,
+            hasMoreBefore: true,
+          });
+        }
+
+        const olderProposedPlansPage = yield* snapshotQuery.getThreadProposedPlansPageBefore({
+          threadId: ThreadId.make("thread-1"),
+          beforeProposedPlanId: "plan-0010",
+          limit: 6,
+        });
+        assert.equal(olderProposedPlansPage._tag, "Some");
+        if (olderProposedPlansPage._tag === "Some") {
+          assert.deepEqual(
+            olderProposedPlansPage.value.proposedPlans.map((plan) => plan.id),
+            ["plan-0004", "plan-0005", "plan-0006", "plan-0007", "plan-0008", "plan-0009"],
+          );
+          assert.deepEqual(olderProposedPlansPage.value.pageInfo, {
+            limit: 6,
+            included: 6,
+            hasMoreBefore: true,
+          });
+        }
+
+        const olderCheckpointsPage = yield* snapshotQuery.getThreadCheckpointsPageBefore({
+          threadId: ThreadId.make("thread-1"),
+          beforeCheckpointTurnCount: 10,
+          limit: 6,
+        });
+        assert.equal(olderCheckpointsPage._tag, "Some");
+        if (olderCheckpointsPage._tag === "Some") {
+          assert.deepEqual(
+            olderCheckpointsPage.value.checkpoints.map((checkpoint) => checkpoint.checkpointRef),
+            [
+              asCheckpointRef("checkpoint-0004"),
+              asCheckpointRef("checkpoint-0005"),
+              asCheckpointRef("checkpoint-0006"),
+              asCheckpointRef("checkpoint-0007"),
+              asCheckpointRef("checkpoint-0008"),
+              asCheckpointRef("checkpoint-0009"),
+            ],
+          );
+          assert.deepEqual(olderCheckpointsPage.value.pageInfo, {
+            limit: 6,
+            included: 6,
+            hasMoreBefore: true,
+          });
+        }
+      }
+    }),
+  );
+
+  it.effect("does not expose hidden subagent activity as older main thread history", () =>
+    Effect.gen(function* () {
+      const snapshotQuery = yield* ProjectionSnapshotQuery;
+      const sql = yield* SqlClient.SqlClient;
+
+      yield* sql`DELETE FROM projection_projects`;
+      yield* sql`DELETE FROM projection_threads`;
+      yield* sql`DELETE FROM projection_thread_activities`;
+
+      yield* sql`
+        INSERT INTO projection_projects (
+          project_id,
+          title,
+          workspace_root,
+          default_model_selection_json,
+          scripts_json,
+          created_at,
+          updated_at,
+          deleted_at
+        )
+        VALUES (
+          'project-1',
+          'Project 1',
+          '/tmp/project-1',
+          '{"provider":"codex","model":"gpt-5-codex"}',
+          '[]',
+          '2026-04-01T00:00:00.000Z',
+          '2026-04-01T00:00:00.000Z',
+          NULL
+        )
+      `;
+
+      yield* sql`
+        INSERT INTO projection_threads (
+          thread_id,
+          project_id,
+          title,
+          model_selection_json,
+          runtime_mode,
+          interaction_mode,
+          branch,
+          worktree_path,
+          latest_turn_id,
+          latest_user_message_at,
+          pending_approval_count,
+          pending_user_input_count,
+          has_actionable_proposed_plan,
+          created_at,
+          updated_at,
+          deleted_at
+        )
+        VALUES (
+          'thread-1',
+          'project-1',
+          'Thread 1',
+          '{"provider":"codex","model":"gpt-5-codex"}',
+          'full-access',
+          'default',
+          NULL,
+          NULL,
+          NULL,
+          NULL,
+          0,
+          0,
+          0,
+          '2026-04-01T00:00:00.000Z',
+          '2026-04-01T00:00:00.000Z',
+          NULL
+        )
+      `;
+
+      yield* sql`
+        WITH RECURSIVE counter(value) AS (
+          SELECT 0
+          UNION ALL
+          SELECT value + 1 FROM counter WHERE value < ${THREAD_DETAIL_INITIAL_ACTIVITY_LIMIT + 20}
+        )
+        INSERT INTO projection_thread_activities (
+          activity_id,
+          thread_id,
+          turn_id,
+          tone,
+          kind,
+          summary,
+          payload_json,
+          sequence,
+          created_at
+        )
+        SELECT
+          printf('subagent-activity-%04d', value),
+          'thread-1',
+          NULL,
+          'tool',
+          'subagent.content.delta',
+          'Subagent content delta',
+          '{}',
+          value,
+          printf('2026-04-01T01:%02d:%02d.000Z', value / 60, value % 60)
+        FROM counter
+      `;
+
+      yield* sql`
+        INSERT INTO projection_thread_activities (
+          activity_id,
+          thread_id,
+          turn_id,
+          tone,
+          kind,
+          summary,
+          payload_json,
+          sequence,
+          created_at
+        )
+        VALUES
+          (
+            'visible-activity-1',
+            'thread-1',
+            NULL,
+            'tool',
+            'tool.started',
+            'Ran command',
+            '{}',
+            2000,
+            '2026-04-01T02:00:00.000Z'
+          ),
+          (
+            'visible-activity-2',
+            'thread-1',
+            NULL,
+            'tool',
+            'tool.completed',
+            'Ran command',
+            '{}',
+            2001,
+            '2026-04-01T02:00:01.000Z'
+          )
+      `;
+
+      const subscriptionSnapshot = yield* snapshotQuery.getThreadDetailSnapshotById(
+        ThreadId.make("thread-1"),
+      );
+
+      assert.equal(subscriptionSnapshot._tag, "Some");
+      if (subscriptionSnapshot._tag === "Some") {
+        assert.deepEqual(
+          subscriptionSnapshot.value.thread.activities.map((activity) => activity.id),
+          [asEventId("visible-activity-1"), asEventId("visible-activity-2")],
+        );
+        assert.deepEqual(subscriptionSnapshot.value.pageInfo.activities, {
+          limit: THREAD_DETAIL_INITIAL_ACTIVITY_LIMIT,
+          included: 2,
+          hasMoreBefore: false,
+        });
       }
     }),
   );

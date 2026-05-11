@@ -42,7 +42,10 @@ import {
   commandOutputDeltaStream as globalCommandOutputDeltaStream,
   commandOutputSnapshotStream as globalCommandOutputSnapshotStream,
 } from "./orchestration/Services/CommandOutputDeltaBus.ts";
-import { readCommandOutputSnapshotsForThread } from "./orchestration/Services/CommandOutputBuffer.ts";
+import {
+  readCommandOutputSnapshot,
+  readCommandOutputSnapshotsForThread,
+} from "./orchestration/Services/CommandOutputBuffer.ts";
 import { ProjectionSnapshotQuery } from "./orchestration/Services/ProjectionSnapshotQuery.ts";
 import { ToolCallFileDiffRepository } from "./persistence/Services/ToolCallFileDiffs.ts";
 import {
@@ -90,6 +93,7 @@ const ORCHESTRATION_REPLAY_DEFAULT_LIMIT = 1_000;
 const ORCHESTRATION_REPLAY_MAX_LIMIT = 5_000;
 const THREAD_MESSAGE_PAGE_DEFAULT_LIMIT = 500;
 const THREAD_MESSAGE_PAGE_MAX_LIMIT = 1_000;
+const THREAD_COMMAND_OUTPUT_INITIAL_SNAPSHOT_LIMIT = 200;
 
 function isThreadDetailEvent(event: OrchestrationEvent): event is Extract<
   OrchestrationEvent,
@@ -741,6 +745,141 @@ const makeWsRpcLayer = (currentSessionId: AuthSessionId) =>
             ),
             { "rpc.aggregate": "orchestration" },
           ),
+        [ORCHESTRATION_WS_METHODS.getThreadActivitiesPage]: (input) =>
+          observeRpcEffect(
+            ORCHESTRATION_WS_METHODS.getThreadActivitiesPage,
+            Effect.gen(function* () {
+              const requestedLimit = input.limit ?? THREAD_MESSAGE_PAGE_DEFAULT_LIMIT;
+              const limit = clamp(requestedLimit, {
+                maximum: THREAD_MESSAGE_PAGE_MAX_LIMIT,
+                minimum: 1,
+              });
+              const page = yield* projectionSnapshotQuery.getThreadActivitiesPageBefore({
+                threadId: input.threadId,
+                beforeActivityId: input.beforeActivityId,
+                limit,
+              });
+              if (Option.isNone(page)) {
+                return yield* new OrchestrationGetSnapshotError({
+                  message: `Thread ${input.threadId} was not found`,
+                  cause: input.threadId,
+                });
+              }
+              return page.value;
+            }).pipe(
+              Effect.mapError((cause) =>
+                Schema.is(OrchestrationGetSnapshotError)(cause)
+                  ? cause
+                  : new OrchestrationGetSnapshotError({
+                      message: `Failed to load older activities for thread ${input.threadId}`,
+                      cause,
+                    }),
+              ),
+            ),
+            { "rpc.aggregate": "orchestration" },
+          ),
+        [ORCHESTRATION_WS_METHODS.getThreadProposedPlansPage]: (input) =>
+          observeRpcEffect(
+            ORCHESTRATION_WS_METHODS.getThreadProposedPlansPage,
+            Effect.gen(function* () {
+              const requestedLimit = input.limit ?? THREAD_MESSAGE_PAGE_DEFAULT_LIMIT;
+              const limit = clamp(requestedLimit, {
+                maximum: THREAD_MESSAGE_PAGE_MAX_LIMIT,
+                minimum: 1,
+              });
+              const page = yield* projectionSnapshotQuery.getThreadProposedPlansPageBefore({
+                threadId: input.threadId,
+                beforeProposedPlanId: input.beforeProposedPlanId,
+                limit,
+              });
+              if (Option.isNone(page)) {
+                return yield* new OrchestrationGetSnapshotError({
+                  message: `Thread ${input.threadId} was not found`,
+                  cause: input.threadId,
+                });
+              }
+              return page.value;
+            }).pipe(
+              Effect.mapError((cause) =>
+                Schema.is(OrchestrationGetSnapshotError)(cause)
+                  ? cause
+                  : new OrchestrationGetSnapshotError({
+                      message: `Failed to load older proposed plans for thread ${input.threadId}`,
+                      cause,
+                    }),
+              ),
+            ),
+            { "rpc.aggregate": "orchestration" },
+          ),
+        [ORCHESTRATION_WS_METHODS.getThreadCheckpointsPage]: (input) =>
+          observeRpcEffect(
+            ORCHESTRATION_WS_METHODS.getThreadCheckpointsPage,
+            Effect.gen(function* () {
+              const requestedLimit = input.limit ?? THREAD_MESSAGE_PAGE_DEFAULT_LIMIT;
+              const limit = clamp(requestedLimit, {
+                maximum: THREAD_MESSAGE_PAGE_MAX_LIMIT,
+                minimum: 1,
+              });
+              const page = yield* projectionSnapshotQuery.getThreadCheckpointsPageBefore({
+                threadId: input.threadId,
+                beforeCheckpointTurnCount: input.beforeCheckpointTurnCount,
+                limit,
+              });
+              if (Option.isNone(page)) {
+                return yield* new OrchestrationGetSnapshotError({
+                  message: `Thread ${input.threadId} was not found`,
+                  cause: input.threadId,
+                });
+              }
+              return page.value;
+            }).pipe(
+              Effect.mapError((cause) =>
+                Schema.is(OrchestrationGetSnapshotError)(cause)
+                  ? cause
+                  : new OrchestrationGetSnapshotError({
+                      message: `Failed to load older checkpoints for thread ${input.threadId}`,
+                      cause,
+                    }),
+              ),
+            ),
+            { "rpc.aggregate": "orchestration" },
+          ),
+        [ORCHESTRATION_WS_METHODS.getThreadCommandOutputSnapshot]: (input) =>
+          observeRpcEffect(
+            ORCHESTRATION_WS_METHODS.getThreadCommandOutputSnapshot,
+            Effect.gen(function* () {
+              const liveSnapshot = yield* readCommandOutputSnapshot(input);
+              if (liveSnapshot) {
+                return { snapshot: liveSnapshot };
+              }
+              const diff = yield* toolCallFileDiffRepository.getByThreadAndToolCall({
+                threadId: input.threadId,
+                toolCallId: input.toolCallId,
+                accessedAt: new Date().toISOString(),
+              });
+              return {
+                snapshot: diff
+                  ? {
+                      threadId: diff.threadId,
+                      turnId: diff.turnId,
+                      toolCallId: diff.toolCallId,
+                      updatedAt: diff.updatedAt,
+                      text: diff.diff,
+                      truncated: diff.truncated,
+                    }
+                  : null,
+              };
+            }).pipe(
+              Effect.mapError(
+                (cause) =>
+                  new OrchestrationGetSnapshotError({
+                    message: `Failed to load command output snapshot for thread ${input.threadId}`,
+                    cause,
+                  }),
+              ),
+            ),
+            { "rpc.aggregate": "orchestration" },
+          ),
         [ORCHESTRATION_WS_METHODS.subscribeShell]: (_input) =>
           observeRpcStreamEffect(
             ORCHESTRATION_WS_METHODS.subscribeShell,
@@ -866,9 +1005,10 @@ const makeWsRpcLayer = (currentSessionId: AuthSessionId) =>
               const commandOutputSnapshotStream = Effect.all([
                 readCommandOutputSnapshotsForThread(input.threadId),
                 toolCallFileDiffRepository
-                  .listByThread({
+                  .listLatestByThread({
                     threadId: input.threadId,
                     accessedAt: new Date().toISOString(),
+                    limit: THREAD_COMMAND_OUTPUT_INITIAL_SNAPSHOT_LIMIT,
                   })
                   .pipe(
                     Effect.mapError(

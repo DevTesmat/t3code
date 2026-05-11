@@ -125,6 +125,88 @@ const makeToolCallFileDiffRepository = Effect.gen(function* () {
         Effect.mapError(toPersistenceSqlError("ToolCallFileDiffRepository.listByThread")),
       );
 
+  const listLatestByThread: ToolCallFileDiffRepositoryShape["listLatestByThread"] = ({
+    threadId,
+    accessedAt,
+    limit,
+  }) =>
+    sql
+      .withTransaction(
+        sql`
+        UPDATE tool_call_file_diffs
+        SET last_accessed_at = ${accessedAt}
+        WHERE thread_id = ${threadId}
+          AND tool_call_id IN (
+            SELECT tool_call_id
+            FROM tool_call_file_diffs
+            WHERE thread_id = ${threadId}
+            ORDER BY updated_at DESC, tool_call_id DESC
+            LIMIT ${limit}
+          )
+      `.pipe(
+          Effect.andThen(
+            sql<ToolCallFileDiffRow>`
+            SELECT
+              thread_id AS "threadId",
+              turn_id AS "turnId",
+              tool_call_id AS "toolCallId",
+              diff,
+              truncated,
+              size_bytes AS "sizeBytes",
+              created_at AS "createdAt",
+              updated_at AS "updatedAt",
+              last_accessed_at AS "lastAccessedAt"
+            FROM tool_call_file_diffs
+            WHERE thread_id = ${threadId}
+            ORDER BY updated_at DESC, tool_call_id DESC
+            LIMIT ${limit}
+          `,
+          ),
+        ),
+      )
+      .pipe(
+        Effect.map((rows) => rows.map(toToolCallFileDiff).reverse()),
+        Effect.mapError(toPersistenceSqlError("ToolCallFileDiffRepository.listLatestByThread")),
+      );
+
+  const getByThreadAndToolCall: ToolCallFileDiffRepositoryShape["getByThreadAndToolCall"] = ({
+    threadId,
+    toolCallId,
+    accessedAt,
+  }) =>
+    sql
+      .withTransaction(
+        sql`
+        UPDATE tool_call_file_diffs
+        SET last_accessed_at = ${accessedAt}
+        WHERE thread_id = ${threadId}
+          AND tool_call_id = ${toolCallId}
+      `.pipe(
+          Effect.andThen(
+            sql<ToolCallFileDiffRow>`
+            SELECT
+              thread_id AS "threadId",
+              turn_id AS "turnId",
+              tool_call_id AS "toolCallId",
+              diff,
+              truncated,
+              size_bytes AS "sizeBytes",
+              created_at AS "createdAt",
+              updated_at AS "updatedAt",
+              last_accessed_at AS "lastAccessedAt"
+            FROM tool_call_file_diffs
+            WHERE thread_id = ${threadId}
+              AND tool_call_id = ${toolCallId}
+            LIMIT 1
+          `,
+          ),
+        ),
+      )
+      .pipe(
+        Effect.map((rows) => (rows[0] ? toToolCallFileDiff(rows[0]) : null)),
+        Effect.mapError(toPersistenceSqlError("ToolCallFileDiffRepository.getByThreadAndToolCall")),
+      );
+
   const cleanupIfOverBudget: ToolCallFileDiffRepositoryShape["cleanupIfOverBudget"] = (input) =>
     Effect.gen(function* () {
       const [{ totalBytes = 0 } = { totalBytes: 0 }] = yield* sql<{
@@ -177,6 +259,8 @@ const makeToolCallFileDiffRepository = Effect.gen(function* () {
   return {
     upsert,
     listByThread,
+    listLatestByThread,
+    getByThreadAndToolCall,
     cleanupIfOverBudget,
   } satisfies ToolCallFileDiffRepositoryShape;
 });

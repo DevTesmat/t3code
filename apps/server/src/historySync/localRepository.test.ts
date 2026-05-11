@@ -46,7 +46,7 @@ layer("history sync destructive table manifest", (it) => {
   it.effect("classifies every migrated history-derived table", () =>
     Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient;
-      yield* runMigrations({ toMigrationInclusive: 37 });
+      yield* runMigrations({ toMigrationInclusive: 39 });
       const rows = yield* sql<{ readonly name: string }>`
         SELECT name
         FROM sqlite_master

@@ -158,6 +158,18 @@ export interface WsRpcClient {
     readonly getThreadMessagesPage: RpcUnaryMethod<
       typeof ORCHESTRATION_WS_METHODS.getThreadMessagesPage
     >;
+    readonly getThreadActivitiesPage: RpcUnaryMethod<
+      typeof ORCHESTRATION_WS_METHODS.getThreadActivitiesPage
+    >;
+    readonly getThreadProposedPlansPage: RpcUnaryMethod<
+      typeof ORCHESTRATION_WS_METHODS.getThreadProposedPlansPage
+    >;
+    readonly getThreadCheckpointsPage: RpcUnaryMethod<
+      typeof ORCHESTRATION_WS_METHODS.getThreadCheckpointsPage
+    >;
+    readonly getThreadCommandOutputSnapshot: RpcUnaryMethod<
+      typeof ORCHESTRATION_WS_METHODS.getThreadCommandOutputSnapshot
+    >;
     readonly subscribeShell: RpcStreamMethod<typeof ORCHESTRATION_WS_METHODS.subscribeShell>;
     readonly subscribeThread: RpcInputStreamMethod<typeof ORCHESTRATION_WS_METHODS.subscribeThread>;
   };
@@ -310,6 +322,22 @@ export function createWsRpcClient(transport: WsTransport): WsRpcClient {
       getThreadMessagesPage: (input) =>
         transport.request((client) =>
           client[ORCHESTRATION_WS_METHODS.getThreadMessagesPage](input),
+        ),
+      getThreadActivitiesPage: (input) =>
+        transport.request((client) =>
+          client[ORCHESTRATION_WS_METHODS.getThreadActivitiesPage](input),
+        ),
+      getThreadProposedPlansPage: (input) =>
+        transport.request((client) =>
+          client[ORCHESTRATION_WS_METHODS.getThreadProposedPlansPage](input),
+        ),
+      getThreadCheckpointsPage: (input) =>
+        transport.request((client) =>
+          client[ORCHESTRATION_WS_METHODS.getThreadCheckpointsPage](input),
+        ),
+      getThreadCommandOutputSnapshot: (input) =>
+        transport.request((client) =>
+          client[ORCHESTRATION_WS_METHODS.getThreadCommandOutputSnapshot](input),
         ),
       subscribeShell: (listener, options) =>
         transport.subscribe(

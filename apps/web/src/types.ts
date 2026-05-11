@@ -122,6 +122,9 @@ export interface Thread {
   turnDiffSummaries: TurnDiffSummary[];
   activities: OrchestrationThreadActivity[];
   messagePageInfo?: OrchestrationThreadDetailResourcePageInfo | undefined;
+  activityPageInfo?: OrchestrationThreadDetailResourcePageInfo | undefined;
+  proposedPlanPageInfo?: OrchestrationThreadDetailResourcePageInfo | undefined;
+  checkpointPageInfo?: OrchestrationThreadDetailResourcePageInfo | undefined;
 }
 
 export interface ThreadShell {

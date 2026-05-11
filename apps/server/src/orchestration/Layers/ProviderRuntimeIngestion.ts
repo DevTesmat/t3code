@@ -23,6 +23,7 @@ import path from "node:path";
 import { makeDrainableWorker } from "@t3tools/shared/DrainableWorker";
 
 import { ProviderService } from "../../provider/Services/ProviderService.ts";
+import { classifyProviderRuntimeEvent } from "../../provider/RuntimeBackpressure.ts";
 import { OrchestrationCommandReceiptRepository } from "../../persistence/Services/OrchestrationCommandReceipts.ts";
 import { OrchestrationCommandReceiptRepositoryLive } from "../../persistence/Layers/OrchestrationCommandReceipts.ts";
 import { ProjectionTurnRepository } from "../../persistence/Services/ProjectionTurns.ts";
@@ -92,6 +93,12 @@ const FILE_CHANGE_DIFF_MAX_TOTAL_BYTES = 512 * 1024 * 1024;
 const FILE_CHANGE_DIFF_TARGET_TOTAL_BYTES = 384 * 1024 * 1024;
 const FILE_CHANGE_DIFF_CLEANUP_BATCH_SIZE = 250;
 const FILE_CHANGE_DIFF_CLEANUP_INTERVAL_MS = 60_000;
+
+export function shouldFailProviderSessionForRejectedRuntimeEvent(
+  event: Pick<ProviderRuntimeEvent, "type">,
+): boolean {
+  return classifyProviderRuntimeEvent(event) === "must-deliver";
+}
 
 type TerminalOutputPreviewStream = "stdout" | "stderr" | "mixed" | "unknown";
 
@@ -2823,6 +2830,56 @@ const make = Effect.gen(function* () {
     capacity: PROVIDER_RUNTIME_INGESTION_QUEUE_CAPACITY,
   });
 
+  const failProviderSessionForRejectedInput = (
+    input: RuntimeIngestionInput,
+  ): Effect.Effect<void> => {
+    if (
+      input.source !== "runtime" ||
+      !shouldFailProviderSessionForRejectedRuntimeEvent(input.event)
+    ) {
+      return Effect.void;
+    }
+
+    const event = input.event;
+    const now = new Date().toISOString();
+    return orchestrationEngine.getReadModel().pipe(
+      Effect.flatMap((readModel) => {
+        const thread = readModel.threads.find((entry) => entry.id === event.threadId);
+        if (!thread) {
+          return Effect.void;
+        }
+
+        return orchestrationEngine.dispatch({
+          type: "thread.session.set",
+          commandId: providerCommandId(event, "runtime-ingestion-queue-rejected"),
+          threadId: thread.id,
+          session: {
+            threadId: thread.id,
+            status: "error",
+            providerName: event.provider,
+            ...(event.providerInstanceId !== undefined
+              ? { providerInstanceId: event.providerInstanceId }
+              : {}),
+            runtimeMode: thread.session?.runtimeMode ?? "full-access",
+            activeTurnId: toTurnId(event.turnId) ?? thread.session?.activeTurnId ?? null,
+            lastError: `Provider runtime ingestion rejected a must-deliver ${event.type} event; session state may be incomplete.`,
+            updatedAt: now,
+          },
+          createdAt: now,
+        });
+      }),
+      Effect.catchCause((cause) =>
+        Effect.logWarning("provider runtime ingestion failed to mark rejected session error", {
+          source: input.source,
+          eventId: event.eventId,
+          eventType: event.type,
+          threadId: event.threadId,
+          cause: Cause.pretty(cause),
+        }),
+      ),
+    );
+  };
+
   const enqueueInput = (input: RuntimeIngestionInput): Effect.Effect<void> =>
     worker.enqueue(input).pipe(
       Effect.flatMap((accepted) =>
@@ -2843,7 +2900,7 @@ const make = Effect.gen(function* () {
                   accepted: health.accepted,
                   dropped: health.dropped,
                   backlog: health.backlog,
-                }),
+                }).pipe(Effect.andThen(failProviderSessionForRejectedInput(input))),
               ),
             ),
       ),

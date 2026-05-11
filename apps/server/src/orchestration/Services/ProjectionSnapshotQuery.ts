@@ -9,15 +9,19 @@
 import type {
   OrchestrationCheckpointSummary,
   OrchestrationMessage,
+  OrchestrationProposedPlan,
   OrchestrationProject,
   OrchestrationProjectShell,
   OrchestrationReadModel,
   OrchestrationShellSnapshot,
   OrchestrationThread,
+  OrchestrationThreadActivity,
   OrchestrationThreadDetailPageInfo,
   OrchestrationThreadDetailResourcePageInfo,
   OrchestrationThreadShell,
+  EventId,
   MessageId,
+  OrchestrationProposedPlanId,
   ProjectId,
   ThreadId,
 } from "@t3tools/contracts";
@@ -48,6 +52,24 @@ export interface ProjectionThreadDetailSnapshot {
 export interface ProjectionThreadMessagesPage {
   readonly threadId: ThreadId;
   readonly messages: ReadonlyArray<OrchestrationMessage>;
+  readonly pageInfo: OrchestrationThreadDetailResourcePageInfo;
+}
+
+export interface ProjectionThreadActivitiesPage {
+  readonly threadId: ThreadId;
+  readonly activities: ReadonlyArray<OrchestrationThreadActivity>;
+  readonly pageInfo: OrchestrationThreadDetailResourcePageInfo;
+}
+
+export interface ProjectionThreadProposedPlansPage {
+  readonly threadId: ThreadId;
+  readonly proposedPlans: ReadonlyArray<OrchestrationProposedPlan>;
+  readonly pageInfo: OrchestrationThreadDetailResourcePageInfo;
+}
+
+export interface ProjectionThreadCheckpointsPage {
+  readonly threadId: ThreadId;
+  readonly checkpoints: ReadonlyArray<OrchestrationCheckpointSummary>;
   readonly pageInfo: OrchestrationThreadDetailResourcePageInfo;
 }
 
@@ -137,6 +159,24 @@ export interface ProjectionSnapshotQueryShape {
     readonly beforeMessageId: MessageId;
     readonly limit: number;
   }) => Effect.Effect<Option.Option<ProjectionThreadMessagesPage>, ProjectionRepositoryError>;
+
+  readonly getThreadActivitiesPageBefore: (input: {
+    readonly threadId: ThreadId;
+    readonly beforeActivityId: EventId;
+    readonly limit: number;
+  }) => Effect.Effect<Option.Option<ProjectionThreadActivitiesPage>, ProjectionRepositoryError>;
+
+  readonly getThreadProposedPlansPageBefore: (input: {
+    readonly threadId: ThreadId;
+    readonly beforeProposedPlanId: OrchestrationProposedPlanId;
+    readonly limit: number;
+  }) => Effect.Effect<Option.Option<ProjectionThreadProposedPlansPage>, ProjectionRepositoryError>;
+
+  readonly getThreadCheckpointsPageBefore: (input: {
+    readonly threadId: ThreadId;
+    readonly beforeCheckpointTurnCount: number;
+    readonly limit: number;
+  }) => Effect.Effect<Option.Option<ProjectionThreadCheckpointsPage>, ProjectionRepositoryError>;
 }
 
 /**

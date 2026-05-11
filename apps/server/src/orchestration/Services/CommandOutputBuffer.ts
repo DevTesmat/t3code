@@ -2,6 +2,7 @@ import { Effect } from "effect";
 import type {
   OrchestrationCommandOutputDelta,
   OrchestrationCommandOutputSnapshot,
+  ProviderItemId,
   ThreadId,
 } from "@t3tools/contracts";
 
@@ -186,6 +187,22 @@ export const readCommandOutputSnapshotsForThread = (threadId: ThreadId) =>
       snapshots.push(toSnapshot(entry));
     }
     return snapshots;
+  });
+
+export const readCommandOutputSnapshot = (input: {
+  readonly threadId: ThreadId;
+  readonly toolCallId: ProviderItemId;
+}) =>
+  Effect.sync(() => {
+    const now = Date.now();
+    evictExpired(now);
+    const entry = entries.get(bufferKey(input));
+    if (!entry || entry.text.length === 0) {
+      return null;
+    }
+    entry.lastAccessedAt = now;
+    entry.expiresAt = now + RETENTION_MS;
+    return toSnapshot(entry);
   });
 
 export const resetCommandOutputBufferForTests = (): void => {

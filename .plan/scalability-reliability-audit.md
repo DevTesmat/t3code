@@ -4,7 +4,7 @@
 
 This file is the source of truth for the scalability work from the May 2026 audit. Keep it updated whenever scope, ordering, implementation details, or completion status changes.
 
-Current state: Stage 3 in progress. Replay RPC pagination and shell-stream gap recovery are implemented and verified in dev logs. Provider ingestion now exposes enqueue/backpressure accounting through worker health and operational health; explicit overflow recovery policy remains open. Thread subscription snapshots now bound initial message hydration and expose page metadata, and older messages can be loaded through an explicit bounded page API/UI.
+Current state: Stages 1, 2, 3, and 5 are complete. Replay RPC pagination and shell-stream gap recovery are implemented, including retry coverage for interrupted live paged replay. Provider ingestion now exposes enqueue/backpressure accounting through worker health and operational health, and rejected must-deliver runtime events now best-effort fail the affected session instead of leaving projection continuity ambiguous. Thread subscription snapshots now bound initial message, activity, proposed-plan, checkpoint, and persisted file-diff hydration and expose page metadata for paged resources; older messages, activities, proposed plans, and checkpoints can be loaded through explicit bounded page APIs, with the active-thread UI loading them together when older history is requested. Older persisted file diffs are fetched on demand for visible file-change rows by tool-call id instead of unconditionally hydrating all diffs on thread open. Thread shell summary refresh now uses targeted SQL aggregates instead of hydrating all thread messages, proposed plans, activities, and approvals; latest user-message timestamps, pending approval/user-input counts, latest pending user-input timestamp, and actionable proposed-plan state are now maintained incrementally on normal projection events.
 
 ## Goal
 
@@ -49,7 +49,7 @@ Relevant files:
 
 ### High: Unbounded Thread Detail Snapshot
 
-Thread subscription snapshots previously hydrated and sent the entire thread detail. Initial subscription snapshots now send only the latest bounded message page with protocol-visible page metadata. Activities, proposed plans, checkpoints, and older-message page retrieval still need dedicated pagination before this stage is complete.
+Thread subscription snapshots previously hydrated and sent the entire thread detail. Initial subscription snapshots now send only the latest bounded message, activity, proposed-plan, checkpoint, and persisted file-diff pages with protocol-visible page metadata for paged resources. Dedicated older-page retrieval now exists for messages, activities, proposed plans, and checkpoints; older persisted file diffs load on demand by tool-call id when a visible file-change row needs its patch preview.
 
 Relevant files:
 
@@ -130,7 +130,7 @@ Relevant files:
 
 ### Stage 1: Lossless Replay Protocol
 
-Status: in progress.
+Status: complete.
 
 - [x] Replace array-only replay with a paged result:
   - `events`
@@ -142,7 +142,7 @@ Status: in progress.
 - [x] Wire paged replay into live environment gap recovery.
 - [x] Make incomplete live replay explicit in UI/runtime state if a page fails.
 - [x] Add tests for replay pagination beyond a single response page.
-- [ ] Add tests for interrupted live paged replay and retry behavior.
+- [x] Add tests for interrupted live paged replay and retry behavior.
 
 Progress notes:
 
@@ -152,6 +152,7 @@ Progress notes:
 - Environment shell subscriptions now detect sequence gaps and replay missing domain-event pages before applying the gapped shell event.
 - Replay failures are surfaced to the saved environment runtime state as connection errors.
 - Focused coverage exists for contract decoding, server WebSocket paging, and the web replay loop.
+- Live shell gap replay now advances the local replay cursor after each applied page, so an interrupted multi-page replay retries from the last applied page rather than replaying from the original gap start.
 
 Expected outcome: reconnect recovery is complete, bounded per request, and protocol-visible.
 
@@ -160,9 +161,9 @@ Expected outcome: reconnect recovery is complete, bounded per request, and proto
 - [x] Make `DrainableWorker` track attempted, accepted, rejected/dropped, processed, and failed counts.
 - [x] Stop hardcoding `dropped: 0` in drainable worker health.
 - [x] Make provider runtime ingestion handle `enqueue === false`.
-- [ ] Decide the failure policy for queue overflow:
-  - fail affected provider session, or
-  - pause/recover by forcing a provider/session resync, if available.
+- [x] Decide the failure policy for queue overflow:
+  - fail affected provider session for rejected must-deliver runtime events
+  - keep rejected coalescible/droppable events observable through logs and health counters
 - [x] Expose overflow/backpressure state through operational health.
 - [x] Add tests for bounded queue backpressure accounting and surfaced health.
 
@@ -174,18 +175,24 @@ Progress notes:
 - `ProviderRuntimeIngestion` logs rejected enqueue attempts with source, event id/type, thread id, capacity, backlog, and counters.
 - `OperationalHealth` passes the richer provider ingestion health snapshot through unchanged.
 - `KeyedCoalescingWorker` reports attempted/accepted/coalesced counters for terminal history style workers.
+- Provider runtime ingestion now treats a rejected must-deliver runtime event as a projection-continuity failure and best-effort marks the affected thread session `error`; rejected coalescible/droppable events remain logged/backpressure-health signals.
 
 Expected outcome: event pressure cannot cause invisible data loss.
 
 ### Stage 3: Thread Detail Pagination
 
-- [ ] Split thread detail contract into shell plus paged resources:
+Status: complete.
+
+- [x] Split thread detail contract into shell plus paged resources:
   - [x] bounded initial message page metadata on thread subscription snapshots
   - [x] explicit older-message page fetch API/UI
-  - activities
-  - proposed plans
-  - checkpoints
-  - command output/file diffs where needed
+  - [x] bounded initial activity page metadata on thread subscription snapshots
+  - [x] bounded initial proposed-plan page metadata on thread subscription snapshots
+  - [x] bounded initial checkpoint page metadata on thread subscription snapshots
+  - [x] explicit older activity page fetch API/UI
+  - [x] explicit older proposed-plan page fetch API/UI
+  - [x] explicit older checkpoint page fetch API/UI
+  - [x] command output/file diffs where needed
 - [x] Add stable latest-message server query for subscription snapshots.
 - [x] Make `subscribeThread` send bounded initial message detail.
 - [x] Keep live updates append/update based.
@@ -202,6 +209,10 @@ Progress notes:
 - `orchestration.getThreadMessagesPage` fetches a bounded page before an already loaded message id, preserving stable chronological order and `hasMoreBefore` metadata.
 - The web store records message page metadata, merges bounded reconnect snapshots without discarding already loaded older messages, and prepends older pages by id.
 - `ChatView` auto-loads older pages when the user scrolls near the top and keeps a small top-of-thread loading action as a fallback.
+- Subscription snapshots now also bound activities, proposed plans, and checkpoints with resource-specific `pageInfo` metadata. The web store merges these bounded reconnect snapshots without discarding older resources already present locally.
+- `orchestration.getThreadActivitiesPage`, `orchestration.getThreadProposedPlansPage`, and `orchestration.getThreadCheckpointsPage` fetch bounded older resource pages before a loaded activity id, proposed-plan id, or checkpoint turn count. `ChatView` requests all eligible older resource pages together so older timeline content stays coherent.
+- Live command output is already memory-bounded and retained for active/recent entries. Persisted file-diff snapshots are now capped on initial thread subscribe, and `orchestration.getThreadCommandOutputSnapshot` fetches a single live-or-persisted snapshot by thread/tool-call id for visible older file-change rows.
+- Main thread activity pagination now ignores activity kinds that are hidden from the main timeline, including `subagent.*` activity. This prevents hidden subagent transcript churn from keeping the main "Load older history" affordance visible on otherwise short-looking threads.
 
 Expected outcome: opening a huge thread is bounded, and older content loads on demand.
 
@@ -217,14 +228,26 @@ Expected outcome: total historical messages/activities are no longer baseline se
 
 ### Stage 5: Incremental Shell Summary Projection
 
-- [ ] Replace `refreshThreadShellSummary` full scans with incremental updates or targeted SQL aggregates.
-- [ ] Maintain latest user message timestamp at message projection time.
-- [ ] Maintain pending approval/user-input counters at activity/approval projection time.
-- [ ] Maintain actionable proposed plan state at proposed-plan and turn-state projection time.
-- [ ] Keep repair/rebuild paths for projection recovery.
-- [ ] Add tests for summary correctness across message, plan, activity, approval, revert, and replay paths.
+- [x] Replace `refreshThreadShellSummary` full scans with incremental updates or targeted SQL aggregates.
+- [x] Maintain latest user message timestamp at message projection time.
+- [x] Maintain pending approval/user-input counters at activity/approval projection time.
+- [x] Maintain actionable proposed plan state at proposed-plan and turn-state projection time.
+- [x] Keep repair/rebuild paths for projection recovery.
+- [x] Add tests for summary correctness across message, plan, activity, approval, revert, and replay paths.
 
 Expected outcome: common event projection is O(1) or bounded, not O(thread history).
+
+Progress notes:
+
+- `refreshThreadShellSummary` now reads latest user message time, pending approval count, pending user-input state, and actionable proposed-plan state through one targeted SQL aggregate query.
+- The refresh path no longer materializes all messages, proposed plans, activities, and pending approval rows for the thread on every dirty summary update.
+- Focused projection and summary migration coverage passes against the aggregate semantics.
+- Normal `thread.message-sent` projection now maintains `latest_user_message_at` directly and does not run the summary aggregate; revert still uses the aggregate repair path because it can remove the latest retained user message.
+- Pending approval request/resolve/stale-failure transitions now update `pending_approval_count` directly where previous approval state is known.
+- Pending user-input request/resolve/stale-failure transitions now maintain a dedicated `projection_pending_user_inputs` table, and thread summaries read `pending_user_input_count` / `latest_pending_user_input_at` from that bounded state instead of scanning all activities. Migration 039 backfills the new projection and repairs thread summaries from existing activity history.
+- Normal proposed-plan upserts, session active-turn changes, and turn-diff completions now maintain `has_actionable_proposed_plan` directly with the same latest-turn-plan/fallback-latest-plan semantics as the repair aggregate.
+- Revert and lagging-projector replay tests now cover the summary repair path: revert recomputes stale latest-user-message cache state, prunes reverted pending user-input rows from the bounded table, and a pending user-input projector behind the rest of projection state can rebuild its bounded table and repair the thread summary from event history.
+- Migration 039 backfill is deterministic and idempotent for duplicate request ids by replaying the earliest request activity per request id, matching the live projector's first-request-wins behavior.
 
 ### Stage 6: History Sync Paging and Indexing
 
@@ -267,34 +290,31 @@ Expected outcome: many projects/threads do not make routine navigation or palett
 
 Expected outcome: provider logging resource usage scales with active/recent threads, not all threads since process start.
 
-## Suggested Order
+## Remaining Suggested Order
 
-1. Stage 1: Lossless replay protocol.
-2. Stage 2: Provider backpressure accounting.
-3. Stage 5: Incremental shell summary projection.
-4. Stage 3: Thread detail pagination.
-5. Stage 4: Shell-only hot read model.
-6. Stage 6: History sync paging and indexing.
-7. Stage 7: Frontend active thread derivation.
-8. Stage 8: Frontend global list scaling.
-9. Stage 9: Logger writer lifecycle.
+1. Stage 4: Shell-only hot read model.
+2. Stage 6: History sync paging and indexing.
+3. Stage 7: Frontend active thread derivation.
+4. Stage 8: Frontend global list scaling.
+5. Stage 9: Logger writer lifecycle.
 
-Stages 3 and 4 are closely related. If implementation gets simpler by doing the shell-only read model first, update this file before changing the order.
+Stages 1, 2, 3, and 5 are complete. Stage 4 should come next because it removes the remaining full-body read-model pressure from routine server operation.
 
 ## Validation Requirements
 
 Each completed stage should include focused tests for the changed behavior plus the repository completion checks:
 
 - `bun fmt`
+- `bun run fmt:check`
 - `bun lint`
 - `bun typecheck`
+- `bun run test`
 
 Use `bun run test`, never `bun test`. For focused tests, run the package-local test script from the relevant package directory.
 
 ## Open Design Questions
 
-- What maximum replay page size should the server allow by default?
-- Should thread detail default to newest-first or oldest-first pages for old content?
-- What is the correct provider-ingestion overflow policy for Codex app-server sessions?
+- Stage 4 needs a precise boundary for what remains in the hot shell read model versus targeted thread-body queries.
+- Stage 6 needs a remote-store paging contract that can resume safely across partial pushes and conflict-recovery states.
 - Should old message/activity projection rows be retained forever, compacted, or moved to archive tables?
 - Should history sync receipts be represented by compact cursors/ranges instead of one row per event?

@@ -46,6 +46,9 @@ function createTestClient() {
       getTurnDiff: vi.fn(async () => undefined),
       getFullThreadDiff: vi.fn(async () => undefined),
       getThreadMessagesPage: vi.fn(async () => undefined),
+      getThreadActivitiesPage: vi.fn(async () => undefined),
+      getThreadProposedPlansPage: vi.fn(async () => undefined),
+      getThreadCheckpointsPage: vi.fn(async () => undefined),
       subscribeShell: vi.fn(
         (listener: (event: any) => void, options?: { onResubscribe?: () => void }) => {
           shellListeners.add(listener);
@@ -320,6 +323,89 @@ describe("createEnvironmentConnection", () => {
     expect(applyReplayEvents).toHaveBeenNthCalledWith(2, [{ sequence: 4 }], environmentId);
     expect(applyShellEvent).toHaveBeenCalledWith(
       expect.objectContaining({ sequence: 5 }),
+      environmentId,
+    );
+
+    await connection.dispose();
+  });
+
+  it("retries interrupted paged replay from the last applied replay page", async () => {
+    const environmentId = EnvironmentId.make("env-1");
+    const { client, emitShellEvent } = createTestClient();
+    const applyShellEvent = vi.fn();
+    const applyReplayEvents = vi.fn();
+    const onReplayError = vi.fn();
+    vi.mocked(client.orchestration.replayEvents)
+      .mockResolvedValueOnce({
+        events: [{ sequence: 2 }, { sequence: 3 }] as any,
+        nextSequence: 3,
+        hasMore: true,
+      })
+      .mockRejectedValueOnce(new Error("replay page failed"))
+      .mockResolvedValueOnce({
+        events: [{ sequence: 4 }, { sequence: 5 }] as any,
+        nextSequence: 5,
+        hasMore: false,
+      });
+
+    const connection = createEnvironmentConnection({
+      kind: "saved",
+      knownEnvironment: {
+        id: "env-1",
+        label: "Remote env",
+        source: "manual",
+        target: {
+          httpBaseUrl: "http://example.test",
+          wsBaseUrl: "ws://example.test",
+        },
+        environmentId,
+      },
+      client,
+      applyShellEvent,
+      applyReplayEvents,
+      syncShellSnapshot: vi.fn(),
+      applyTerminalEvent: vi.fn(),
+      onReplayError,
+    });
+
+    await connection.ensureBootstrapped();
+
+    emitShellEvent({
+      kind: "thread-upserted",
+      sequence: 6,
+      thread: { id: "thread-1" },
+    });
+    await expect.poll(() => onReplayError.mock.calls.length).toBe(1);
+    expect(applyShellEvent).not.toHaveBeenCalled();
+
+    emitShellEvent({
+      kind: "thread-upserted",
+      sequence: 6,
+      thread: { id: "thread-1" },
+    });
+    await expect.poll(() => applyShellEvent.mock.calls.length).toBe(1);
+
+    expect(client.orchestration.replayEvents).toHaveBeenNthCalledWith(1, {
+      fromSequenceExclusive: 1,
+    });
+    expect(client.orchestration.replayEvents).toHaveBeenNthCalledWith(2, {
+      fromSequenceExclusive: 3,
+    });
+    expect(client.orchestration.replayEvents).toHaveBeenNthCalledWith(3, {
+      fromSequenceExclusive: 3,
+    });
+    expect(applyReplayEvents).toHaveBeenNthCalledWith(
+      1,
+      [{ sequence: 2 }, { sequence: 3 }],
+      environmentId,
+    );
+    expect(applyReplayEvents).toHaveBeenNthCalledWith(
+      2,
+      [{ sequence: 4 }, { sequence: 5 }],
+      environmentId,
+    );
+    expect(applyShellEvent).toHaveBeenCalledWith(
+      expect.objectContaining({ sequence: 6 }),
       environmentId,
     );
 

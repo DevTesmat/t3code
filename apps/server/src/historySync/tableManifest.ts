@@ -1,5 +1,6 @@
 export const HISTORY_SYNC_LOCAL_HISTORY_TABLES = [
   "orchestration_command_receipts",
+  "projection_pending_user_inputs",
   "projection_pending_approvals",
   "projection_turns",
   "projection_thread_sessions",

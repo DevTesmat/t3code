@@ -90,6 +90,9 @@ const rpcClientMock = {
     getTurnDiff: vi.fn(),
     getFullThreadDiff: vi.fn(),
     getThreadMessagesPage: vi.fn(),
+    getThreadActivitiesPage: vi.fn(),
+    getThreadProposedPlansPage: vi.fn(),
+    getThreadCheckpointsPage: vi.fn(),
     subscribeShell: vi.fn((listener: (event: OrchestrationShellStreamItem) => void) =>
       registerListener(shellStreamListeners, listener),
     ),

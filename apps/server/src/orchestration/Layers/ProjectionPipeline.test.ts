@@ -4,6 +4,7 @@ import {
   CorrelationId,
   EventId,
   MessageId,
+  OrchestrationProposedPlanId,
   ProjectId,
   ThreadId,
   TurnId,
@@ -2373,6 +2374,971 @@ it.layer(BaseTestLayer)("OrchestrationProjectionPipeline", (it) => {
           role: "assistant",
         },
       ]);
+
+      const summaryRows = yield* sql<{
+        readonly latestUserMessageAt: string | null;
+      }>`
+        SELECT latest_user_message_at AS "latestUserMessageAt"
+        FROM projection_threads
+        WHERE thread_id = 'thread-revert'
+      `;
+      assert.deepEqual(summaryRows, [{ latestUserMessageAt: null }]);
+    }),
+  );
+});
+
+it.layer(
+  Layer.fresh(makeProjectionPipelinePrefixedTestLayer("t3-projection-shell-summary-message-")),
+)("OrchestrationProjectionPipeline", (it) => {
+  it.effect("maintains latest user message time incrementally", () =>
+    Effect.gen(function* () {
+      const projectionPipeline = yield* OrchestrationProjectionPipeline;
+      const eventStore = yield* OrchestrationEventStore;
+      const sql = yield* SqlClient.SqlClient;
+      const threadId = ThreadId.make("thread-latest-user-message");
+      const appendAndProject = (event: Parameters<typeof eventStore.append>[0]) =>
+        eventStore
+          .append(event)
+          .pipe(Effect.flatMap((savedEvent) => projectionPipeline.projectEvent(savedEvent)));
+
+      yield* appendAndProject({
+        type: "project.created",
+        eventId: EventId.make("evt-latest-user-message-1"),
+        aggregateKind: "project",
+        aggregateId: ProjectId.make("project-latest-user-message"),
+        occurredAt: "2026-03-06T10:00:00.000Z",
+        commandId: CommandId.make("cmd-latest-user-message-1"),
+        causationEventId: null,
+        correlationId: CorrelationId.make("cmd-latest-user-message-1"),
+        metadata: {},
+        payload: {
+          projectId: ProjectId.make("project-latest-user-message"),
+          title: "Project Latest User Message",
+          workspaceRoot: "/tmp/project-latest-user-message",
+          defaultModelSelection: null,
+          scripts: [],
+          createdAt: "2026-03-06T10:00:00.000Z",
+          updatedAt: "2026-03-06T10:00:00.000Z",
+        },
+      });
+
+      yield* appendAndProject({
+        type: "thread.created",
+        eventId: EventId.make("evt-latest-user-message-2"),
+        aggregateKind: "thread",
+        aggregateId: threadId,
+        occurredAt: "2026-03-06T10:00:01.000Z",
+        commandId: CommandId.make("cmd-latest-user-message-2"),
+        causationEventId: null,
+        correlationId: CorrelationId.make("cmd-latest-user-message-2"),
+        metadata: {},
+        payload: {
+          threadId,
+          projectId: ProjectId.make("project-latest-user-message"),
+          title: "Thread Latest User Message",
+          modelSelection: {
+            instanceId: ProviderInstanceId.make("codex"),
+            model: "gpt-5-codex",
+          },
+          runtimeMode: "full-access",
+          interactionMode: "default",
+          branch: null,
+          worktreePath: null,
+          createdAt: "2026-03-06T10:00:01.000Z",
+          updatedAt: "2026-03-06T10:00:01.000Z",
+        },
+      });
+
+      yield* appendAndProject({
+        type: "thread.message-sent",
+        eventId: EventId.make("evt-latest-user-message-3"),
+        aggregateKind: "thread",
+        aggregateId: threadId,
+        occurredAt: "2026-03-06T10:00:02.000Z",
+        commandId: CommandId.make("cmd-latest-user-message-3"),
+        causationEventId: null,
+        correlationId: CorrelationId.make("cmd-latest-user-message-3"),
+        metadata: {},
+        payload: {
+          threadId,
+          messageId: MessageId.make("assistant-latest-user-message"),
+          role: "assistant",
+          source: "harness",
+          text: "assistant",
+          turnId: null,
+          streaming: false,
+          createdAt: "2026-03-06T10:00:02.000Z",
+          updatedAt: "2026-03-06T10:00:02.000Z",
+        },
+      });
+
+      const afterAssistantRows = yield* sql<{
+        readonly latestUserMessageAt: string | null;
+      }>`
+        SELECT latest_user_message_at AS "latestUserMessageAt"
+        FROM projection_threads
+        WHERE thread_id = ${threadId}
+      `;
+      assert.deepEqual(afterAssistantRows, [{ latestUserMessageAt: null }]);
+
+      yield* appendAndProject({
+        type: "thread.message-sent",
+        eventId: EventId.make("evt-latest-user-message-4"),
+        aggregateKind: "thread",
+        aggregateId: threadId,
+        occurredAt: "2026-03-06T10:00:03.000Z",
+        commandId: CommandId.make("cmd-latest-user-message-4"),
+        causationEventId: null,
+        correlationId: CorrelationId.make("cmd-latest-user-message-4"),
+        metadata: {},
+        payload: {
+          threadId,
+          messageId: MessageId.make("user-latest-user-message-older"),
+          role: "user",
+          text: "older user",
+          turnId: null,
+          streaming: false,
+          createdAt: "2026-03-06T09:59:00.000Z",
+          updatedAt: "2026-03-06T10:00:03.000Z",
+        },
+      });
+
+      yield* appendAndProject({
+        type: "thread.message-sent",
+        eventId: EventId.make("evt-latest-user-message-5"),
+        aggregateKind: "thread",
+        aggregateId: threadId,
+        occurredAt: "2026-03-06T10:00:04.000Z",
+        commandId: CommandId.make("cmd-latest-user-message-5"),
+        causationEventId: null,
+        correlationId: CorrelationId.make("cmd-latest-user-message-5"),
+        metadata: {},
+        payload: {
+          threadId,
+          messageId: MessageId.make("user-latest-user-message-newer"),
+          role: "user",
+          text: "newer user",
+          turnId: null,
+          streaming: false,
+          createdAt: "2026-03-06T10:00:04.000Z",
+          updatedAt: "2026-03-06T10:00:04.000Z",
+        },
+      });
+
+      yield* appendAndProject({
+        type: "thread.message-sent",
+        eventId: EventId.make("evt-latest-user-message-6"),
+        aggregateKind: "thread",
+        aggregateId: threadId,
+        occurredAt: "2026-03-06T10:00:05.000Z",
+        commandId: CommandId.make("cmd-latest-user-message-6"),
+        causationEventId: null,
+        correlationId: CorrelationId.make("cmd-latest-user-message-6"),
+        metadata: {},
+        payload: {
+          threadId,
+          messageId: MessageId.make("user-latest-user-message-older"),
+          role: "user",
+          text: "older user edit",
+          turnId: null,
+          streaming: false,
+          createdAt: "2026-03-06T09:59:00.000Z",
+          updatedAt: "2026-03-06T10:00:05.000Z",
+        },
+      });
+
+      const rows = yield* sql<{
+        readonly latestUserMessageAt: string | null;
+      }>`
+        SELECT latest_user_message_at AS "latestUserMessageAt"
+        FROM projection_threads
+        WHERE thread_id = ${threadId}
+      `;
+      assert.deepEqual(rows, [{ latestUserMessageAt: "2026-03-06T10:00:04.000Z" }]);
+    }),
+  );
+
+  it.effect("maintains actionable proposed plan state incrementally", () =>
+    Effect.gen(function* () {
+      const projectionPipeline = yield* OrchestrationProjectionPipeline;
+      const eventStore = yield* OrchestrationEventStore;
+      const sql = yield* SqlClient.SqlClient;
+      const threadId = ThreadId.make("thread-actionable-plan");
+      const turnOneId = TurnId.make("turn-actionable-plan-1");
+      const turnTwoId = TurnId.make("turn-actionable-plan-2");
+      const appendAndProject = (event: Parameters<typeof eventStore.append>[0]) =>
+        eventStore
+          .append(event)
+          .pipe(Effect.flatMap((savedEvent) => projectionPipeline.projectEvent(savedEvent)));
+      const readActionable = Effect.gen(function* () {
+        const rows = yield* sql<{ readonly hasActionableProposedPlan: number }>`
+          SELECT has_actionable_proposed_plan AS "hasActionableProposedPlan"
+          FROM projection_threads
+          WHERE thread_id = ${threadId}
+        `;
+        return rows[0]?.hasActionableProposedPlan ?? -1;
+      });
+
+      yield* appendAndProject({
+        type: "project.created",
+        eventId: EventId.make("evt-actionable-plan-1"),
+        aggregateKind: "project",
+        aggregateId: ProjectId.make("project-actionable-plan"),
+        occurredAt: "2026-03-06T11:00:00.000Z",
+        commandId: CommandId.make("cmd-actionable-plan-1"),
+        causationEventId: null,
+        correlationId: CorrelationId.make("cmd-actionable-plan-1"),
+        metadata: {},
+        payload: {
+          projectId: ProjectId.make("project-actionable-plan"),
+          title: "Project Actionable Plan",
+          workspaceRoot: "/tmp/project-actionable-plan",
+          defaultModelSelection: null,
+          scripts: [],
+          createdAt: "2026-03-06T11:00:00.000Z",
+          updatedAt: "2026-03-06T11:00:00.000Z",
+        },
+      });
+
+      yield* appendAndProject({
+        type: "thread.created",
+        eventId: EventId.make("evt-actionable-plan-2"),
+        aggregateKind: "thread",
+        aggregateId: threadId,
+        occurredAt: "2026-03-06T11:00:01.000Z",
+        commandId: CommandId.make("cmd-actionable-plan-2"),
+        causationEventId: null,
+        correlationId: CorrelationId.make("cmd-actionable-plan-2"),
+        metadata: {},
+        payload: {
+          threadId,
+          projectId: ProjectId.make("project-actionable-plan"),
+          title: "Thread Actionable Plan",
+          modelSelection: {
+            instanceId: ProviderInstanceId.make("codex"),
+            model: "gpt-5-codex",
+          },
+          runtimeMode: "full-access",
+          interactionMode: "default",
+          branch: null,
+          worktreePath: null,
+          createdAt: "2026-03-06T11:00:01.000Z",
+          updatedAt: "2026-03-06T11:00:01.000Z",
+        },
+      });
+
+      yield* appendAndProject({
+        type: "thread.proposed-plan-upserted",
+        eventId: EventId.make("evt-actionable-plan-3"),
+        aggregateKind: "thread",
+        aggregateId: threadId,
+        occurredAt: "2026-03-06T11:00:02.000Z",
+        commandId: CommandId.make("cmd-actionable-plan-3"),
+        causationEventId: null,
+        correlationId: CorrelationId.make("cmd-actionable-plan-3"),
+        metadata: {},
+        payload: {
+          threadId,
+          proposedPlan: {
+            id: OrchestrationProposedPlanId.make("plan-actionable-fallback-open"),
+            turnId: null,
+            planMarkdown: "Open fallback plan",
+            implementedAt: null,
+            implementationThreadId: null,
+            createdAt: "2026-03-06T11:00:02.000Z",
+            updatedAt: "2026-03-06T11:00:02.000Z",
+          },
+        },
+      });
+      assert.equal(yield* readActionable, 1);
+
+      yield* appendAndProject({
+        type: "thread.proposed-plan-upserted",
+        eventId: EventId.make("evt-actionable-plan-4"),
+        aggregateKind: "thread",
+        aggregateId: threadId,
+        occurredAt: "2026-03-06T11:00:03.000Z",
+        commandId: CommandId.make("cmd-actionable-plan-4"),
+        causationEventId: null,
+        correlationId: CorrelationId.make("cmd-actionable-plan-4"),
+        metadata: {},
+        payload: {
+          threadId,
+          proposedPlan: {
+            id: OrchestrationProposedPlanId.make("plan-actionable-fallback-done"),
+            turnId: null,
+            planMarkdown: "Implemented fallback plan",
+            implementedAt: "2026-03-06T11:00:03.000Z",
+            implementationThreadId: ThreadId.make("thread-actionable-implementation"),
+            createdAt: "2026-03-06T11:00:03.000Z",
+            updatedAt: "2026-03-06T11:00:03.000Z",
+          },
+        },
+      });
+      assert.equal(yield* readActionable, 0);
+
+      yield* appendAndProject({
+        type: "thread.session-set",
+        eventId: EventId.make("evt-actionable-plan-5"),
+        aggregateKind: "thread",
+        aggregateId: threadId,
+        occurredAt: "2026-03-06T11:00:04.000Z",
+        commandId: CommandId.make("cmd-actionable-plan-5"),
+        causationEventId: null,
+        correlationId: CorrelationId.make("cmd-actionable-plan-5"),
+        metadata: {},
+        payload: {
+          threadId,
+          session: {
+            threadId,
+            status: "running",
+            providerName: "codex",
+            runtimeMode: "full-access",
+            activeTurnId: turnOneId,
+            lastError: null,
+            updatedAt: "2026-03-06T11:00:04.000Z",
+          },
+        },
+      });
+      assert.equal(yield* readActionable, 0);
+
+      yield* appendAndProject({
+        type: "thread.proposed-plan-upserted",
+        eventId: EventId.make("evt-actionable-plan-6"),
+        aggregateKind: "thread",
+        aggregateId: threadId,
+        occurredAt: "2026-03-06T11:00:05.000Z",
+        commandId: CommandId.make("cmd-actionable-plan-6"),
+        causationEventId: null,
+        correlationId: CorrelationId.make("cmd-actionable-plan-6"),
+        metadata: {},
+        payload: {
+          threadId,
+          proposedPlan: {
+            id: OrchestrationProposedPlanId.make("plan-actionable-turn-1-open"),
+            turnId: turnOneId,
+            planMarkdown: "Open latest-turn plan",
+            implementedAt: null,
+            implementationThreadId: null,
+            createdAt: "2026-03-06T11:00:05.000Z",
+            updatedAt: "2026-03-06T11:00:05.000Z",
+          },
+        },
+      });
+      assert.equal(yield* readActionable, 1);
+
+      yield* appendAndProject({
+        type: "thread.proposed-plan-upserted",
+        eventId: EventId.make("evt-actionable-plan-7"),
+        aggregateKind: "thread",
+        aggregateId: threadId,
+        occurredAt: "2026-03-06T11:00:06.000Z",
+        commandId: CommandId.make("cmd-actionable-plan-7"),
+        causationEventId: null,
+        correlationId: CorrelationId.make("cmd-actionable-plan-7"),
+        metadata: {},
+        payload: {
+          threadId,
+          proposedPlan: {
+            id: OrchestrationProposedPlanId.make("plan-actionable-turn-1-done"),
+            turnId: turnOneId,
+            planMarkdown: "Implemented latest-turn plan",
+            implementedAt: "2026-03-06T11:00:06.000Z",
+            implementationThreadId: ThreadId.make("thread-actionable-implementation"),
+            createdAt: "2026-03-06T11:00:06.000Z",
+            updatedAt: "2026-03-06T11:00:06.000Z",
+          },
+        },
+      });
+      assert.equal(yield* readActionable, 0);
+
+      yield* appendAndProject({
+        type: "thread.turn-diff-completed",
+        eventId: EventId.make("evt-actionable-plan-8"),
+        aggregateKind: "thread",
+        aggregateId: threadId,
+        occurredAt: "2026-03-06T11:00:07.000Z",
+        commandId: CommandId.make("cmd-actionable-plan-8"),
+        causationEventId: null,
+        correlationId: CorrelationId.make("cmd-actionable-plan-8"),
+        metadata: {},
+        payload: {
+          threadId,
+          turnId: turnTwoId,
+          checkpointTurnCount: 2,
+          checkpointRef: CheckpointRef.make("refs/t3/checkpoints/thread-actionable-plan/turn/2"),
+          status: "ready",
+          files: [],
+          assistantMessageId: MessageId.make("assistant-actionable-plan"),
+          completedAt: "2026-03-06T11:00:07.000Z",
+        },
+      });
+      assert.equal(yield* readActionable, 0);
+
+      yield* appendAndProject({
+        type: "thread.proposed-plan-upserted",
+        eventId: EventId.make("evt-actionable-plan-9"),
+        aggregateKind: "thread",
+        aggregateId: threadId,
+        occurredAt: "2026-03-06T11:00:08.000Z",
+        commandId: CommandId.make("cmd-actionable-plan-9"),
+        causationEventId: null,
+        correlationId: CorrelationId.make("cmd-actionable-plan-9"),
+        metadata: {},
+        payload: {
+          threadId,
+          proposedPlan: {
+            id: OrchestrationProposedPlanId.make("plan-actionable-turn-2-open"),
+            turnId: turnTwoId,
+            planMarkdown: "Open next latest-turn plan",
+            implementedAt: null,
+            implementationThreadId: null,
+            createdAt: "2026-03-06T11:00:08.000Z",
+            updatedAt: "2026-03-06T11:00:08.000Z",
+          },
+        },
+      });
+      assert.equal(yield* readActionable, 1);
+    }),
+  );
+
+  it.effect("maintains pending user-input summary through request and close transitions", () =>
+    Effect.gen(function* () {
+      const projectionPipeline = yield* OrchestrationProjectionPipeline;
+      const eventStore = yield* OrchestrationEventStore;
+      const sql = yield* SqlClient.SqlClient;
+      const threadId = ThreadId.make("thread-pending-user-input");
+      const appendAndProject = (event: Parameters<typeof eventStore.append>[0]) =>
+        eventStore
+          .append(event)
+          .pipe(Effect.flatMap((savedEvent) => projectionPipeline.projectEvent(savedEvent)));
+      const readSummary = Effect.gen(function* () {
+        const rows = yield* sql<{
+          readonly pendingUserInputCount: number;
+          readonly latestPendingUserInputAt: string | null;
+        }>`
+          SELECT
+            pending_user_input_count AS "pendingUserInputCount",
+            latest_pending_user_input_at AS "latestPendingUserInputAt"
+          FROM projection_threads
+          WHERE thread_id = ${threadId}
+        `;
+        return rows[0] ?? { pendingUserInputCount: -1, latestPendingUserInputAt: null };
+      });
+
+      yield* appendAndProject({
+        type: "project.created",
+        eventId: EventId.make("evt-pending-user-input-1"),
+        aggregateKind: "project",
+        aggregateId: ProjectId.make("project-pending-user-input"),
+        occurredAt: "2026-03-06T12:00:00.000Z",
+        commandId: CommandId.make("cmd-pending-user-input-1"),
+        causationEventId: null,
+        correlationId: CorrelationId.make("cmd-pending-user-input-1"),
+        metadata: {},
+        payload: {
+          projectId: ProjectId.make("project-pending-user-input"),
+          title: "Project Pending User Input",
+          workspaceRoot: "/tmp/project-pending-user-input",
+          defaultModelSelection: null,
+          scripts: [],
+          createdAt: "2026-03-06T12:00:00.000Z",
+          updatedAt: "2026-03-06T12:00:00.000Z",
+        },
+      });
+
+      yield* appendAndProject({
+        type: "thread.created",
+        eventId: EventId.make("evt-pending-user-input-2"),
+        aggregateKind: "thread",
+        aggregateId: threadId,
+        occurredAt: "2026-03-06T12:00:01.000Z",
+        commandId: CommandId.make("cmd-pending-user-input-2"),
+        causationEventId: null,
+        correlationId: CorrelationId.make("cmd-pending-user-input-2"),
+        metadata: {},
+        payload: {
+          threadId,
+          projectId: ProjectId.make("project-pending-user-input"),
+          title: "Thread Pending User Input",
+          modelSelection: {
+            instanceId: ProviderInstanceId.make("codex"),
+            model: "gpt-5-codex",
+          },
+          runtimeMode: "full-access",
+          interactionMode: "default",
+          branch: null,
+          worktreePath: null,
+          createdAt: "2026-03-06T12:00:01.000Z",
+          updatedAt: "2026-03-06T12:00:01.000Z",
+        },
+      });
+
+      for (const [index, requestId] of ["user-input-1", "user-input-2"].entries()) {
+        yield* appendAndProject({
+          type: "thread.activity-appended",
+          eventId: EventId.make(`evt-pending-user-input-request-${index}`),
+          aggregateKind: "thread",
+          aggregateId: threadId,
+          occurredAt: `2026-03-06T12:00:0${index + 2}.000Z`,
+          commandId: CommandId.make(`cmd-pending-user-input-request-${index}`),
+          causationEventId: null,
+          correlationId: CorrelationId.make(`cmd-pending-user-input-request-${index}`),
+          metadata: {},
+          payload: {
+            threadId,
+            activity: {
+              id: EventId.make(`activity-pending-user-input-request-${index}`),
+              tone: "info",
+              kind: "user-input.requested",
+              summary: "User input requested",
+              payload: { requestId },
+              turnId: null,
+              createdAt: `2026-03-06T12:00:0${index + 2}.000Z`,
+            },
+          },
+        });
+      }
+      assert.deepEqual(yield* readSummary, {
+        pendingUserInputCount: 2,
+        latestPendingUserInputAt: "2026-03-06T12:00:03.000Z",
+      });
+
+      yield* appendAndProject({
+        type: "thread.activity-appended",
+        eventId: EventId.make("evt-pending-user-input-resolve-latest"),
+        aggregateKind: "thread",
+        aggregateId: threadId,
+        occurredAt: "2026-03-06T12:00:04.000Z",
+        commandId: CommandId.make("cmd-pending-user-input-resolve-latest"),
+        causationEventId: null,
+        correlationId: CorrelationId.make("cmd-pending-user-input-resolve-latest"),
+        metadata: {},
+        payload: {
+          threadId,
+          activity: {
+            id: EventId.make("activity-pending-user-input-resolve-latest"),
+            tone: "info",
+            kind: "user-input.resolved",
+            summary: "User input resolved",
+            payload: { requestId: "user-input-2" },
+            turnId: null,
+            createdAt: "2026-03-06T12:00:04.000Z",
+          },
+        },
+      });
+      assert.deepEqual(yield* readSummary, {
+        pendingUserInputCount: 1,
+        latestPendingUserInputAt: "2026-03-06T12:00:02.000Z",
+      });
+
+      yield* appendAndProject({
+        type: "thread.activity-appended",
+        eventId: EventId.make("evt-pending-user-input-non-stale-failure"),
+        aggregateKind: "thread",
+        aggregateId: threadId,
+        occurredAt: "2026-03-06T12:00:05.000Z",
+        commandId: CommandId.make("cmd-pending-user-input-non-stale-failure"),
+        causationEventId: null,
+        correlationId: CorrelationId.make("cmd-pending-user-input-non-stale-failure"),
+        metadata: {},
+        payload: {
+          threadId,
+          activity: {
+            id: EventId.make("activity-pending-user-input-non-stale-failure"),
+            tone: "error",
+            kind: "provider.user-input.respond.failed",
+            summary: "User input response failed",
+            payload: {
+              requestId: "user-input-1",
+              detail: "Provider timed out while responding to user input",
+            },
+            turnId: null,
+            createdAt: "2026-03-06T12:00:05.000Z",
+          },
+        },
+      });
+      assert.deepEqual(yield* readSummary, {
+        pendingUserInputCount: 1,
+        latestPendingUserInputAt: "2026-03-06T12:00:02.000Z",
+      });
+
+      yield* appendAndProject({
+        type: "thread.activity-appended",
+        eventId: EventId.make("evt-pending-user-input-stale-failure"),
+        aggregateKind: "thread",
+        aggregateId: threadId,
+        occurredAt: "2026-03-06T12:00:06.000Z",
+        commandId: CommandId.make("cmd-pending-user-input-stale-failure"),
+        causationEventId: null,
+        correlationId: CorrelationId.make("cmd-pending-user-input-stale-failure"),
+        metadata: {},
+        payload: {
+          threadId,
+          activity: {
+            id: EventId.make("activity-pending-user-input-stale-failure"),
+            tone: "error",
+            kind: "provider.user-input.respond.failed",
+            summary: "User input response failed",
+            payload: {
+              requestId: "user-input-1",
+              detail: "Unknown pending user-input request: user-input-1",
+            },
+            turnId: null,
+            createdAt: "2026-03-06T12:00:06.000Z",
+          },
+        },
+      });
+      assert.deepEqual(yield* readSummary, {
+        pendingUserInputCount: 0,
+        latestPendingUserInputAt: null,
+      });
+
+      const rows = yield* sql<{
+        readonly requestId: string;
+        readonly status: string;
+        readonly resolvedAt: string | null;
+      }>`
+        SELECT
+          request_id AS "requestId",
+          status,
+          resolved_at AS "resolvedAt"
+        FROM projection_pending_user_inputs
+        WHERE thread_id = ${threadId}
+        ORDER BY request_id ASC
+      `;
+      assert.deepEqual(rows, [
+        {
+          requestId: "user-input-1",
+          status: "resolved",
+          resolvedAt: "2026-03-06T12:00:06.000Z",
+        },
+        {
+          requestId: "user-input-2",
+          status: "resolved",
+          resolvedAt: "2026-03-06T12:00:04.000Z",
+        },
+      ]);
+    }),
+  );
+
+  it.effect("rebuilds pending user-input summary when the projector state lags", () =>
+    Effect.gen(function* () {
+      const projectionPipeline = yield* OrchestrationProjectionPipeline;
+      const eventStore = yield* OrchestrationEventStore;
+      const sql = yield* SqlClient.SqlClient;
+      const threadId = ThreadId.make("thread-pending-user-input-replay");
+      const append = (event: Parameters<typeof eventStore.append>[0]) => eventStore.append(event);
+
+      yield* append({
+        type: "project.created",
+        eventId: EventId.make("evt-pending-user-input-replay-1"),
+        aggregateKind: "project",
+        aggregateId: ProjectId.make("project-pending-user-input-replay"),
+        occurredAt: "2026-03-06T13:00:00.000Z",
+        commandId: CommandId.make("cmd-pending-user-input-replay-1"),
+        causationEventId: null,
+        correlationId: CorrelationId.make("cmd-pending-user-input-replay-1"),
+        metadata: {},
+        payload: {
+          projectId: ProjectId.make("project-pending-user-input-replay"),
+          title: "Project Pending User Input Replay",
+          workspaceRoot: "/tmp/project-pending-user-input-replay",
+          defaultModelSelection: null,
+          scripts: [],
+          createdAt: "2026-03-06T13:00:00.000Z",
+          updatedAt: "2026-03-06T13:00:00.000Z",
+        },
+      });
+
+      yield* append({
+        type: "thread.created",
+        eventId: EventId.make("evt-pending-user-input-replay-2"),
+        aggregateKind: "thread",
+        aggregateId: threadId,
+        occurredAt: "2026-03-06T13:00:01.000Z",
+        commandId: CommandId.make("cmd-pending-user-input-replay-2"),
+        causationEventId: null,
+        correlationId: CorrelationId.make("cmd-pending-user-input-replay-2"),
+        metadata: {},
+        payload: {
+          threadId,
+          projectId: ProjectId.make("project-pending-user-input-replay"),
+          title: "Thread Pending User Input Replay",
+          modelSelection: {
+            instanceId: ProviderInstanceId.make("codex"),
+            model: "gpt-5-codex",
+          },
+          runtimeMode: "full-access",
+          interactionMode: "default",
+          branch: null,
+          worktreePath: null,
+          createdAt: "2026-03-06T13:00:01.000Z",
+          updatedAt: "2026-03-06T13:00:01.000Z",
+        },
+      });
+
+      for (const [index, requestId] of ["replay-user-input-1", "replay-user-input-2"].entries()) {
+        yield* append({
+          type: "thread.activity-appended",
+          eventId: EventId.make(`evt-pending-user-input-replay-request-${index}`),
+          aggregateKind: "thread",
+          aggregateId: threadId,
+          occurredAt: `2026-03-06T13:00:0${index + 2}.000Z`,
+          commandId: CommandId.make(`cmd-pending-user-input-replay-request-${index}`),
+          causationEventId: null,
+          correlationId: CorrelationId.make(`cmd-pending-user-input-replay-request-${index}`),
+          metadata: {},
+          payload: {
+            threadId,
+            activity: {
+              id: EventId.make(`activity-pending-user-input-replay-request-${index}`),
+              tone: "info",
+              kind: "user-input.requested",
+              summary: "User input requested",
+              payload: { requestId },
+              turnId: null,
+              createdAt: `2026-03-06T13:00:0${index + 2}.000Z`,
+            },
+          },
+        });
+      }
+
+      yield* append({
+        type: "thread.activity-appended",
+        eventId: EventId.make("evt-pending-user-input-replay-resolve"),
+        aggregateKind: "thread",
+        aggregateId: threadId,
+        occurredAt: "2026-03-06T13:00:04.000Z",
+        commandId: CommandId.make("cmd-pending-user-input-replay-resolve"),
+        causationEventId: null,
+        correlationId: CorrelationId.make("cmd-pending-user-input-replay-resolve"),
+        metadata: {},
+        payload: {
+          threadId,
+          activity: {
+            id: EventId.make("activity-pending-user-input-replay-resolve"),
+            tone: "info",
+            kind: "user-input.resolved",
+            summary: "User input resolved",
+            payload: { requestId: "replay-user-input-2" },
+            turnId: null,
+            createdAt: "2026-03-06T13:00:04.000Z",
+          },
+        },
+      });
+
+      yield* projectionPipeline.bootstrap;
+
+      yield* sql`DELETE FROM projection_pending_user_inputs WHERE thread_id = ${threadId}`;
+      yield* sql`
+        UPDATE projection_threads
+        SET
+          pending_user_input_count = 0,
+          latest_pending_user_input_at = NULL
+        WHERE thread_id = ${threadId}
+      `;
+      yield* sql`
+        UPDATE projection_state
+        SET last_applied_sequence = 2
+        WHERE projector = ${ORCHESTRATION_PROJECTOR_NAMES.pendingUserInputs}
+      `;
+
+      yield* projectionPipeline.bootstrap;
+
+      const summaryRows = yield* sql<{
+        readonly pendingUserInputCount: number;
+        readonly latestPendingUserInputAt: string | null;
+      }>`
+        SELECT
+          pending_user_input_count AS "pendingUserInputCount",
+          latest_pending_user_input_at AS "latestPendingUserInputAt"
+        FROM projection_threads
+        WHERE thread_id = ${threadId}
+      `;
+      assert.deepEqual(summaryRows, [
+        {
+          pendingUserInputCount: 1,
+          latestPendingUserInputAt: "2026-03-06T13:00:02.000Z",
+        },
+      ]);
+
+      const pendingRows = yield* sql<{
+        readonly requestId: string;
+        readonly status: string;
+        readonly resolvedAt: string | null;
+      }>`
+        SELECT
+          request_id AS "requestId",
+          status,
+          resolved_at AS "resolvedAt"
+        FROM projection_pending_user_inputs
+        WHERE thread_id = ${threadId}
+        ORDER BY request_id ASC
+      `;
+      assert.deepEqual(pendingRows, [
+        {
+          requestId: "replay-user-input-1",
+          status: "pending",
+          resolvedAt: null,
+        },
+        {
+          requestId: "replay-user-input-2",
+          status: "resolved",
+          resolvedAt: "2026-03-06T13:00:04.000Z",
+        },
+      ]);
+    }),
+  );
+
+  it.effect("repairs pending user-input summary after revert prunes request activity", () =>
+    Effect.gen(function* () {
+      const projectionPipeline = yield* OrchestrationProjectionPipeline;
+      const eventStore = yield* OrchestrationEventStore;
+      const sql = yield* SqlClient.SqlClient;
+      const threadId = ThreadId.make("thread-pending-user-input-revert");
+      const appendAndProject = (event: Parameters<typeof eventStore.append>[0]) =>
+        eventStore
+          .append(event)
+          .pipe(Effect.flatMap((savedEvent) => projectionPipeline.projectEvent(savedEvent)));
+
+      yield* appendAndProject({
+        type: "project.created",
+        eventId: EventId.make("evt-pending-user-input-revert-1"),
+        aggregateKind: "project",
+        aggregateId: ProjectId.make("project-pending-user-input-revert"),
+        occurredAt: "2026-03-06T14:00:00.000Z",
+        commandId: CommandId.make("cmd-pending-user-input-revert-1"),
+        causationEventId: null,
+        correlationId: CorrelationId.make("cmd-pending-user-input-revert-1"),
+        metadata: {},
+        payload: {
+          projectId: ProjectId.make("project-pending-user-input-revert"),
+          title: "Project Pending User Input Revert",
+          workspaceRoot: "/tmp/project-pending-user-input-revert",
+          defaultModelSelection: null,
+          scripts: [],
+          createdAt: "2026-03-06T14:00:00.000Z",
+          updatedAt: "2026-03-06T14:00:00.000Z",
+        },
+      });
+
+      yield* appendAndProject({
+        type: "thread.created",
+        eventId: EventId.make("evt-pending-user-input-revert-2"),
+        aggregateKind: "thread",
+        aggregateId: threadId,
+        occurredAt: "2026-03-06T14:00:01.000Z",
+        commandId: CommandId.make("cmd-pending-user-input-revert-2"),
+        causationEventId: null,
+        correlationId: CorrelationId.make("cmd-pending-user-input-revert-2"),
+        metadata: {},
+        payload: {
+          threadId,
+          projectId: ProjectId.make("project-pending-user-input-revert"),
+          title: "Thread Pending User Input Revert",
+          modelSelection: {
+            instanceId: ProviderInstanceId.make("codex"),
+            model: "gpt-5-codex",
+          },
+          runtimeMode: "full-access",
+          interactionMode: "default",
+          branch: null,
+          worktreePath: null,
+          createdAt: "2026-03-06T14:00:01.000Z",
+          updatedAt: "2026-03-06T14:00:01.000Z",
+        },
+      });
+
+      for (const turnNumber of [1, 2]) {
+        yield* appendAndProject({
+          type: "thread.turn-diff-completed",
+          eventId: EventId.make(`evt-pending-user-input-revert-turn-${turnNumber}`),
+          aggregateKind: "thread",
+          aggregateId: threadId,
+          occurredAt: `2026-03-06T14:00:0${turnNumber + 1}.000Z`,
+          commandId: CommandId.make(`cmd-pending-user-input-revert-turn-${turnNumber}`),
+          causationEventId: null,
+          correlationId: CorrelationId.make(`cmd-pending-user-input-revert-turn-${turnNumber}`),
+          metadata: {},
+          payload: {
+            threadId,
+            turnId: TurnId.make(`turn-pending-user-input-revert-${turnNumber}`),
+            checkpointTurnCount: turnNumber,
+            checkpointRef: CheckpointRef.make(
+              `refs/t3/checkpoints/thread-pending-user-input-revert/turn/${turnNumber}`,
+            ),
+            status: "ready",
+            files: [],
+            assistantMessageId: MessageId.make(`assistant-pending-user-input-revert-${turnNumber}`),
+            completedAt: `2026-03-06T14:00:0${turnNumber + 1}.000Z`,
+          },
+        });
+      }
+
+      yield* appendAndProject({
+        type: "thread.activity-appended",
+        eventId: EventId.make("evt-pending-user-input-revert-request"),
+        aggregateKind: "thread",
+        aggregateId: threadId,
+        occurredAt: "2026-03-06T14:00:04.000Z",
+        commandId: CommandId.make("cmd-pending-user-input-revert-request"),
+        causationEventId: null,
+        correlationId: CorrelationId.make("cmd-pending-user-input-revert-request"),
+        metadata: {},
+        payload: {
+          threadId,
+          activity: {
+            id: EventId.make("activity-pending-user-input-revert-request"),
+            tone: "info",
+            kind: "user-input.requested",
+            summary: "User input requested",
+            payload: { requestId: "revert-user-input" },
+            turnId: TurnId.make("turn-pending-user-input-revert-2"),
+            createdAt: "2026-03-06T14:00:04.000Z",
+          },
+        },
+      });
+
+      yield* appendAndProject({
+        type: "thread.reverted",
+        eventId: EventId.make("evt-pending-user-input-revert"),
+        aggregateKind: "thread",
+        aggregateId: threadId,
+        occurredAt: "2026-03-06T14:00:05.000Z",
+        commandId: CommandId.make("cmd-pending-user-input-revert"),
+        causationEventId: null,
+        correlationId: CorrelationId.make("cmd-pending-user-input-revert"),
+        metadata: {},
+        payload: {
+          threadId,
+          turnCount: 1,
+        },
+      });
+
+      const summaryRows = yield* sql<{
+        readonly pendingUserInputCount: number;
+        readonly latestPendingUserInputAt: string | null;
+      }>`
+        SELECT
+          pending_user_input_count AS "pendingUserInputCount",
+          latest_pending_user_input_at AS "latestPendingUserInputAt"
+        FROM projection_threads
+        WHERE thread_id = ${threadId}
+      `;
+      assert.deepEqual(summaryRows, [
+        {
+          pendingUserInputCount: 0,
+          latestPendingUserInputAt: null,
+        },
+      ]);
+
+      const pendingRows = yield* sql<{ readonly requestId: string }>`
+        SELECT request_id AS "requestId"
+        FROM projection_pending_user_inputs
+        WHERE thread_id = ${threadId}
+      `;
+      assert.deepEqual(pendingRows, []);
     }),
   );
 });

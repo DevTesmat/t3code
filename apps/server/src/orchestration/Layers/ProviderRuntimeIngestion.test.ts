@@ -37,7 +37,10 @@ import { RepositoryIdentityResolverLive } from "../../project/Layers/RepositoryI
 import { OrchestrationEngineLive } from "./OrchestrationEngine.ts";
 import { OrchestrationProjectionPipelineLive } from "./ProjectionPipeline.ts";
 import { OrchestrationProjectionSnapshotQueryLive } from "./ProjectionSnapshotQuery.ts";
-import { ProviderRuntimeIngestionLive } from "./ProviderRuntimeIngestion.ts";
+import {
+  ProviderRuntimeIngestionLive,
+  shouldFailProviderSessionForRejectedRuntimeEvent,
+} from "./ProviderRuntimeIngestion.ts";
 import {
   readCommandOutputSnapshotsForThread,
   resetCommandOutputBufferForTests,
@@ -351,6 +354,29 @@ describe("ProviderRuntimeIngestion", () => {
       dropped: 0,
       backlog: 0,
     });
+  });
+
+  it("fails sessions only for rejected must-deliver provider events", () => {
+    expect(
+      shouldFailProviderSessionForRejectedRuntimeEvent({
+        type: "turn.completed",
+      } as ProviderRuntimeEvent),
+    ).toBe(true);
+    expect(
+      shouldFailProviderSessionForRejectedRuntimeEvent({
+        type: "runtime.error",
+      } as ProviderRuntimeEvent),
+    ).toBe(true);
+    expect(
+      shouldFailProviderSessionForRejectedRuntimeEvent({
+        type: "content.delta",
+      } as ProviderRuntimeEvent),
+    ).toBe(false);
+    expect(
+      shouldFailProviderSessionForRejectedRuntimeEvent({
+        type: "deprecation.notice",
+      } as ProviderRuntimeEvent),
+    ).toBe(false);
   });
 
   it("maps turn started/completed events into thread session updates", async () => {

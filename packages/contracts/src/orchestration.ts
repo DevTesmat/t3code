@@ -23,6 +23,10 @@ export const ORCHESTRATION_WS_METHODS = {
   getTurnDiff: "orchestration.getTurnDiff",
   getFullThreadDiff: "orchestration.getFullThreadDiff",
   getThreadMessagesPage: "orchestration.getThreadMessagesPage",
+  getThreadActivitiesPage: "orchestration.getThreadActivitiesPage",
+  getThreadProposedPlansPage: "orchestration.getThreadProposedPlansPage",
+  getThreadCheckpointsPage: "orchestration.getThreadCheckpointsPage",
+  getThreadCommandOutputSnapshot: "orchestration.getThreadCommandOutputSnapshot",
   replayEvents: "orchestration.replayEvents",
   subscribeShell: "orchestration.subscribeShell",
   subscribeThread: "orchestration.subscribeThread",
@@ -475,6 +479,9 @@ export type OrchestrationThreadDetailResourcePageInfo =
 
 export const OrchestrationThreadDetailPageInfo = Schema.Struct({
   messages: OrchestrationThreadDetailResourcePageInfo,
+  activities: Schema.optionalKey(OrchestrationThreadDetailResourcePageInfo),
+  proposedPlans: Schema.optionalKey(OrchestrationThreadDetailResourcePageInfo),
+  checkpoints: Schema.optionalKey(OrchestrationThreadDetailResourcePageInfo),
 });
 export type OrchestrationThreadDetailPageInfo = typeof OrchestrationThreadDetailPageInfo.Type;
 
@@ -493,12 +500,57 @@ export const OrchestrationGetThreadMessagesPageInput = Schema.Struct({
 export type OrchestrationGetThreadMessagesPageInput =
   typeof OrchestrationGetThreadMessagesPageInput.Type;
 
+export const OrchestrationGetThreadActivitiesPageInput = Schema.Struct({
+  threadId: ThreadId,
+  beforeActivityId: EventId,
+  limit: Schema.optional(PositiveInt),
+});
+export type OrchestrationGetThreadActivitiesPageInput =
+  typeof OrchestrationGetThreadActivitiesPageInput.Type;
+
+export const OrchestrationGetThreadProposedPlansPageInput = Schema.Struct({
+  threadId: ThreadId,
+  beforeProposedPlanId: OrchestrationProposedPlanId,
+  limit: Schema.optional(PositiveInt),
+});
+export type OrchestrationGetThreadProposedPlansPageInput =
+  typeof OrchestrationGetThreadProposedPlansPageInput.Type;
+
+export const OrchestrationGetThreadCheckpointsPageInput = Schema.Struct({
+  threadId: ThreadId,
+  beforeCheckpointTurnCount: NonNegativeInt,
+  limit: Schema.optional(PositiveInt),
+});
+export type OrchestrationGetThreadCheckpointsPageInput =
+  typeof OrchestrationGetThreadCheckpointsPageInput.Type;
+
 export const OrchestrationThreadMessagesPage = Schema.Struct({
   threadId: ThreadId,
   messages: Schema.Array(OrchestrationMessage),
   pageInfo: OrchestrationThreadDetailResourcePageInfo,
 });
 export type OrchestrationThreadMessagesPage = typeof OrchestrationThreadMessagesPage.Type;
+
+export const OrchestrationThreadActivitiesPage = Schema.Struct({
+  threadId: ThreadId,
+  activities: Schema.Array(OrchestrationThreadActivity),
+  pageInfo: OrchestrationThreadDetailResourcePageInfo,
+});
+export type OrchestrationThreadActivitiesPage = typeof OrchestrationThreadActivitiesPage.Type;
+
+export const OrchestrationThreadProposedPlansPage = Schema.Struct({
+  threadId: ThreadId,
+  proposedPlans: Schema.Array(OrchestrationProposedPlan),
+  pageInfo: OrchestrationThreadDetailResourcePageInfo,
+});
+export type OrchestrationThreadProposedPlansPage = typeof OrchestrationThreadProposedPlansPage.Type;
+
+export const OrchestrationThreadCheckpointsPage = Schema.Struct({
+  threadId: ThreadId,
+  checkpoints: Schema.Array(OrchestrationCheckpointSummary),
+  pageInfo: OrchestrationThreadDetailResourcePageInfo,
+});
+export type OrchestrationThreadCheckpointsPage = typeof OrchestrationThreadCheckpointsPage.Type;
 
 export const OrchestrationCommandOutputDelta = Schema.Struct({
   threadId: ThreadId,
@@ -519,6 +571,19 @@ export const OrchestrationCommandOutputSnapshot = Schema.Struct({
   truncated: Schema.Boolean,
 });
 export type OrchestrationCommandOutputSnapshot = typeof OrchestrationCommandOutputSnapshot.Type;
+
+export const OrchestrationGetThreadCommandOutputSnapshotInput = Schema.Struct({
+  threadId: ThreadId,
+  toolCallId: ProviderItemId,
+});
+export type OrchestrationGetThreadCommandOutputSnapshotInput =
+  typeof OrchestrationGetThreadCommandOutputSnapshotInput.Type;
+
+export const OrchestrationThreadCommandOutputSnapshotResult = Schema.Struct({
+  snapshot: Schema.NullOr(OrchestrationCommandOutputSnapshot),
+});
+export type OrchestrationThreadCommandOutputSnapshotResult =
+  typeof OrchestrationThreadCommandOutputSnapshotResult.Type;
 
 export const ProjectCreateCommand = Schema.Struct({
   type: Schema.Literal("project.create"),
@@ -1389,6 +1454,22 @@ export const OrchestrationRpcSchemas = {
   getThreadMessagesPage: {
     input: OrchestrationGetThreadMessagesPageInput,
     output: OrchestrationThreadMessagesPage,
+  },
+  getThreadActivitiesPage: {
+    input: OrchestrationGetThreadActivitiesPageInput,
+    output: OrchestrationThreadActivitiesPage,
+  },
+  getThreadProposedPlansPage: {
+    input: OrchestrationGetThreadProposedPlansPageInput,
+    output: OrchestrationThreadProposedPlansPage,
+  },
+  getThreadCheckpointsPage: {
+    input: OrchestrationGetThreadCheckpointsPageInput,
+    output: OrchestrationThreadCheckpointsPage,
+  },
+  getThreadCommandOutputSnapshot: {
+    input: OrchestrationGetThreadCommandOutputSnapshotInput,
+    output: OrchestrationThreadCommandOutputSnapshotResult,
   },
   replayEvents: {
     input: OrchestrationReplayEventsInput,

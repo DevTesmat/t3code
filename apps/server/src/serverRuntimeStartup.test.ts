@@ -96,6 +96,9 @@ it.effect("launchStartupHeartbeat does not block the caller while counts are loa
           getThreadDetailById: () => Effect.succeed(Option.none()),
           getThreadDetailSnapshotById: () => Effect.succeed(Option.none()),
           getThreadMessagesPageBefore: () => Effect.succeed(Option.none()),
+          getThreadActivitiesPageBefore: () => Effect.succeed(Option.none()),
+          getThreadProposedPlansPageBefore: () => Effect.succeed(Option.none()),
+          getThreadCheckpointsPageBefore: () => Effect.succeed(Option.none()),
         }),
         Effect.provideService(AnalyticsService, {
           record: () => Effect.void,
@@ -156,6 +159,9 @@ it.effect("resolveAutoBootstrapWelcomeTargets returns existing project and threa
         getThreadDetailById: () => Effect.die("unused"),
         getThreadDetailSnapshotById: () => Effect.die("unused"),
         getThreadMessagesPageBefore: () => Effect.die("unused"),
+        getThreadActivitiesPageBefore: () => Effect.die("unused"),
+        getThreadProposedPlansPageBefore: () => Effect.die("unused"),
+        getThreadCheckpointsPageBefore: () => Effect.die("unused"),
       }),
       Effect.provideService(OrchestrationEngineService, {
         getReadModel: () => Effect.die("unused"),
@@ -197,6 +203,9 @@ it.effect("resolveAutoBootstrapWelcomeTargets creates a project and thread when 
         getThreadDetailById: () => Effect.die("unused"),
         getThreadDetailSnapshotById: () => Effect.die("unused"),
         getThreadMessagesPageBefore: () => Effect.die("unused"),
+        getThreadActivitiesPageBefore: () => Effect.die("unused"),
+        getThreadProposedPlansPageBefore: () => Effect.die("unused"),
+        getThreadCheckpointsPageBefore: () => Effect.die("unused"),
       }),
       Effect.provideService(OrchestrationEngineService, {
         getReadModel: () => Effect.die("unused"),

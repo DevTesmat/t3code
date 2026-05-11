@@ -30,6 +30,9 @@ const threadCache = new WeakMap<
     proposedPlans: Thread["proposedPlans"];
     turnDiffSummaries: Thread["turnDiffSummaries"];
     messagePageInfo: Thread["messagePageInfo"];
+    activityPageInfo: Thread["activityPageInfo"];
+    proposedPlanPageInfo: Thread["proposedPlanPageInfo"];
+    checkpointPageInfo: Thread["checkpointPageInfo"];
     thread: Thread;
   }
 >();
@@ -115,6 +118,9 @@ export function getThreadFromEnvironmentState(
   const proposedPlans = selectThreadProposedPlans(state, threadId);
   const turnDiffSummaries = selectThreadTurnDiffSummaries(state, threadId);
   const messagePageInfo = state.messagePageInfoByThreadId[threadId];
+  const activityPageInfo = state.activityPageInfoByThreadId[threadId];
+  const proposedPlanPageInfo = state.proposedPlanPageInfoByThreadId[threadId];
+  const checkpointPageInfo = state.checkpointPageInfoByThreadId[threadId];
   const cached = threadCache.get(shell);
 
   if (
@@ -125,7 +131,10 @@ export function getThreadFromEnvironmentState(
     cached.activities === activities &&
     cached.proposedPlans === proposedPlans &&
     cached.turnDiffSummaries === turnDiffSummaries &&
-    cached.messagePageInfo === messagePageInfo
+    cached.messagePageInfo === messagePageInfo &&
+    cached.activityPageInfo === activityPageInfo &&
+    cached.proposedPlanPageInfo === proposedPlanPageInfo &&
+    cached.checkpointPageInfo === checkpointPageInfo
   ) {
     return cached.thread;
   }
@@ -141,6 +150,9 @@ export function getThreadFromEnvironmentState(
     proposedPlans,
     turnDiffSummaries,
     messagePageInfo,
+    activityPageInfo,
+    proposedPlanPageInfo,
+    checkpointPageInfo,
   };
 
   threadCache.set(shell, {
@@ -151,6 +163,9 @@ export function getThreadFromEnvironmentState(
     proposedPlans,
     turnDiffSummaries,
     messagePageInfo,
+    activityPageInfo,
+    proposedPlanPageInfo,
+    checkpointPageInfo,
     thread,
   });
 

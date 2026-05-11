@@ -55,14 +55,22 @@ import type {
   ClientOrchestrationCommand,
   OrchestrationGetFullThreadDiffInput,
   OrchestrationGetFullThreadDiffResult,
+  OrchestrationGetThreadCommandOutputSnapshotInput,
+  OrchestrationGetThreadActivitiesPageInput,
+  OrchestrationGetThreadCheckpointsPageInput,
   OrchestrationGetThreadMessagesPageInput,
+  OrchestrationGetThreadProposedPlansPageInput,
   OrchestrationReplayEventsInput,
   OrchestrationReplayEventsResult,
   OrchestrationGetTurnDiffInput,
   OrchestrationGetTurnDiffResult,
+  OrchestrationThreadCommandOutputSnapshotResult,
+  OrchestrationThreadActivitiesPage,
+  OrchestrationThreadCheckpointsPage,
   OrchestrationShellStreamItem,
   OrchestrationSubscribeThreadInput,
   OrchestrationThreadMessagesPage,
+  OrchestrationThreadProposedPlansPage,
   OrchestrationThreadStreamItem,
 } from "./orchestration.ts";
 import type { EnvironmentId } from "./baseSchemas.ts";
@@ -331,6 +339,18 @@ export interface EnvironmentApi {
     getThreadMessagesPage: (
       input: OrchestrationGetThreadMessagesPageInput,
     ) => Promise<OrchestrationThreadMessagesPage>;
+    getThreadActivitiesPage: (
+      input: OrchestrationGetThreadActivitiesPageInput,
+    ) => Promise<OrchestrationThreadActivitiesPage>;
+    getThreadProposedPlansPage: (
+      input: OrchestrationGetThreadProposedPlansPageInput,
+    ) => Promise<OrchestrationThreadProposedPlansPage>;
+    getThreadCheckpointsPage: (
+      input: OrchestrationGetThreadCheckpointsPageInput,
+    ) => Promise<OrchestrationThreadCheckpointsPage>;
+    getThreadCommandOutputSnapshot: (
+      input: OrchestrationGetThreadCommandOutputSnapshotInput,
+    ) => Promise<OrchestrationThreadCommandOutputSnapshotResult>;
     subscribeShell: (
       callback: (event: OrchestrationShellStreamItem) => void,
       options?: {

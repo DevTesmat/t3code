@@ -4,8 +4,9 @@ import {
   type OrchestrationEvent,
   ThreadId,
 } from "@t3tools/contracts";
-import { Effect, FileSystem, Layer, Option, Path, Stream } from "effect";
+import { Effect, FileSystem, Layer, Option, Path, Schema, Stream } from "effect";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
+import * as SqlSchema from "effect/unstable/sql/SqlSchema";
 import { computeWorkDurationMs } from "@t3tools/shared/workDuration";
 
 import { toPersistenceSqlError, type ProjectionRepositoryError } from "../../persistence/Errors.ts";
@@ -60,6 +61,7 @@ export const ORCHESTRATION_PROJECTOR_NAMES = {
   threadTurns: "projection.thread-turns",
   checkpoints: "projection.checkpoints",
   pendingApprovals: "projection.pending-approvals",
+  pendingUserInputs: "projection.pending-user-inputs",
 } as const;
 
 type ProjectorName =
@@ -135,83 +137,56 @@ function isStalePendingApprovalFailureDetail(detail: string | null): boolean {
   );
 }
 
-function derivePendingUserInputStateFromActivities(
-  activities: ReadonlyArray<ProjectionThreadActivity>,
-): {
-  readonly pendingUserInputCount: number;
-  readonly latestPendingUserInputAt: string | null;
-} {
-  const openRequests = new Map<string, string>();
-  const ordered = [...activities].toSorted(
-    (left, right) =>
-      left.createdAt.localeCompare(right.createdAt) ||
-      left.activityId.localeCompare(right.activityId),
-  );
-
-  for (const activity of ordered) {
-    const requestId = extractActivityRequestId(activity.payload);
-    if (requestId === null) {
-      continue;
-    }
-    const payload =
-      typeof activity.payload === "object" && activity.payload !== null
-        ? (activity.payload as Record<string, unknown>)
-        : null;
-    const detail = typeof payload?.detail === "string" ? payload.detail.toLowerCase() : null;
-
-    if (activity.kind === "user-input.requested") {
-      openRequests.set(requestId, activity.createdAt);
-      continue;
-    }
-
-    if (activity.kind === "user-input.resolved") {
-      openRequests.delete(requestId);
-      continue;
-    }
-
-    if (
-      activity.kind === "provider.user-input.respond.failed" &&
-      detail !== null &&
-      (detail.includes("stale pending user-input request") ||
-        detail.includes("unknown pending user-input request"))
-    ) {
-      openRequests.delete(requestId);
-    }
+function isStalePendingUserInputFailureDetail(detail: string | null): boolean {
+  if (detail === null) {
+    return false;
   }
-
-  return {
-    pendingUserInputCount: openRequests.size,
-    latestPendingUserInputAt:
-      openRequests.size === 0 ? null : ([...openRequests.values()].toSorted().at(-1) ?? null),
-  };
+  return (
+    detail.includes("stale pending user-input request") ||
+    detail.includes("unknown pending user-input request")
+  );
 }
 
-function deriveHasActionableProposedPlan(input: {
-  readonly latestTurnId: string | null;
-  readonly proposedPlans: ReadonlyArray<ProjectionThreadProposedPlan>;
-}): boolean {
-  const sorted = [...input.proposedPlans].toSorted(
-    (left, right) =>
-      left.updatedAt.localeCompare(right.updatedAt) || left.planId.localeCompare(right.planId),
-  );
+const ThreadShellSummaryInput = Schema.Struct({
+  threadId: ThreadId,
+});
 
-  let latestForTurn: ProjectionThreadProposedPlan | null = null;
-  if (input.latestTurnId !== null) {
-    for (let index = sorted.length - 1; index >= 0; index -= 1) {
-      const plan = sorted[index];
-      if (plan?.turnId === input.latestTurnId) {
-        latestForTurn = plan;
-        break;
-      }
-    }
-  }
-  if (latestForTurn !== null) {
-    return latestForTurn.implementedAt === null;
-  }
-
-  const latestPlan = sorted.at(-1) ?? null;
-  return latestPlan !== null && latestPlan.implementedAt === null;
-}
+const ThreadShellSummaryRow = Schema.Struct({
+  latestUserMessageAt: Schema.NullOr(Schema.String),
+  pendingApprovalCount: Schema.Number,
+  pendingUserInputCount: Schema.Number,
+  latestPendingUserInputAt: Schema.NullOr(Schema.String),
+  hasActionableProposedPlan: Schema.Number,
+});
+const ThreadLatestUserMessageInput = Schema.Struct({
+  threadId: ThreadId,
+  latestUserMessageAt: Schema.String,
+  updatedAt: Schema.String,
+});
+const ThreadTouchInput = Schema.Struct({
+  threadId: ThreadId,
+  updatedAt: Schema.String,
+});
+const ThreadPendingApprovalDeltaInput = Schema.Struct({
+  threadId: ThreadId,
+  delta: Schema.Number,
+  updatedAt: Schema.String,
+});
+const PendingUserInputRequestIdInput = Schema.Struct({
+  requestId: Schema.String,
+});
+const ProjectionPendingUserInputRow = Schema.Struct({
+  requestId: Schema.String,
+  threadId: ThreadId,
+  turnId: Schema.NullOr(Schema.String),
+  status: Schema.Literals(["pending", "resolved"]),
+  createdAt: Schema.String,
+  resolvedAt: Schema.NullOr(Schema.String),
+});
+const ThreadPendingUserInputSummaryRow = Schema.Struct({
+  pendingUserInputCount: Schema.Number,
+  latestPendingUserInputAt: Schema.NullOr(Schema.String),
+});
 
 function retainProjectionMessagesAfterRevert(
   messages: ReadonlyArray<ProjectionThreadMessage>,
@@ -515,6 +490,241 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
     const path = yield* Path.Path;
     const serverConfig = yield* ServerConfig;
 
+    const getThreadShellSummaryRow = SqlSchema.findOne({
+      Request: ThreadShellSummaryInput,
+      Result: ThreadShellSummaryRow,
+      execute: ({ threadId }) =>
+        sql`
+          WITH
+            latest_turn_plan AS (
+              SELECT plan_markdown, implemented_at
+              FROM projection_thread_proposed_plans
+              WHERE thread_id = ${threadId}
+                AND turn_id = (
+                  SELECT latest_turn_id
+                  FROM projection_threads
+                  WHERE thread_id = ${threadId}
+                  LIMIT 1
+                )
+              ORDER BY updated_at DESC, plan_id DESC
+              LIMIT 1
+            ),
+            latest_plan AS (
+              SELECT plan_markdown, implemented_at
+              FROM projection_thread_proposed_plans
+              WHERE thread_id = ${threadId}
+              ORDER BY updated_at DESC, plan_id DESC
+              LIMIT 1
+            )
+          SELECT
+            (
+              SELECT MAX(created_at)
+              FROM projection_thread_messages
+              WHERE thread_id = ${threadId}
+                AND role = 'user'
+            ) AS "latestUserMessageAt",
+            CAST((
+              SELECT COUNT(*)
+              FROM projection_pending_approvals
+              WHERE thread_id = ${threadId}
+                AND status = 'pending'
+            ) AS INTEGER) AS "pendingApprovalCount",
+            CAST((
+              SELECT COUNT(*)
+              FROM projection_pending_user_inputs
+              WHERE thread_id = ${threadId}
+                AND status = 'pending'
+            ) AS INTEGER) AS "pendingUserInputCount",
+            (
+              SELECT MAX(created_at)
+              FROM projection_pending_user_inputs
+              WHERE thread_id = ${threadId}
+                AND status = 'pending'
+            ) AS "latestPendingUserInputAt",
+            CAST(
+              CASE
+                WHEN EXISTS (SELECT 1 FROM latest_turn_plan)
+                THEN COALESCE((SELECT implemented_at IS NULL FROM latest_turn_plan), 0)
+                ELSE COALESCE((SELECT implemented_at IS NULL FROM latest_plan), 0)
+              END
+              AS INTEGER
+            ) AS "hasActionableProposedPlan"
+        `,
+    });
+    const updateThreadLatestUserMessageAt = SqlSchema.void({
+      Request: ThreadLatestUserMessageInput,
+      execute: ({ threadId, latestUserMessageAt, updatedAt }) =>
+        sql`
+          UPDATE projection_threads
+          SET
+            updated_at = ${updatedAt},
+            latest_user_message_at = CASE
+              WHEN latest_user_message_at IS NULL THEN ${latestUserMessageAt}
+              WHEN latest_user_message_at < ${latestUserMessageAt} THEN ${latestUserMessageAt}
+              ELSE latest_user_message_at
+            END
+          WHERE thread_id = ${threadId}
+        `,
+    });
+    const touchThreadUpdatedAt = SqlSchema.void({
+      Request: ThreadTouchInput,
+      execute: ({ threadId, updatedAt }) =>
+        sql`
+          UPDATE projection_threads
+          SET updated_at = ${updatedAt}
+          WHERE thread_id = ${threadId}
+        `,
+    });
+    const updateThreadPendingApprovalCount = SqlSchema.void({
+      Request: ThreadPendingApprovalDeltaInput,
+      execute: ({ threadId, delta, updatedAt }) =>
+        sql`
+          UPDATE projection_threads
+          SET
+            updated_at = ${updatedAt},
+            pending_approval_count = MAX(0, pending_approval_count + ${delta})
+          WHERE thread_id = ${threadId}
+        `,
+    });
+    const updateThreadActionableProposedPlan = SqlSchema.void({
+      Request: ThreadTouchInput,
+      execute: ({ threadId, updatedAt }) =>
+        sql`
+          UPDATE projection_threads
+          SET
+            updated_at = ${updatedAt},
+            has_actionable_proposed_plan = COALESCE((
+              SELECT CASE
+                WHEN projection_threads.latest_turn_id IS NOT NULL
+                  AND EXISTS (
+                    SELECT 1
+                    FROM projection_thread_proposed_plans AS latest_turn_plan_exists
+                    WHERE latest_turn_plan_exists.thread_id = projection_threads.thread_id
+                      AND latest_turn_plan_exists.turn_id = projection_threads.latest_turn_id
+                  )
+                  THEN CASE
+                    WHEN (
+                      SELECT latest_turn_plan.implemented_at
+                      FROM projection_thread_proposed_plans AS latest_turn_plan
+                      WHERE latest_turn_plan.thread_id = projection_threads.thread_id
+                        AND latest_turn_plan.turn_id = projection_threads.latest_turn_id
+                      ORDER BY latest_turn_plan.updated_at DESC, latest_turn_plan.plan_id DESC
+                      LIMIT 1
+                    ) IS NULL
+                      THEN 1
+                      ELSE 0
+                    END
+                WHEN EXISTS (
+                  SELECT 1
+                  FROM projection_thread_proposed_plans AS any_plan
+                  WHERE any_plan.thread_id = projection_threads.thread_id
+                )
+                  THEN CASE
+                    WHEN (
+                      SELECT latest_plan.implemented_at
+                      FROM projection_thread_proposed_plans AS latest_plan
+                      WHERE latest_plan.thread_id = projection_threads.thread_id
+                      ORDER BY latest_plan.updated_at DESC, latest_plan.plan_id DESC
+                      LIMIT 1
+                    ) IS NULL
+                      THEN 1
+                      ELSE 0
+                    END
+                ELSE 0
+              END
+            ), 0)
+          WHERE thread_id = ${threadId}
+        `,
+    });
+    const getProjectionPendingUserInputRow = SqlSchema.findOneOption({
+      Request: PendingUserInputRequestIdInput,
+      Result: ProjectionPendingUserInputRow,
+      execute: ({ requestId }) =>
+        sql`
+          SELECT
+            request_id AS "requestId",
+            thread_id AS "threadId",
+            turn_id AS "turnId",
+            status,
+            created_at AS "createdAt",
+            resolved_at AS "resolvedAt"
+          FROM projection_pending_user_inputs
+          WHERE request_id = ${requestId}
+        `,
+    });
+    const upsertProjectionPendingUserInputRow = SqlSchema.void({
+      Request: ProjectionPendingUserInputRow,
+      execute: (row) =>
+        sql`
+          INSERT INTO projection_pending_user_inputs (
+            request_id,
+            thread_id,
+            turn_id,
+            status,
+            created_at,
+            resolved_at
+          )
+          VALUES (
+            ${row.requestId},
+            ${row.threadId},
+            ${row.turnId},
+            ${row.status},
+            ${row.createdAt},
+            ${row.resolvedAt}
+          )
+          ON CONFLICT (request_id)
+          DO UPDATE SET
+            thread_id = excluded.thread_id,
+            turn_id = excluded.turn_id,
+            status = excluded.status,
+            created_at = excluded.created_at,
+            resolved_at = excluded.resolved_at
+        `,
+    });
+    const deleteProjectionPendingUserInputRowsByThread = SqlSchema.void({
+      Request: ThreadShellSummaryInput,
+      execute: ({ threadId }) =>
+        sql`
+          DELETE FROM projection_pending_user_inputs
+          WHERE thread_id = ${threadId}
+        `,
+    });
+    const getThreadPendingUserInputSummaryRow = SqlSchema.findOne({
+      Request: ThreadShellSummaryInput,
+      Result: ThreadPendingUserInputSummaryRow,
+      execute: ({ threadId }) =>
+        sql`
+          SELECT
+            CAST(COUNT(*) AS INTEGER) AS "pendingUserInputCount",
+            MAX(created_at) AS "latestPendingUserInputAt"
+          FROM projection_pending_user_inputs
+          WHERE thread_id = ${threadId}
+            AND status = 'pending'
+        `,
+    });
+    const updateThreadPendingUserInputSummary = Effect.fn("updateThreadPendingUserInputSummary")(
+      function* (threadId: ThreadId, updatedAt: string) {
+        const summaryRow = yield* getThreadPendingUserInputSummaryRow({ threadId }).pipe(
+          Effect.mapError(
+            toPersistenceSqlError("ProjectionPipeline.pendingUserInputSummary:query"),
+          ),
+        );
+
+        yield* sql`
+        UPDATE projection_threads
+        SET
+          updated_at = ${updatedAt},
+          pending_user_input_count = ${summaryRow.pendingUserInputCount},
+          latest_pending_user_input_at = ${summaryRow.latestPendingUserInputAt}
+        WHERE thread_id = ${threadId}
+      `.pipe(
+          Effect.mapError(
+            toPersistenceSqlError("ProjectionPipeline.updatePendingUserInputSummary:query"),
+          ),
+        );
+      },
+    );
+
     const applyProjectsProjection: ProjectorDefinition["apply"] = Effect.fn(
       "applyProjectsProjection",
     )(function* (event, _attachmentSideEffects) {
@@ -584,36 +794,19 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
         return;
       }
 
-      const [messages, proposedPlans, activities, pendingApprovals] = yield* Effect.all([
-        projectionThreadMessageRepository.listByThreadId({ threadId }),
-        projectionThreadProposedPlanRepository.listByThreadId({ threadId }),
-        projectionThreadActivityRepository.listByThreadId({ threadId }),
-        projectionPendingApprovalRepository.listByThreadId({ threadId }),
-      ]);
-
-      const latestUserMessageAt =
-        messages
-          .filter((message) => message.role === "user")
-          .map((message) => message.createdAt)
-          .toSorted()
-          .at(-1) ?? null;
-
-      const pendingApprovalCount = pendingApprovals.filter(
-        (approval) => approval.status === "pending",
-      ).length;
-      const pendingUserInputState = derivePendingUserInputStateFromActivities(activities);
-      const hasActionableProposedPlan = deriveHasActionableProposedPlan({
-        latestTurnId: existingRow.value.latestTurnId,
-        proposedPlans,
-      });
+      const summaryRow = yield* getThreadShellSummaryRow({ threadId }).pipe(
+        Effect.mapError(
+          toPersistenceSqlError("ProjectionPipeline.refreshThreadShellSummary:query"),
+        ),
+      );
 
       yield* projectionThreadRepository.upsert({
         ...existingRow.value,
-        latestUserMessageAt,
-        pendingApprovalCount,
-        pendingUserInputCount: pendingUserInputState.pendingUserInputCount,
-        latestPendingUserInputAt: pendingUserInputState.latestPendingUserInputAt,
-        hasActionableProposedPlan: hasActionableProposedPlan ? 1 : 0,
+        latestUserMessageAt: summaryRow.latestUserMessageAt,
+        pendingApprovalCount: summaryRow.pendingApprovalCount,
+        pendingUserInputCount: summaryRow.pendingUserInputCount,
+        latestPendingUserInputAt: summaryRow.latestPendingUserInputAt,
+        hasActionableProposedPlan: summaryRow.hasActionableProposedPlan,
       });
     });
 
@@ -783,10 +976,26 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
           return;
         }
 
-        case "thread.message-sent":
-        case "thread.proposed-plan-upserted":
-        case "thread.activity-appended":
-        case "thread.approval-response-requested":
+        case "thread.message-sent": {
+          if (event.payload.role === "user") {
+            yield* updateThreadLatestUserMessageAt({
+              threadId: event.payload.threadId,
+              latestUserMessageAt: event.payload.createdAt,
+              updatedAt: event.occurredAt,
+            }).pipe(
+              Effect.mapError(
+                toPersistenceSqlError("ProjectionPipeline.updateLatestUserMessageAt:query"),
+              ),
+            );
+            return;
+          }
+          yield* touchThreadUpdatedAt({
+            threadId: event.payload.threadId,
+            updatedAt: event.occurredAt,
+          }).pipe(Effect.mapError(toPersistenceSqlError("ProjectionPipeline.touchThread:query")));
+          return;
+        }
+
         case "thread.user-input-response-requested": {
           const existingRow = yield* projectionThreadRepository.getById({
             threadId: event.payload.threadId,
@@ -802,6 +1011,45 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
           return;
         }
 
+        case "thread.proposed-plan-upserted":
+          yield* updateThreadActionableProposedPlan({
+            threadId: event.payload.threadId,
+            updatedAt: event.occurredAt,
+          }).pipe(
+            Effect.mapError(
+              toPersistenceSqlError("ProjectionPipeline.updateActionableProposedPlan:query"),
+            ),
+          );
+          return;
+
+        case "thread.approval-response-requested":
+          yield* touchThreadUpdatedAt({
+            threadId: event.payload.threadId,
+            updatedAt: event.occurredAt,
+          }).pipe(Effect.mapError(toPersistenceSqlError("ProjectionPipeline.touchThread:query")));
+          return;
+
+        case "thread.activity-appended": {
+          const existingRow = yield* projectionThreadRepository.getById({
+            threadId: event.payload.threadId,
+          });
+          if (Option.isNone(existingRow)) {
+            return;
+          }
+          yield* projectionThreadRepository.upsert({
+            ...existingRow.value,
+            updatedAt: event.occurredAt,
+          });
+          if (
+            event.payload.activity.kind === "user-input.requested" ||
+            event.payload.activity.kind === "user-input.resolved" ||
+            event.payload.activity.kind === "provider.user-input.respond.failed"
+          ) {
+            return;
+          }
+          return;
+        }
+
         case "thread.session-set": {
           const existingRow = yield* projectionThreadRepository.getById({
             threadId: event.payload.threadId,
@@ -814,7 +1062,14 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
             latestTurnId: event.payload.session.activeTurnId,
             updatedAt: event.occurredAt,
           });
-          yield* refreshThreadShellSummaryOrDefer(event.payload.threadId, attachmentSideEffects);
+          yield* updateThreadActionableProposedPlan({
+            threadId: event.payload.threadId,
+            updatedAt: event.occurredAt,
+          }).pipe(
+            Effect.mapError(
+              toPersistenceSqlError("ProjectionPipeline.updateActionableProposedPlan:query"),
+            ),
+          );
           return;
         }
 
@@ -830,7 +1085,14 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
             latestTurnId: event.payload.turnId,
             updatedAt: event.occurredAt,
           });
-          yield* refreshThreadShellSummaryOrDefer(event.payload.threadId, attachmentSideEffects);
+          yield* updateThreadActionableProposedPlan({
+            threadId: event.payload.threadId,
+            updatedAt: event.occurredAt,
+          }).pipe(
+            Effect.mapError(
+              toPersistenceSqlError("ProjectionPipeline.updateActionableProposedPlan:query"),
+            ),
+          );
           return;
         }
 
@@ -1416,6 +1678,8 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
             requestId,
           });
           if (event.payload.activity.kind === "approval.resolved") {
+            const shouldDecrement =
+              Option.isSome(existingRow) && existingRow.value.status === "pending";
             const resolvedDecisionRaw =
               typeof event.payload.activity.payload === "object" &&
               event.payload.activity.payload !== null &&
@@ -1444,6 +1708,17 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
                 : event.payload.activity.createdAt,
               resolvedAt: event.payload.activity.createdAt,
             });
+            if (shouldDecrement && Option.isSome(existingRow)) {
+              yield* updateThreadPendingApprovalCount({
+                threadId: existingRow.value.threadId,
+                delta: -1,
+                updatedAt: event.payload.activity.createdAt,
+              }).pipe(
+                Effect.mapError(
+                  toPersistenceSqlError("ProjectionPipeline.updatePendingApprovalCount:query"),
+                ),
+              );
+            }
             return;
           }
           if (event.payload.activity.kind === "provider.approval.respond.failed") {
@@ -1470,6 +1745,15 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
                 createdAt: existingRow.value.createdAt,
                 resolvedAt: event.payload.activity.createdAt,
               });
+              yield* updateThreadPendingApprovalCount({
+                threadId: existingRow.value.threadId,
+                delta: -1,
+                updatedAt: event.payload.activity.createdAt,
+              }).pipe(
+                Effect.mapError(
+                  toPersistenceSqlError("ProjectionPipeline.updatePendingApprovalCount:query"),
+                ),
+              );
               return;
             }
             return;
@@ -1485,6 +1769,7 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
           if (Option.isSome(existingRow) && existingRow.value.status === "resolved") {
             return;
           }
+          const shouldIncrement = Option.isNone(existingRow);
           yield* projectionPendingApprovalRepository.upsert({
             requestId,
             threadId: event.payload.threadId,
@@ -1496,6 +1781,17 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
               : event.payload.activity.createdAt,
             resolvedAt: null,
           });
+          if (shouldIncrement) {
+            yield* updateThreadPendingApprovalCount({
+              threadId: event.payload.threadId,
+              delta: 1,
+              updatedAt: event.payload.activity.createdAt,
+            }).pipe(
+              Effect.mapError(
+                toPersistenceSqlError("ProjectionPipeline.updatePendingApprovalCount:query"),
+              ),
+            );
+          }
           return;
         }
 
@@ -1503,6 +1799,8 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
           const existingRow = yield* projectionPendingApprovalRepository.getByRequestId({
             requestId: event.payload.requestId,
           });
+          const shouldDecrement =
+            Option.isSome(existingRow) && existingRow.value.status === "pending";
           yield* projectionPendingApprovalRepository.upsert({
             requestId: event.payload.requestId,
             threadId: Option.isSome(existingRow)
@@ -1516,12 +1814,161 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
               : event.payload.createdAt,
             resolvedAt: event.payload.createdAt,
           });
+          if (shouldDecrement && Option.isSome(existingRow)) {
+            yield* updateThreadPendingApprovalCount({
+              threadId: existingRow.value.threadId,
+              delta: -1,
+              updatedAt: event.payload.createdAt,
+            }).pipe(
+              Effect.mapError(
+                toPersistenceSqlError("ProjectionPipeline.updatePendingApprovalCount:query"),
+              ),
+            );
+          }
           return;
         }
 
         default:
           return;
       }
+    });
+
+    const applyPendingUserInputsProjection: ProjectorDefinition["apply"] = Effect.fn(
+      "applyPendingUserInputsProjection",
+    )(function* (event, _attachmentSideEffects) {
+      if (event.type === "thread.reverted") {
+        const activities = yield* projectionThreadActivityRepository.listByThreadId({
+          threadId: event.payload.threadId,
+        });
+        const pendingRows = new Map<string, typeof ProjectionPendingUserInputRow.Type>();
+        for (const activity of activities) {
+          const requestId = extractActivityRequestId(activity.payload);
+          if (requestId === null) {
+            continue;
+          }
+          if (activity.kind === "user-input.requested") {
+            if (pendingRows.has(requestId)) {
+              continue;
+            }
+            pendingRows.set(requestId, {
+              requestId,
+              threadId: activity.threadId,
+              turnId: activity.turnId,
+              status: "pending",
+              createdAt: activity.createdAt,
+              resolvedAt: null,
+            });
+            continue;
+          }
+          if (activity.kind === "provider.user-input.respond.failed") {
+            const payload =
+              typeof activity.payload === "object" && activity.payload !== null
+                ? (activity.payload as Record<string, unknown>)
+                : null;
+            const detail =
+              typeof payload?.detail === "string" ? payload.detail.toLowerCase() : null;
+            if (!isStalePendingUserInputFailureDetail(detail)) {
+              continue;
+            }
+          } else if (activity.kind !== "user-input.resolved") {
+            continue;
+          }
+
+          const pendingRow = pendingRows.get(requestId);
+          if (!pendingRow || pendingRow.status === "resolved") {
+            continue;
+          }
+          pendingRows.set(requestId, {
+            ...pendingRow,
+            status: "resolved",
+            resolvedAt: activity.createdAt,
+          });
+        }
+
+        yield* deleteProjectionPendingUserInputRowsByThread({
+          threadId: event.payload.threadId,
+        }).pipe(
+          Effect.mapError(
+            toPersistenceSqlError("ProjectionPipeline.deletePendingUserInputsByThread:query"),
+          ),
+        );
+        yield* Effect.forEach(
+          pendingRows.values(),
+          (row) =>
+            upsertProjectionPendingUserInputRow(row).pipe(
+              Effect.mapError(
+                toPersistenceSqlError("ProjectionPipeline.upsertPendingUserInput:query"),
+              ),
+            ),
+          { concurrency: 1 },
+        ).pipe(Effect.asVoid);
+        yield* updateThreadPendingUserInputSummary(event.payload.threadId, event.occurredAt);
+        return;
+      }
+
+      if (event.type !== "thread.activity-appended") {
+        return;
+      }
+
+      const requestId = extractActivityRequestId(event.payload.activity.payload);
+      if (requestId === null) {
+        return;
+      }
+
+      const activity = event.payload.activity;
+      if (
+        activity.kind !== "user-input.requested" &&
+        activity.kind !== "user-input.resolved" &&
+        activity.kind !== "provider.user-input.respond.failed"
+      ) {
+        return;
+      }
+
+      const existingRow = yield* getProjectionPendingUserInputRow({ requestId }).pipe(
+        Effect.mapError(toPersistenceSqlError("ProjectionPipeline.getPendingUserInput:query")),
+      );
+
+      if (activity.kind === "user-input.requested") {
+        if (Option.isSome(existingRow)) {
+          return;
+        }
+        yield* upsertProjectionPendingUserInputRow({
+          requestId,
+          threadId: event.payload.threadId,
+          turnId: activity.turnId,
+          status: "pending",
+          createdAt: activity.createdAt,
+          resolvedAt: null,
+        }).pipe(
+          Effect.mapError(toPersistenceSqlError("ProjectionPipeline.upsertPendingUserInput:query")),
+        );
+        yield* updateThreadPendingUserInputSummary(event.payload.threadId, activity.createdAt);
+        return;
+      }
+
+      if (activity.kind === "provider.user-input.respond.failed") {
+        const payload =
+          typeof activity.payload === "object" && activity.payload !== null
+            ? (activity.payload as Record<string, unknown>)
+            : null;
+        const detail = typeof payload?.detail === "string" ? payload.detail.toLowerCase() : null;
+        if (!isStalePendingUserInputFailureDetail(detail)) {
+          return;
+        }
+      }
+
+      if (Option.isNone(existingRow) || existingRow.value.status === "resolved") {
+        return;
+      }
+
+      yield* upsertProjectionPendingUserInputRow({
+        ...existingRow.value,
+        status: "resolved",
+        resolvedAt: activity.createdAt,
+      }).pipe(
+        Effect.mapError(toPersistenceSqlError("ProjectionPipeline.upsertPendingUserInput:query")),
+      );
+      yield* updateThreadPendingUserInputSummary(existingRow.value.threadId, activity.createdAt);
     });
 
     const projectors: ReadonlyArray<ProjectorDefinition> = [
@@ -1556,6 +2003,10 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
       {
         name: ORCHESTRATION_PROJECTOR_NAMES.pendingApprovals,
         apply: applyPendingApprovalsProjection,
+      },
+      {
+        name: ORCHESTRATION_PROJECTOR_NAMES.pendingUserInputs,
+        apply: applyPendingUserInputsProjection,
       },
       {
         name: ORCHESTRATION_PROJECTOR_NAMES.threads,

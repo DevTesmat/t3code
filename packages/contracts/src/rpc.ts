@@ -42,7 +42,11 @@ import {
   OrchestrationGetFullThreadDiffError,
   OrchestrationGetFullThreadDiffInput,
   OrchestrationGetSnapshotError,
+  OrchestrationGetThreadCommandOutputSnapshotInput,
+  OrchestrationGetThreadActivitiesPageInput,
+  OrchestrationGetThreadCheckpointsPageInput,
   OrchestrationGetThreadMessagesPageInput,
+  OrchestrationGetThreadProposedPlansPageInput,
   OrchestrationGetTurnDiffError,
   OrchestrationGetTurnDiffInput,
   OrchestrationReplayEventsError,
@@ -436,6 +440,42 @@ export const WsOrchestrationGetThreadMessagesPageRpc = Rpc.make(
   },
 );
 
+export const WsOrchestrationGetThreadActivitiesPageRpc = Rpc.make(
+  ORCHESTRATION_WS_METHODS.getThreadActivitiesPage,
+  {
+    payload: OrchestrationGetThreadActivitiesPageInput,
+    success: OrchestrationRpcSchemas.getThreadActivitiesPage.output,
+    error: OrchestrationGetSnapshotError,
+  },
+);
+
+export const WsOrchestrationGetThreadProposedPlansPageRpc = Rpc.make(
+  ORCHESTRATION_WS_METHODS.getThreadProposedPlansPage,
+  {
+    payload: OrchestrationGetThreadProposedPlansPageInput,
+    success: OrchestrationRpcSchemas.getThreadProposedPlansPage.output,
+    error: OrchestrationGetSnapshotError,
+  },
+);
+
+export const WsOrchestrationGetThreadCheckpointsPageRpc = Rpc.make(
+  ORCHESTRATION_WS_METHODS.getThreadCheckpointsPage,
+  {
+    payload: OrchestrationGetThreadCheckpointsPageInput,
+    success: OrchestrationRpcSchemas.getThreadCheckpointsPage.output,
+    error: OrchestrationGetSnapshotError,
+  },
+);
+
+export const WsOrchestrationGetThreadCommandOutputSnapshotRpc = Rpc.make(
+  ORCHESTRATION_WS_METHODS.getThreadCommandOutputSnapshot,
+  {
+    payload: OrchestrationGetThreadCommandOutputSnapshotInput,
+    success: OrchestrationRpcSchemas.getThreadCommandOutputSnapshot.output,
+    error: OrchestrationGetSnapshotError,
+  },
+);
+
 export const WsOrchestrationSubscribeShellRpc = Rpc.make(ORCHESTRATION_WS_METHODS.subscribeShell, {
   payload: OrchestrationRpcSchemas.subscribeShell.input,
   success: OrchestrationRpcSchemas.subscribeShell.output,
@@ -524,6 +564,10 @@ export const WsRpcGroup = RpcGroup.make(
   WsOrchestrationGetTurnDiffRpc,
   WsOrchestrationGetFullThreadDiffRpc,
   WsOrchestrationGetThreadMessagesPageRpc,
+  WsOrchestrationGetThreadActivitiesPageRpc,
+  WsOrchestrationGetThreadProposedPlansPageRpc,
+  WsOrchestrationGetThreadCheckpointsPageRpc,
+  WsOrchestrationGetThreadCommandOutputSnapshotRpc,
   WsOrchestrationReplayEventsRpc,
   WsOrchestrationSubscribeShellRpc,
   WsOrchestrationSubscribeThreadRpc,

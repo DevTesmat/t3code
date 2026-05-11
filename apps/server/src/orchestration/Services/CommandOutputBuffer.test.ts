@@ -4,6 +4,7 @@ import { EventId, ProviderItemId, ThreadId, TurnId } from "@t3tools/contracts";
 
 import {
   appendCommandOutputBufferDelta,
+  readCommandOutputSnapshot,
   readCommandOutputSnapshotsForThread,
   resetCommandOutputBufferForTests,
 } from "./CommandOutputBuffer.ts";
@@ -85,5 +86,37 @@ describe("CommandOutputBuffer", () => {
         truncated: false,
       },
     ]);
+  });
+
+  it("reads one command output snapshot by thread and tool call", async () => {
+    await Effect.runPromise(
+      appendCommandOutputBufferDelta({
+        threadId,
+        turnId: TurnId.make("turn-1"),
+        toolCallId,
+        chunkId: EventId.make("chunk-1"),
+        createdAt: "2026-01-01T00:00:00.000Z",
+        delta: "hello",
+      }),
+    );
+
+    await expect(
+      Effect.runPromise(readCommandOutputSnapshot({ threadId, toolCallId })),
+    ).resolves.toEqual({
+      threadId,
+      turnId: TurnId.make("turn-1"),
+      toolCallId,
+      updatedAt: "2026-01-01T00:00:00.000Z",
+      text: "hello",
+      truncated: false,
+    });
+    await expect(
+      Effect.runPromise(
+        readCommandOutputSnapshot({
+          threadId,
+          toolCallId: ProviderItemId.make("missing-tool"),
+        }),
+      ),
+    ).resolves.toBeNull();
   });
 });

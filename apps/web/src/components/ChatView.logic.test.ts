@@ -441,6 +441,9 @@ function setStoreThreads(threads: ReadonlyArray<ReturnType<typeof makeThread>>) 
       ]),
     ),
     messagePageInfoByThreadId: {},
+    activityPageInfoByThreadId: {},
+    proposedPlanPageInfoByThreadId: {},
+    checkpointPageInfoByThreadId: {},
     activityIdsByThreadId: Object.fromEntries(
       threads.map((thread) => [thread.id, thread.activities.map((activity) => activity.id)]),
     ),

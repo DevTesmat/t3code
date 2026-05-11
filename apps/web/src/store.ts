@@ -11,10 +11,13 @@ import type {
   OrchestrationShellStreamEvent,
   OrchestrationSession,
   OrchestrationSessionStatus,
+  OrchestrationThreadActivitiesPage,
+  OrchestrationThreadCheckpointsPage,
   OrchestrationThread,
   OrchestrationThreadDetailPageInfo,
   OrchestrationThreadDetailResourcePageInfo,
   OrchestrationThreadMessagesPage,
+  OrchestrationThreadProposedPlansPage,
   OrchestrationThreadShell,
   OrchestrationThreadActivity,
   ProjectId,
@@ -75,6 +78,9 @@ export interface EnvironmentState {
   messageIdsByThreadId: Record<ThreadId, MessageId[]>;
   messageByThreadId: Record<ThreadId, Record<MessageId, ChatMessage>>;
   messagePageInfoByThreadId: Record<ThreadId, OrchestrationThreadDetailResourcePageInfo>;
+  activityPageInfoByThreadId: Record<ThreadId, OrchestrationThreadDetailResourcePageInfo>;
+  proposedPlanPageInfoByThreadId: Record<ThreadId, OrchestrationThreadDetailResourcePageInfo>;
+  checkpointPageInfoByThreadId: Record<ThreadId, OrchestrationThreadDetailResourcePageInfo>;
   activityIdsByThreadId: Record<ThreadId, string[]>;
   activityByThreadId: Record<ThreadId, Record<string, OrchestrationThreadActivity>>;
   proposedPlanIdsByThreadId: Record<ThreadId, string[]>;
@@ -110,6 +116,9 @@ const initialEnvironmentState: EnvironmentState = {
   messageIdsByThreadId: {},
   messageByThreadId: {},
   messagePageInfoByThreadId: {},
+  activityPageInfoByThreadId: {},
+  proposedPlanPageInfoByThreadId: {},
+  checkpointPageInfoByThreadId: {},
   activityIdsByThreadId: {},
   activityByThreadId: {},
   proposedPlanIdsByThreadId: {},
@@ -514,6 +523,39 @@ function mergeOlderMessagePage(
       ? left.id.localeCompare(right.id)
       : left.createdAt.localeCompare(right.createdAt),
   );
+}
+
+function mergeOlderActivityPage(
+  previousActivities: ReadonlyArray<OrchestrationThreadActivity>,
+  pageActivities: ReadonlyArray<OrchestrationThreadActivity>,
+): OrchestrationThreadActivity[] {
+  const nextById = new Map(previousActivities.map((activity) => [activity.id, activity]));
+  for (const activity of pageActivities) {
+    nextById.set(activity.id, activity);
+  }
+  return [...nextById.values()].toSorted(compareActivities);
+}
+
+function mergeOlderProposedPlanPage(
+  previousPlans: ReadonlyArray<ProposedPlan>,
+  pagePlans: ReadonlyArray<ProposedPlan>,
+): ProposedPlan[] {
+  const nextById = new Map(previousPlans.map((plan) => [plan.id, plan]));
+  for (const plan of pagePlans) {
+    nextById.set(plan.id, plan);
+  }
+  return [...nextById.values()].toSorted(compareProposedPlans);
+}
+
+function mergeOlderTurnDiffSummaryPage(
+  previousSummaries: ReadonlyArray<TurnDiffSummary>,
+  pageSummaries: ReadonlyArray<TurnDiffSummary>,
+): TurnDiffSummary[] {
+  const nextById = new Map(previousSummaries.map((summary) => [summary.turnId, summary]));
+  for (const summary of pageSummaries) {
+    nextById.set(summary.turnId, summary);
+  }
+  return [...nextById.values()].toSorted(compareTurnDiffSummaries);
 }
 
 function buildActivitySlice(thread: Thread): {
@@ -1115,43 +1157,112 @@ function retainThreadActivitiesAfterRevert(
   );
 }
 
-function mergeThreadDetailActivities(
+function mergeBoundedSnapshotActivities(
   previousActivities: ReadonlyArray<OrchestrationThreadActivity>,
-  serverActivities: ReadonlyArray<OrchestrationThreadActivity>,
+  snapshotActivities: ReadonlyArray<OrchestrationThreadActivity>,
+  pageInfo: OrchestrationThreadDetailResourcePageInfo | undefined,
 ): OrchestrationThreadActivity[] {
-  if (previousActivities.length === 0) {
-    return [...serverActivities];
-  }
-  if (serverActivities.length === 0) {
-    return [...previousActivities];
+  if (snapshotActivities.length === 0) {
+    return pageInfo?.hasMoreBefore ? [...previousActivities] : [...snapshotActivities];
   }
 
-  const nextById = new Map(serverActivities.map((activity) => [activity.id, activity]));
-  const maxServerSequence = serverActivities.reduce(
-    (max, activity) =>
-      activity.sequence !== undefined && activity.sequence > max ? activity.sequence : max,
-    -1,
-  );
-  const maxServerCreatedAt = serverActivities.reduce(
-    (max, activity) => (activity.createdAt > max ? activity.createdAt : max),
-    "",
-  );
-
+  const firstSnapshotActivity = snapshotActivities[0];
+  const lastSnapshotActivity = snapshotActivities.at(-1);
+  const nextById = new Map(snapshotActivities.map((activity) => [activity.id, activity]));
   for (const activity of previousActivities) {
     if (nextById.has(activity.id)) {
       continue;
     }
-    const isNewerBySequence =
-      activity.sequence !== undefined &&
-      maxServerSequence >= 0 &&
-      activity.sequence > maxServerSequence;
-    const isNewerByTime = maxServerSequence < 0 && activity.createdAt > maxServerCreatedAt;
-    if (isNewerBySequence || isNewerByTime) {
+    const isOlderLoadedActivity =
+      pageInfo?.hasMoreBefore === true &&
+      firstSnapshotActivity !== undefined &&
+      compareActivities(activity, firstSnapshotActivity) < 0;
+    const isNewerLiveActivity =
+      lastSnapshotActivity !== undefined && compareActivities(activity, lastSnapshotActivity) > 0;
+    if (isOlderLoadedActivity || isNewerLiveActivity) {
       nextById.set(activity.id, activity);
     }
   }
 
   return [...nextById.values()].toSorted(compareActivities);
+}
+
+function compareProposedPlans(left: ProposedPlan, right: ProposedPlan): number {
+  return left.createdAt.localeCompare(right.createdAt) || left.id.localeCompare(right.id);
+}
+
+function mergeBoundedSnapshotProposedPlans(
+  previousPlans: ReadonlyArray<ProposedPlan>,
+  snapshotPlans: ReadonlyArray<ProposedPlan>,
+  pageInfo: OrchestrationThreadDetailResourcePageInfo | undefined,
+): ProposedPlan[] {
+  if (snapshotPlans.length === 0) {
+    return pageInfo?.hasMoreBefore ? [...previousPlans] : [...snapshotPlans];
+  }
+
+  const firstSnapshotPlan = snapshotPlans[0];
+  const lastSnapshotPlan = snapshotPlans.at(-1);
+  const nextById = new Map(snapshotPlans.map((plan) => [plan.id, plan]));
+  for (const plan of previousPlans) {
+    if (nextById.has(plan.id)) {
+      continue;
+    }
+    const isOlderLoadedPlan =
+      pageInfo?.hasMoreBefore === true &&
+      firstSnapshotPlan !== undefined &&
+      compareProposedPlans(plan, firstSnapshotPlan) < 0;
+    const isNewerLivePlan =
+      lastSnapshotPlan !== undefined && compareProposedPlans(plan, lastSnapshotPlan) > 0;
+    if (isOlderLoadedPlan || isNewerLivePlan) {
+      nextById.set(plan.id, plan);
+    }
+  }
+
+  return [...nextById.values()].toSorted(compareProposedPlans);
+}
+
+function compareTurnDiffSummaries(left: TurnDiffSummary, right: TurnDiffSummary): number {
+  if (
+    left.checkpointTurnCount !== undefined &&
+    right.checkpointTurnCount !== undefined &&
+    left.checkpointTurnCount !== right.checkpointTurnCount
+  ) {
+    return left.checkpointTurnCount - right.checkpointTurnCount;
+  }
+  return (
+    left.completedAt.localeCompare(right.completedAt) || left.turnId.localeCompare(right.turnId)
+  );
+}
+
+function mergeBoundedSnapshotTurnDiffSummaries(
+  previousSummaries: ReadonlyArray<TurnDiffSummary>,
+  snapshotSummaries: ReadonlyArray<TurnDiffSummary>,
+  pageInfo: OrchestrationThreadDetailResourcePageInfo | undefined,
+): TurnDiffSummary[] {
+  if (snapshotSummaries.length === 0) {
+    return pageInfo?.hasMoreBefore ? [...previousSummaries] : [...snapshotSummaries];
+  }
+
+  const firstSnapshotSummary = snapshotSummaries[0];
+  const lastSnapshotSummary = snapshotSummaries.at(-1);
+  const nextById = new Map(snapshotSummaries.map((summary) => [summary.turnId, summary]));
+  for (const summary of previousSummaries) {
+    if (nextById.has(summary.turnId)) {
+      continue;
+    }
+    const isOlderLoadedSummary =
+      pageInfo?.hasMoreBefore === true &&
+      firstSnapshotSummary !== undefined &&
+      compareTurnDiffSummaries(summary, firstSnapshotSummary) < 0;
+    const isNewerLiveSummary =
+      lastSnapshotSummary !== undefined &&
+      compareTurnDiffSummaries(summary, lastSnapshotSummary) > 0;
+    if (isOlderLoadedSummary || isNewerLiveSummary) {
+      nextById.set(summary.turnId, summary);
+    }
+  }
+
+  return [...nextById.values()].toSorted(compareTurnDiffSummaries);
 }
 
 function retainThreadProposedPlansAfterRevert(
@@ -1270,6 +1381,22 @@ function syncEnvironmentShellSnapshot(
     sidebarThreadSummaryById: {},
     messageIdsByThreadId: retainThreadScopedRecord(state.messageIdsByThreadId, nextThreadIds),
     messageByThreadId: retainThreadScopedRecord(state.messageByThreadId, nextThreadIds),
+    messagePageInfoByThreadId: retainThreadScopedRecord(
+      state.messagePageInfoByThreadId,
+      nextThreadIds,
+    ),
+    activityPageInfoByThreadId: retainThreadScopedRecord(
+      state.activityPageInfoByThreadId,
+      nextThreadIds,
+    ),
+    proposedPlanPageInfoByThreadId: retainThreadScopedRecord(
+      state.proposedPlanPageInfoByThreadId,
+      nextThreadIds,
+    ),
+    checkpointPageInfoByThreadId: retainThreadScopedRecord(
+      state.checkpointPageInfoByThreadId,
+      nextThreadIds,
+    ),
     activityIdsByThreadId: retainThreadScopedRecord(state.activityIdsByThreadId, nextThreadIds),
     activityByThreadId: retainThreadScopedRecord(state.activityByThreadId, nextThreadIds),
     proposedPlanIdsByThreadId: retainThreadScopedRecord(
@@ -1322,32 +1449,63 @@ export function syncServerThreadDetail(
     mappedThread.messages,
     pageInfo,
   );
-  const nextThread =
-    previousThread && previousThread.activities.length > mappedThread.activities.length
-      ? {
-          ...mappedThread,
-          messages: mappedMessages,
-          activities: mergeThreadDetailActivities(
-            previousThread.activities,
-            mappedThread.activities,
-          ),
-        }
-      : { ...mappedThread, messages: mappedMessages };
+  const nextThread = previousThread
+    ? {
+        ...mappedThread,
+        messages: mappedMessages,
+        activities: mergeBoundedSnapshotActivities(
+          previousThread.activities,
+          mappedThread.activities,
+          pageInfo?.activities,
+        ),
+        proposedPlans: mergeBoundedSnapshotProposedPlans(
+          previousThread.proposedPlans,
+          mappedThread.proposedPlans,
+          pageInfo?.proposedPlans,
+        ),
+        turnDiffSummaries: mergeBoundedSnapshotTurnDiffSummaries(
+          previousThread.turnDiffSummaries,
+          mappedThread.turnDiffSummaries,
+          pageInfo?.checkpoints,
+        ),
+      }
+    : { ...mappedThread, messages: mappedMessages };
   const nextEnvironmentState = writeThreadState(environmentState, nextThread, previousThread);
-  const nextMessagePageInfo = pageInfo?.messages;
-  return commitEnvironmentState(
-    state,
-    environmentId,
-    nextMessagePageInfo
+  if (!pageInfo) {
+    return commitEnvironmentState(state, environmentId, nextEnvironmentState);
+  }
+
+  return commitEnvironmentState(state, environmentId, {
+    ...nextEnvironmentState,
+    messagePageInfoByThreadId: {
+      ...nextEnvironmentState.messagePageInfoByThreadId,
+      [thread.id]: pageInfo.messages,
+    },
+    ...(pageInfo.activities
       ? {
-          ...nextEnvironmentState,
-          messagePageInfoByThreadId: {
-            ...nextEnvironmentState.messagePageInfoByThreadId,
-            [thread.id]: nextMessagePageInfo,
+          activityPageInfoByThreadId: {
+            ...nextEnvironmentState.activityPageInfoByThreadId,
+            [thread.id]: pageInfo.activities,
           },
         }
-      : nextEnvironmentState,
-  );
+      : {}),
+    ...(pageInfo.proposedPlans
+      ? {
+          proposedPlanPageInfoByThreadId: {
+            ...nextEnvironmentState.proposedPlanPageInfoByThreadId,
+            [thread.id]: pageInfo.proposedPlans,
+          },
+        }
+      : {}),
+    ...(pageInfo.checkpoints
+      ? {
+          checkpointPageInfoByThreadId: {
+            ...nextEnvironmentState.checkpointPageInfoByThreadId,
+            [thread.id]: pageInfo.checkpoints,
+          },
+        }
+      : {}),
+  });
 }
 
 export function prependServerThreadMessagesPage(
@@ -1372,6 +1530,89 @@ export function prependServerThreadMessagesPage(
     ...nextEnvironmentState,
     messagePageInfoByThreadId: {
       ...nextEnvironmentState.messagePageInfoByThreadId,
+      [page.threadId]: page.pageInfo,
+    },
+  });
+}
+
+export function prependServerThreadActivitiesPage(
+  state: AppState,
+  page: OrchestrationThreadActivitiesPage,
+  environmentId: EnvironmentId,
+): AppState {
+  const environmentState = getStoredEnvironmentState(state, environmentId);
+  const previousThread = getThreadFromEnvironmentState(environmentState, page.threadId);
+  if (!previousThread) {
+    return state;
+  }
+
+  const nextThread = {
+    ...previousThread,
+    activities: mergeOlderActivityPage(previousThread.activities, page.activities),
+    activityPageInfo: page.pageInfo,
+  };
+  const nextEnvironmentState = writeThreadState(environmentState, nextThread, previousThread);
+  return commitEnvironmentState(state, environmentId, {
+    ...nextEnvironmentState,
+    activityPageInfoByThreadId: {
+      ...nextEnvironmentState.activityPageInfoByThreadId,
+      [page.threadId]: page.pageInfo,
+    },
+  });
+}
+
+export function prependServerThreadProposedPlansPage(
+  state: AppState,
+  page: OrchestrationThreadProposedPlansPage,
+  environmentId: EnvironmentId,
+): AppState {
+  const environmentState = getStoredEnvironmentState(state, environmentId);
+  const previousThread = getThreadFromEnvironmentState(environmentState, page.threadId);
+  if (!previousThread) {
+    return state;
+  }
+
+  const proposedPlans = page.proposedPlans.map(mapProposedPlan);
+  const nextThread = {
+    ...previousThread,
+    proposedPlans: mergeOlderProposedPlanPage(previousThread.proposedPlans, proposedPlans),
+    proposedPlanPageInfo: page.pageInfo,
+  };
+  const nextEnvironmentState = writeThreadState(environmentState, nextThread, previousThread);
+  return commitEnvironmentState(state, environmentId, {
+    ...nextEnvironmentState,
+    proposedPlanPageInfoByThreadId: {
+      ...nextEnvironmentState.proposedPlanPageInfoByThreadId,
+      [page.threadId]: page.pageInfo,
+    },
+  });
+}
+
+export function prependServerThreadCheckpointsPage(
+  state: AppState,
+  page: OrchestrationThreadCheckpointsPage,
+  environmentId: EnvironmentId,
+): AppState {
+  const environmentState = getStoredEnvironmentState(state, environmentId);
+  const previousThread = getThreadFromEnvironmentState(environmentState, page.threadId);
+  if (!previousThread) {
+    return state;
+  }
+
+  const turnDiffSummaries = page.checkpoints.map(mapTurnDiffSummary);
+  const nextThread = {
+    ...previousThread,
+    turnDiffSummaries: mergeOlderTurnDiffSummaryPage(
+      previousThread.turnDiffSummaries,
+      turnDiffSummaries,
+    ),
+    checkpointPageInfo: page.pageInfo,
+  };
+  const nextEnvironmentState = writeThreadState(environmentState, nextThread, previousThread);
+  return commitEnvironmentState(state, environmentId, {
+    ...nextEnvironmentState,
+    checkpointPageInfoByThreadId: {
+      ...nextEnvironmentState.checkpointPageInfoByThreadId,
       [page.threadId]: page.pageInfo,
     },
   });
@@ -2267,6 +2508,18 @@ interface AppStore extends AppState {
     page: OrchestrationThreadMessagesPage,
     environmentId: EnvironmentId,
   ) => void;
+  prependServerThreadActivitiesPage: (
+    page: OrchestrationThreadActivitiesPage,
+    environmentId: EnvironmentId,
+  ) => void;
+  prependServerThreadProposedPlansPage: (
+    page: OrchestrationThreadProposedPlansPage,
+    environmentId: EnvironmentId,
+  ) => void;
+  prependServerThreadCheckpointsPage: (
+    page: OrchestrationThreadCheckpointsPage,
+    environmentId: EnvironmentId,
+  ) => void;
   applyOrchestrationEvent: (event: OrchestrationEvent, environmentId: EnvironmentId) => void;
   applyOrchestrationEvents: (
     events: ReadonlyArray<OrchestrationEvent>,
@@ -2291,6 +2544,12 @@ export const useStore = create<AppStore>((set) => ({
     set((state) => syncServerThreadDetail(state, thread, environmentId, pageInfo)),
   prependServerThreadMessagesPage: (page, environmentId) =>
     set((state) => prependServerThreadMessagesPage(state, page, environmentId)),
+  prependServerThreadActivitiesPage: (page, environmentId) =>
+    set((state) => prependServerThreadActivitiesPage(state, page, environmentId)),
+  prependServerThreadProposedPlansPage: (page, environmentId) =>
+    set((state) => prependServerThreadProposedPlansPage(state, page, environmentId)),
+  prependServerThreadCheckpointsPage: (page, environmentId) =>
+    set((state) => prependServerThreadCheckpointsPage(state, page, environmentId)),
   applyOrchestrationEvent: (event, environmentId) =>
     set((state) => applyOrchestrationEvent(state, event, environmentId)),
   applyOrchestrationEvents: (events, environmentId) =>

@@ -159,6 +159,9 @@ function makeState(thread: Thread): AppState {
       ) as EnvironmentState["messageByThreadId"][ThreadId],
     },
     messagePageInfoByThreadId: {},
+    activityPageInfoByThreadId: {},
+    proposedPlanPageInfoByThreadId: {},
+    checkpointPageInfoByThreadId: {},
     activityIdsByThreadId: {
       [thread.id]: thread.activities.map((activity) => activity.id),
     },
@@ -203,6 +206,9 @@ function makeEmptyState(overrides: Partial<AppState & EnvironmentState> = {}): A
     messageIdsByThreadId: {},
     messageByThreadId: {},
     messagePageInfoByThreadId: {},
+    activityPageInfoByThreadId: {},
+    proposedPlanPageInfoByThreadId: {},
+    checkpointPageInfoByThreadId: {},
     activityIdsByThreadId: {},
     activityByThreadId: {},
     proposedPlanIdsByThreadId: {},
@@ -922,6 +928,103 @@ describe("incremental orchestration updates", () => {
       "message-2",
       "message-3",
       "message-4",
+    ]);
+  });
+
+  it("preserves already loaded older bounded detail resources when snapshots reconnect", () => {
+    const threadId = ThreadId.make("thread-1");
+    const fullSnapshot = makeServerThread({
+      messages: [],
+      activities: [1, 2, 3, 4].map((value) => ({
+        id: EventId.make(`activity-${value}`),
+        createdAt: `2026-02-27T00:00:0${value}.000Z`,
+        turnId: null,
+        sequence: value,
+        kind: "test.activity",
+        summary: `activity ${value}`,
+        tone: "info",
+        payload: {},
+      })),
+      proposedPlans: [1, 2, 3, 4].map((value) => ({
+        id: `plan-${value}`,
+        turnId: null,
+        planMarkdown: `plan ${value}`,
+        implementedAt: null,
+        implementationThreadId: null,
+        createdAt: `2026-02-27T00:00:0${value}.000Z`,
+        updatedAt: `2026-02-27T00:00:0${value}.000Z`,
+      })),
+      checkpoints: [1, 2, 3, 4].map((value) => ({
+        turnId: TurnId.make(`turn-${value}`),
+        checkpointTurnCount: value,
+        checkpointRef: CheckpointRef.make(`checkpoint-${value}`),
+        status: "ready",
+        files: [],
+        assistantMessageId: null,
+        completedAt: `2026-02-27T00:00:0${value}.000Z`,
+      })),
+    });
+    const latestSnapshot = makeServerThread({
+      ...fullSnapshot,
+      activities: fullSnapshot.activities.slice(2),
+      proposedPlans: fullSnapshot.proposedPlans.slice(2),
+      checkpoints: fullSnapshot.checkpoints.slice(2),
+    });
+
+    const withFullSnapshot = syncServerThreadDetail(
+      makeEmptyState({ activeEnvironmentId: localEnvironmentId }),
+      fullSnapshot,
+      localEnvironmentId,
+    );
+    const afterReconnect = syncServerThreadDetail(
+      withFullSnapshot,
+      latestSnapshot,
+      localEnvironmentId,
+      {
+        messages: {
+          limit: 2,
+          included: 0,
+          hasMoreBefore: false,
+        },
+        activities: {
+          limit: 2,
+          included: 2,
+          hasMoreBefore: true,
+        },
+        proposedPlans: {
+          limit: 2,
+          included: 2,
+          hasMoreBefore: true,
+        },
+        checkpoints: {
+          limit: 2,
+          included: 2,
+          hasMoreBefore: true,
+        },
+      },
+    );
+    const projectedThread = selectThreadByRef(
+      afterReconnect,
+      scopeThreadRef(localEnvironmentId, threadId),
+    );
+
+    expect(projectedThread?.activities.map((activity) => activity.id)).toEqual([
+      "activity-1",
+      "activity-2",
+      "activity-3",
+      "activity-4",
+    ]);
+    expect(projectedThread?.proposedPlans.map((plan) => plan.id)).toEqual([
+      "plan-1",
+      "plan-2",
+      "plan-3",
+      "plan-4",
+    ]);
+    expect(projectedThread?.turnDiffSummaries.map((summary) => summary.checkpointRef)).toEqual([
+      "checkpoint-1",
+      "checkpoint-2",
+      "checkpoint-3",
+      "checkpoint-4",
     ]);
   });
 

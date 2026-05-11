@@ -486,6 +486,8 @@ const buildAppUnderTest = (options?: {
         Layer.mock(ToolCallFileDiffRepository)({
           upsert: () => Effect.void,
           listByThread: () => Effect.succeed([]),
+          listLatestByThread: () => Effect.succeed([]),
+          getByThreadAndToolCall: () => Effect.succeed(null),
           cleanupIfOverBudget: () => Effect.void,
           ...options?.layers?.toolCallFileDiffRepository,
         }),

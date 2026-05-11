@@ -1,4 +1,10 @@
-import { type EnvironmentId, type MessageId, type ThreadId, type TurnId } from "@t3tools/contracts";
+import {
+  ProviderItemId,
+  type EnvironmentId,
+  type MessageId,
+  type ThreadId,
+  type TurnId,
+} from "@t3tools/contracts";
 import { FileDiff } from "@pierre/diffs/react";
 import {
   createContext,
@@ -79,10 +85,12 @@ import {
 import { formatWorkspaceRelativePath } from "../../filePathDisplay";
 import {
   debugFileChangeStream,
+  hydrateLiveCommandOutputSnapshot,
   useLiveCommandOutput,
   type LiveCommandOutputKey,
   type LiveCommandOutputSnapshot,
 } from "../../liveCommandOutput";
+import { readEnvironmentApi } from "../../environmentApi";
 
 // ---------------------------------------------------------------------------
 // Context — shared state consumed by every row component via useContext.
@@ -110,6 +118,7 @@ interface TimelineRowSharedState {
 }
 
 const TimelineRowCtx = createContext<TimelineRowSharedState>(null!);
+const requestedCommandOutputSnapshotKeys = new Set<string>();
 
 // ---------------------------------------------------------------------------
 // Props (public API)
@@ -1988,15 +1997,64 @@ const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
       ? workEntry.outputPreview
       : null;
   const ctx = use(TimelineRowCtx);
-  const liveKey: LiveCommandOutputKey | null =
-    (isTerminal || isFileChange) && workEntry.toolCallId
-      ? {
-          environmentId: ctx.activeThreadEnvironmentId,
-          threadId: ctx.activeThreadId,
-          toolCallId: workEntry.toolCallId,
-        }
-      : null;
+  const liveKey: LiveCommandOutputKey | null = useMemo(
+    () =>
+      (isTerminal || isFileChange) && workEntry.toolCallId
+        ? {
+            environmentId: ctx.activeThreadEnvironmentId,
+            threadId: ctx.activeThreadId,
+            toolCallId: workEntry.toolCallId,
+          }
+        : null,
+    [
+      ctx.activeThreadEnvironmentId,
+      ctx.activeThreadId,
+      isFileChange,
+      isTerminal,
+      workEntry.toolCallId,
+    ],
+  );
   const liveOutput = useLiveCommandOutput(liveKey);
+  useEffect(() => {
+    if (
+      !isFileChange ||
+      !liveKey ||
+      !workEntry.toolCallId ||
+      workEntry.status === "running" ||
+      liveOutput.text.length > 0
+    ) {
+      return;
+    }
+    const requestKey = `${liveKey.environmentId}:${liveKey.threadId}:${liveKey.toolCallId}`;
+    if (requestedCommandOutputSnapshotKeys.has(requestKey)) {
+      return;
+    }
+    requestedCommandOutputSnapshotKeys.add(requestKey);
+    const api = readEnvironmentApi(liveKey.environmentId);
+    if (!api) {
+      requestedCommandOutputSnapshotKeys.delete(requestKey);
+      return;
+    }
+    void api.orchestration
+      .getThreadCommandOutputSnapshot({
+        threadId: liveKey.threadId,
+        toolCallId: ProviderItemId.make(workEntry.toolCallId),
+      })
+      .then((result) => {
+        if (result.snapshot) {
+          hydrateLiveCommandOutputSnapshot(liveKey.environmentId, result.snapshot);
+        }
+      })
+      .catch((error: unknown) => {
+        requestedCommandOutputSnapshotKeys.delete(requestKey);
+        debugFileChangeStream("load-command-output-snapshot-failed", {
+          environmentId: liveKey.environmentId,
+          threadId: liveKey.threadId,
+          toolCallId: liveKey.toolCallId,
+          error,
+        });
+      });
+  }, [isFileChange, liveKey, liveOutput.text.length, workEntry.status, workEntry.toolCallId]);
   const hasLiveOutput =
     liveOutput.text.length > 0 ||
     ((isTerminal || isFileChange) &&

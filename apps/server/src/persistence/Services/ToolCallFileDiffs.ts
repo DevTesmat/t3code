@@ -33,6 +33,21 @@ export const ListToolCallFileDiffsByThreadInput = Schema.Struct({
 });
 export type ListToolCallFileDiffsByThreadInput = typeof ListToolCallFileDiffsByThreadInput.Type;
 
+export const ListLatestToolCallFileDiffsByThreadInput = Schema.Struct({
+  threadId: ThreadId,
+  accessedAt: IsoDateTime,
+  limit: NonNegativeInt,
+});
+export type ListLatestToolCallFileDiffsByThreadInput =
+  typeof ListLatestToolCallFileDiffsByThreadInput.Type;
+
+export const GetToolCallFileDiffInput = Schema.Struct({
+  threadId: ThreadId,
+  toolCallId: ProviderItemId,
+  accessedAt: IsoDateTime,
+});
+export type GetToolCallFileDiffInput = typeof GetToolCallFileDiffInput.Type;
+
 export const CleanupToolCallFileDiffsInput = Schema.Struct({
   now: IsoDateTime,
   staleAfterMs: NonNegativeInt,
@@ -49,6 +64,12 @@ export interface ToolCallFileDiffRepositoryShape {
   readonly listByThread: (
     input: ListToolCallFileDiffsByThreadInput,
   ) => Effect.Effect<ReadonlyArray<ToolCallFileDiff>, ProjectionRepositoryError>;
+  readonly listLatestByThread: (
+    input: ListLatestToolCallFileDiffsByThreadInput,
+  ) => Effect.Effect<ReadonlyArray<ToolCallFileDiff>, ProjectionRepositoryError>;
+  readonly getByThreadAndToolCall: (
+    input: GetToolCallFileDiffInput,
+  ) => Effect.Effect<ToolCallFileDiff | null, ProjectionRepositoryError>;
   readonly cleanupIfOverBudget: (
     input: CleanupToolCallFileDiffsInput,
   ) => Effect.Effect<void, ProjectionRepositoryError>;

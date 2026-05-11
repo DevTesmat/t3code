@@ -140,6 +140,10 @@ export function createEnvironmentConnection(
         { fromSequenceExclusive: latestShellSequence },
         (events) => {
           input.applyReplayEvents(events, environmentId);
+          const pageLatestSequence = events.at(-1)?.sequence;
+          if (pageLatestSequence !== undefined) {
+            latestShellSequence = Math.max(latestShellSequence, pageLatestSequence);
+          }
         },
       );
       if (item.sequence > latestShellSequence + 1) {

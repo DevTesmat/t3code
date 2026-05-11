@@ -120,4 +120,93 @@ layer("ToolCallFileDiffRepository", (it) => {
       );
     }),
   );
+
+  it.effect("lists the latest file diffs by thread without touching older rows", () =>
+    Effect.gen(function* () {
+      const repository = yield* ToolCallFileDiffRepository;
+      const threadId = ThreadId.make("thread-latest-file-diffs");
+
+      for (let index = 1; index <= 4; index += 1) {
+        yield* repository.upsert({
+          threadId,
+          turnId: TurnId.make(`turn-${index}`),
+          toolCallId: ProviderItemId.make(`tool-${index}`),
+          diff: `diff-${index}`,
+          truncated: false,
+          updatedAt: `2026-03-17T19:12:3${index}.000Z`,
+        });
+      }
+
+      const latestRows = yield* repository.listLatestByThread({
+        threadId,
+        accessedAt: "2026-03-17T19:13:00.000Z",
+        limit: 2,
+      });
+
+      assert.deepStrictEqual(
+        latestRows.map((row) => row.toolCallId),
+        [ProviderItemId.make("tool-3"), ProviderItemId.make("tool-4")],
+      );
+      assert.deepStrictEqual(
+        latestRows.map((row) => row.lastAccessedAt),
+        ["2026-03-17T19:13:00.000Z", "2026-03-17T19:13:00.000Z"],
+      );
+
+      const allRows = yield* repository.listByThread({
+        threadId,
+        accessedAt: "2026-03-17T19:13:01.000Z",
+      });
+      assert.deepStrictEqual(
+        allRows.map((row) => row.toolCallId),
+        [
+          ProviderItemId.make("tool-1"),
+          ProviderItemId.make("tool-2"),
+          ProviderItemId.make("tool-3"),
+          ProviderItemId.make("tool-4"),
+        ],
+      );
+    }),
+  );
+
+  it.effect("loads a single file diff by thread and tool call", () =>
+    Effect.gen(function* () {
+      const repository = yield* ToolCallFileDiffRepository;
+      const threadId = ThreadId.make("thread-single-file-diff");
+      const toolCallId = ProviderItemId.make("tool-single");
+
+      yield* repository.upsert({
+        threadId,
+        turnId: TurnId.make("turn-single"),
+        toolCallId,
+        diff: "diff --git a/src/app.ts b/src/app.ts\n+single\n",
+        truncated: false,
+        updatedAt: "2026-03-17T19:12:31.000Z",
+      });
+
+      const row = yield* repository.getByThreadAndToolCall({
+        threadId,
+        toolCallId,
+        accessedAt: "2026-03-17T19:13:00.000Z",
+      });
+
+      assert.deepStrictEqual(row, {
+        threadId,
+        turnId: TurnId.make("turn-single"),
+        toolCallId,
+        diff: "diff --git a/src/app.ts b/src/app.ts\n+single\n",
+        truncated: false,
+        sizeBytes: 45,
+        createdAt: "2026-03-17T19:12:31.000Z",
+        updatedAt: "2026-03-17T19:12:31.000Z",
+        lastAccessedAt: "2026-03-17T19:13:00.000Z",
+      });
+
+      const missing = yield* repository.getByThreadAndToolCall({
+        threadId,
+        toolCallId: ProviderItemId.make("missing"),
+        accessedAt: "2026-03-17T19:13:00.000Z",
+      });
+      assert.equal(missing, null);
+    }),
+  );
 });
