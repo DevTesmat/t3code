@@ -55,12 +55,14 @@ import type {
   ClientOrchestrationCommand,
   OrchestrationGetFullThreadDiffInput,
   OrchestrationGetFullThreadDiffResult,
+  OrchestrationGetThreadMessagesPageInput,
   OrchestrationReplayEventsInput,
   OrchestrationReplayEventsResult,
   OrchestrationGetTurnDiffInput,
   OrchestrationGetTurnDiffResult,
   OrchestrationShellStreamItem,
   OrchestrationSubscribeThreadInput,
+  OrchestrationThreadMessagesPage,
   OrchestrationThreadStreamItem,
 } from "./orchestration.ts";
 import type { EnvironmentId } from "./baseSchemas.ts";
@@ -326,6 +328,9 @@ export interface EnvironmentApi {
     getFullThreadDiff: (
       input: OrchestrationGetFullThreadDiffInput,
     ) => Promise<OrchestrationGetFullThreadDiffResult>;
+    getThreadMessagesPage: (
+      input: OrchestrationGetThreadMessagesPageInput,
+    ) => Promise<OrchestrationThreadMessagesPage>;
     subscribeShell: (
       callback: (event: OrchestrationShellStreamItem) => void,
       options?: {

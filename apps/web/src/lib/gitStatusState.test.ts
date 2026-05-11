@@ -126,6 +126,7 @@ function createRegisteredGitStatusClient(environmentId: EnvironmentId) {
       dispatchCommand: vi.fn(async () => undefined),
       getTurnDiff: vi.fn(async () => undefined),
       getFullThreadDiff: vi.fn(async () => undefined),
+      getThreadMessagesPage: vi.fn(async () => undefined),
       subscribeShell: vi.fn(() => () => undefined),
       subscribeThread: vi.fn(() => () => undefined),
     },

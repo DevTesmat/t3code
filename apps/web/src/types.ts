@@ -2,6 +2,7 @@ import type {
   EnvironmentId,
   ModelSelection,
   OrchestrationLatestTurn,
+  OrchestrationThreadDetailResourcePageInfo,
   OrchestrationMessageSource,
   OrchestrationProposedPlanId,
   RepositoryIdentity,
@@ -120,6 +121,7 @@ export interface Thread {
   worktreePath: string | null;
   turnDiffSummaries: TurnDiffSummary[];
   activities: OrchestrationThreadActivity[];
+  messagePageInfo?: OrchestrationThreadDetailResourcePageInfo | undefined;
 }
 
 export interface ThreadShell {

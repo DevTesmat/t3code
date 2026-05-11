@@ -27,6 +27,7 @@ import {
   selectThreadExistsByRef,
   setThreadBranch,
   selectThreadsAcrossEnvironments,
+  prependServerThreadMessagesPage,
   syncServerShellSnapshot,
   syncServerThreadDetail,
   type AppState,
@@ -157,6 +158,7 @@ function makeState(thread: Thread): AppState {
         thread.messages.map((message) => [message.id, message] as const),
       ) as EnvironmentState["messageByThreadId"][ThreadId],
     },
+    messagePageInfoByThreadId: {},
     activityIdsByThreadId: {
       [thread.id]: thread.activities.map((activity) => activity.id),
     },
@@ -200,6 +202,7 @@ function makeEmptyState(overrides: Partial<AppState & EnvironmentState> = {}): A
     threadTurnStateById: {},
     messageIdsByThreadId: {},
     messageByThreadId: {},
+    messagePageInfoByThreadId: {},
     activityIdsByThreadId: {},
     activityByThreadId: {},
     proposedPlanIdsByThreadId: {},
@@ -825,6 +828,100 @@ describe("incremental orchestration updates", () => {
     expect(projectedThread?.activities.map((activity) => activity.id)).toEqual([
       "spawn-child",
       "child-tool-started",
+    ]);
+  });
+
+  it("preserves already loaded older messages when bounded snapshots reconnect", () => {
+    const threadId = ThreadId.make("thread-1");
+    const initialSnapshot = makeServerThread({
+      messages: [
+        {
+          id: MessageId.make("message-3"),
+          role: "user",
+          text: "third",
+          turnId: null,
+          streaming: false,
+          createdAt: "2026-02-27T00:00:03.000Z",
+          updatedAt: "2026-02-27T00:00:03.000Z",
+        },
+        {
+          id: MessageId.make("message-4"),
+          role: "assistant",
+          text: "fourth",
+          turnId: null,
+          streaming: false,
+          createdAt: "2026-02-27T00:00:04.000Z",
+          updatedAt: "2026-02-27T00:00:04.000Z",
+        },
+      ],
+    });
+
+    const withSnapshot = syncServerThreadDetail(
+      makeEmptyState({ activeEnvironmentId: localEnvironmentId }),
+      initialSnapshot,
+      localEnvironmentId,
+      {
+        messages: {
+          limit: 2,
+          included: 2,
+          hasMoreBefore: true,
+        },
+      },
+    );
+    const withOlderPage = prependServerThreadMessagesPage(
+      withSnapshot,
+      {
+        threadId,
+        messages: [
+          {
+            id: MessageId.make("message-1"),
+            role: "user",
+            text: "first",
+            turnId: null,
+            streaming: false,
+            createdAt: "2026-02-27T00:00:01.000Z",
+            updatedAt: "2026-02-27T00:00:01.000Z",
+          },
+          {
+            id: MessageId.make("message-2"),
+            role: "assistant",
+            text: "second",
+            turnId: null,
+            streaming: false,
+            createdAt: "2026-02-27T00:00:02.000Z",
+            updatedAt: "2026-02-27T00:00:02.000Z",
+          },
+        ],
+        pageInfo: {
+          limit: 2,
+          included: 2,
+          hasMoreBefore: false,
+        },
+      },
+      localEnvironmentId,
+    );
+    const afterReconnect = syncServerThreadDetail(
+      withOlderPage,
+      initialSnapshot,
+      localEnvironmentId,
+      {
+        messages: {
+          limit: 2,
+          included: 2,
+          hasMoreBefore: true,
+        },
+      },
+    );
+    const projectedThread = selectThreadByRef(
+      afterReconnect,
+      scopeThreadRef(localEnvironmentId, threadId),
+    );
+
+    expect(projectedThread?.messages.map((message) => message.id)).toEqual([
+      "message-1",
+      "message-2",
+      "message-3",
+      "message-4",
     ]);
   });
 

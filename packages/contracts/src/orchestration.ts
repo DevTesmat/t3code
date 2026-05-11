@@ -22,6 +22,7 @@ export const ORCHESTRATION_WS_METHODS = {
   dispatchCommand: "orchestration.dispatchCommand",
   getTurnDiff: "orchestration.getTurnDiff",
   getFullThreadDiff: "orchestration.getFullThreadDiff",
+  getThreadMessagesPage: "orchestration.getThreadMessagesPage",
   replayEvents: "orchestration.replayEvents",
   subscribeShell: "orchestration.subscribeShell",
   subscribeThread: "orchestration.subscribeThread",
@@ -483,6 +484,21 @@ export const OrchestrationThreadDetailSnapshot = Schema.Struct({
   pageInfo: Schema.optionalKey(OrchestrationThreadDetailPageInfo),
 });
 export type OrchestrationThreadDetailSnapshot = typeof OrchestrationThreadDetailSnapshot.Type;
+
+export const OrchestrationGetThreadMessagesPageInput = Schema.Struct({
+  threadId: ThreadId,
+  beforeMessageId: MessageId,
+  limit: Schema.optional(PositiveInt),
+});
+export type OrchestrationGetThreadMessagesPageInput =
+  typeof OrchestrationGetThreadMessagesPageInput.Type;
+
+export const OrchestrationThreadMessagesPage = Schema.Struct({
+  threadId: ThreadId,
+  messages: Schema.Array(OrchestrationMessage),
+  pageInfo: OrchestrationThreadDetailResourcePageInfo,
+});
+export type OrchestrationThreadMessagesPage = typeof OrchestrationThreadMessagesPage.Type;
 
 export const OrchestrationCommandOutputDelta = Schema.Struct({
   threadId: ThreadId,
@@ -1369,6 +1385,10 @@ export const OrchestrationRpcSchemas = {
   getFullThreadDiff: {
     input: OrchestrationGetFullThreadDiffInput,
     output: OrchestrationGetFullThreadDiffResult,
+  },
+  getThreadMessagesPage: {
+    input: OrchestrationGetThreadMessagesPageInput,
+    output: OrchestrationThreadMessagesPage,
   },
   replayEvents: {
     input: OrchestrationReplayEventsInput,

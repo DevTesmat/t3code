@@ -1185,6 +1185,31 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
           included: THREAD_DETAIL_INITIAL_MESSAGE_LIMIT,
           hasMoreBefore: true,
         });
+
+        const olderPage = yield* snapshotQuery.getThreadMessagesPageBefore({
+          threadId: ThreadId.make("thread-1"),
+          beforeMessageId: asMessageId("message-0010"),
+          limit: 6,
+        });
+        assert.equal(olderPage._tag, "Some");
+        if (olderPage._tag === "Some") {
+          assert.deepEqual(
+            olderPage.value.messages.map((message) => message.id),
+            [
+              asMessageId("message-0004"),
+              asMessageId("message-0005"),
+              asMessageId("message-0006"),
+              asMessageId("message-0007"),
+              asMessageId("message-0008"),
+              asMessageId("message-0009"),
+            ],
+          );
+          assert.deepEqual(olderPage.value.pageInfo, {
+            limit: 6,
+            included: 6,
+            hasMoreBefore: true,
+          });
+        }
       }
     }),
   );

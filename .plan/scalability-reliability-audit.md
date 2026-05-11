@@ -4,7 +4,7 @@
 
 This file is the source of truth for the scalability work from the May 2026 audit. Keep it updated whenever scope, ordering, implementation details, or completion status changes.
 
-Current state: Stage 3 in progress. Replay RPC pagination and shell-stream gap recovery are implemented and verified in dev logs. Provider ingestion now exposes enqueue/backpressure accounting through worker health and operational health; explicit overflow recovery policy remains open. Thread subscription snapshots now bound initial message hydration and expose page metadata, while older message page loading remains open.
+Current state: Stage 3 in progress. Replay RPC pagination and shell-stream gap recovery are implemented and verified in dev logs. Provider ingestion now exposes enqueue/backpressure accounting through worker health and operational health; explicit overflow recovery policy remains open. Thread subscription snapshots now bound initial message hydration and expose page metadata, and older messages can be loaded through an explicit bounded page API/UI.
 
 ## Goal
 
@@ -181,16 +181,16 @@ Expected outcome: event pressure cannot cause invisible data loss.
 
 - [ ] Split thread detail contract into shell plus paged resources:
   - [x] bounded initial message page metadata on thread subscription snapshots
-  - [ ] explicit older-message page fetch API/UI
+  - [x] explicit older-message page fetch API/UI
   - activities
   - proposed plans
   - checkpoints
   - command output/file diffs where needed
 - [x] Add stable latest-message server query for subscription snapshots.
 - [x] Make `subscribeThread` send bounded initial message detail.
-- [ ] Keep live updates append/update based.
-- [ ] Add UI loading states for older detail pages.
-- [ ] Add tests for opening a thread with more than the initial page size.
+- [x] Keep live updates append/update based.
+- [x] Add UI loading states for older detail pages.
+- [x] Add tests for opening a thread with more than the initial page size.
 
 Progress notes:
 
@@ -199,6 +199,9 @@ Progress notes:
 - `ProjectionSnapshotQuery.getThreadDetailById` remains the full-detail internal query for existing server-side callers.
 - `subscribeThread` initial and history-sync reload snapshots now use the bounded detail snapshot path.
 - Focused coverage seeds more than the initial message limit and verifies the subscription snapshot contains only the latest page in stable chronological order.
+- `orchestration.getThreadMessagesPage` fetches a bounded page before an already loaded message id, preserving stable chronological order and `hasMoreBefore` metadata.
+- The web store records message page metadata, merges bounded reconnect snapshots without discarding already loaded older messages, and prepends older pages by id.
+- `ChatView` auto-loads older pages when the user scrolls near the top and keeps a small top-of-thread loading action as a fallback.
 
 Expected outcome: opening a huge thread is bounded, and older content loads on demand.
 

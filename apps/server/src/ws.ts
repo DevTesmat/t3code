@@ -88,6 +88,8 @@ import { makeWebSocketSnapshotReloadCoordinator } from "./wsSnapshotReloadCoordi
 
 const ORCHESTRATION_REPLAY_DEFAULT_LIMIT = 1_000;
 const ORCHESTRATION_REPLAY_MAX_LIMIT = 5_000;
+const THREAD_MESSAGE_PAGE_DEFAULT_LIMIT = 500;
+const THREAD_MESSAGE_PAGE_MAX_LIMIT = 1_000;
 
 function isThreadDetailEvent(event: OrchestrationEvent): event is Extract<
   OrchestrationEvent,
@@ -702,6 +704,39 @@ const makeWsRpcLayer = (currentSessionId: AuthSessionId) =>
                     message: "Failed to replay orchestration events",
                     cause,
                   }),
+              ),
+            ),
+            { "rpc.aggregate": "orchestration" },
+          ),
+        [ORCHESTRATION_WS_METHODS.getThreadMessagesPage]: (input) =>
+          observeRpcEffect(
+            ORCHESTRATION_WS_METHODS.getThreadMessagesPage,
+            Effect.gen(function* () {
+              const requestedLimit = input.limit ?? THREAD_MESSAGE_PAGE_DEFAULT_LIMIT;
+              const limit = clamp(requestedLimit, {
+                maximum: THREAD_MESSAGE_PAGE_MAX_LIMIT,
+                minimum: 1,
+              });
+              const page = yield* projectionSnapshotQuery.getThreadMessagesPageBefore({
+                threadId: input.threadId,
+                beforeMessageId: input.beforeMessageId,
+                limit,
+              });
+              if (Option.isNone(page)) {
+                return yield* new OrchestrationGetSnapshotError({
+                  message: `Thread ${input.threadId} was not found`,
+                  cause: input.threadId,
+                });
+              }
+              return page.value;
+            }).pipe(
+              Effect.mapError((cause) =>
+                Schema.is(OrchestrationGetSnapshotError)(cause)
+                  ? cause
+                  : new OrchestrationGetSnapshotError({
+                      message: `Failed to load older messages for thread ${input.threadId}`,
+                      cause,
+                    }),
               ),
             ),
             { "rpc.aggregate": "orchestration" },

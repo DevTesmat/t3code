@@ -208,6 +208,7 @@ const EMPTY_MESSAGES: ChatMessage[] = [];
 const EMPTY_PROPOSED_PLANS: Thread["proposedPlans"] = [];
 const EMPTY_PROVIDERS: ServerProvider[] = [];
 const EMPTY_PENDING_USER_INPUT_ANSWERS: Record<string, PendingUserInputDraftAnswer> = {};
+const OLDER_MESSAGES_AUTOLOAD_THRESHOLD_PX = 96;
 type QueuedComposerFlushReason = "agent-finished" | "empty-enter-force";
 
 async function dispatchAndApplyCommittedEvents(input: {
@@ -703,6 +704,9 @@ export default function ChatView(props: ChatViewProps) {
     ),
   );
   const setStoreThreadError = useStore((store) => store.setError);
+  const prependServerThreadMessagesPage = useStore(
+    (store) => store.prependServerThreadMessagesPage,
+  );
   const markThreadVisited = useUiStateStore((store) => store.markThreadVisited);
   const activeThreadLastVisitedAt = useUiStateStore((store) =>
     routeKind === "server" ? store.threadLastVisitedAtById[routeThreadKey] : undefined,
@@ -936,6 +940,10 @@ export default function ChatView(props: ChatViewProps) {
     [activeThread],
   );
   const activeThreadKey = activeThreadRef ? scopedThreadKey(activeThreadRef) : null;
+  const [olderMessagesLoadingThreadKey, setOlderMessagesLoadingThreadKey] = useState<string | null>(
+    null,
+  );
+  const olderMessagesLastRequestedKeyRef = useRef<string | null>(null);
   const existingOpenTerminalThreadKeys = useMemo(() => {
     const existingThreadKeys = new Set<string>([...serverThreadKeys, ...draftThreadKeys]);
     return openTerminalThreadKeys.filter((nextThreadKey) => existingThreadKeys.has(nextThreadKey));
@@ -1443,6 +1451,72 @@ export default function ChatView(props: ChatViewProps) {
     });
   }, []);
   const serverMessages = activeThread?.messages;
+  const canLoadOlderMessages =
+    !selectedSubagentTranscript &&
+    activeThread?.messagePageInfo?.hasMoreBefore === true &&
+    activeThread.messages.length > 0;
+  const isLoadingOlderMessages =
+    activeThreadKey !== null && olderMessagesLoadingThreadKey === activeThreadKey;
+  const loadOlderMessages = useCallback(async () => {
+    if (
+      !activeThread ||
+      !activeThreadKey ||
+      selectedSubagentTranscript ||
+      activeThread.messagePageInfo?.hasMoreBefore !== true ||
+      activeThread.messages.length === 0
+    ) {
+      return;
+    }
+    const beforeMessageId = activeThread.messages[0]?.id;
+    if (!beforeMessageId || isLoadingOlderMessages) {
+      return;
+    }
+    const requestKey = `${activeThreadKey}:${beforeMessageId}`;
+    if (olderMessagesLastRequestedKeyRef.current === requestKey) {
+      return;
+    }
+    const api = readEnvironmentApi(activeThread.environmentId);
+    if (!api) {
+      toastManager.add(
+        stackedThreadToast({
+          type: "error",
+          title: "Environment disconnected",
+          description: "Reconnect before loading older messages.",
+        }),
+      );
+      return;
+    }
+
+    setOlderMessagesLoadingThreadKey(activeThreadKey);
+    olderMessagesLastRequestedKeyRef.current = requestKey;
+    try {
+      const page = await api.orchestration.getThreadMessagesPage({
+        threadId: activeThread.id,
+        beforeMessageId,
+      });
+      prependServerThreadMessagesPage(page, activeThread.environmentId);
+      if (page.pageInfo.hasMoreBefore) {
+        olderMessagesLastRequestedKeyRef.current = null;
+      }
+    } catch (error) {
+      olderMessagesLastRequestedKeyRef.current = null;
+      toastManager.add(
+        stackedThreadToast({
+          type: "error",
+          title: "Failed to load older messages",
+          description: error instanceof Error ? error.message : "Try again in a moment.",
+        }),
+      );
+    } finally {
+      setOlderMessagesLoadingThreadKey((current) => (current === activeThreadKey ? null : current));
+    }
+  }, [
+    activeThread,
+    activeThreadKey,
+    isLoadingOlderMessages,
+    prependServerThreadMessagesPage,
+    selectedSubagentTranscript,
+  ]);
   useEffect(() => {
     if (typeof Image === "undefined" || !serverMessages || serverMessages.length === 0) {
       return;
@@ -2423,12 +2497,15 @@ export default function ChatView(props: ChatViewProps) {
 
   const syncTimelineScrollViewportStickiness = useCallback(
     (scrollViewport: HTMLElement) => {
+      if (scrollViewport.scrollTop <= OLDER_MESSAGES_AUTOLOAD_THRESHOLD_PX) {
+        void loadOlderMessages();
+      }
       if (!isMessagesViewportAtBottom(scrollViewport)) {
         return isAtEndRef.current;
       }
       return setTimelineBottomStickiness(true);
     },
-    [isMessagesViewportAtBottom, setTimelineBottomStickiness],
+    [isMessagesViewportAtBottom, loadOlderMessages, setTimelineBottomStickiness],
   );
 
   const scrollToEndFromPill = useCallback(() => {
@@ -4225,6 +4302,18 @@ export default function ChatView(props: ChatViewProps) {
                     Read-only subagent transcript
                   </div>
                 </div>
+              </div>
+            ) : null}
+            {canLoadOlderMessages ? (
+              <div className="pointer-events-none absolute top-2 left-1/2 z-30 flex -translate-x-1/2 justify-center">
+                <button
+                  type="button"
+                  onClick={loadOlderMessages}
+                  disabled={isLoadingOlderMessages}
+                  className="pointer-events-auto rounded-full border border-border/60 bg-card px-3 py-1 text-muted-foreground text-xs shadow-sm transition-colors hover:border-border hover:text-foreground disabled:cursor-wait disabled:opacity-60"
+                >
+                  {isLoadingOlderMessages ? "Loading..." : "Load older messages"}
+                </button>
               </div>
             ) : null}
             {/* Messages — LegendList handles virtualization and scrolling internally */}

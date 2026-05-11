@@ -8,13 +8,16 @@
  */
 import type {
   OrchestrationCheckpointSummary,
+  OrchestrationMessage,
   OrchestrationProject,
   OrchestrationProjectShell,
   OrchestrationReadModel,
   OrchestrationShellSnapshot,
   OrchestrationThread,
   OrchestrationThreadDetailPageInfo,
+  OrchestrationThreadDetailResourcePageInfo,
   OrchestrationThreadShell,
+  MessageId,
   ProjectId,
   ThreadId,
 } from "@t3tools/contracts";
@@ -40,6 +43,12 @@ export interface ProjectionThreadCheckpointContext {
 export interface ProjectionThreadDetailSnapshot {
   readonly thread: OrchestrationThread;
   readonly pageInfo: OrchestrationThreadDetailPageInfo;
+}
+
+export interface ProjectionThreadMessagesPage {
+  readonly threadId: ThreadId;
+  readonly messages: ReadonlyArray<OrchestrationMessage>;
+  readonly pageInfo: OrchestrationThreadDetailResourcePageInfo;
 }
 
 /**
@@ -119,6 +128,15 @@ export interface ProjectionSnapshotQueryShape {
   readonly getThreadDetailSnapshotById: (
     threadId: ThreadId,
   ) => Effect.Effect<Option.Option<ProjectionThreadDetailSnapshot>, ProjectionRepositoryError>;
+
+  /**
+   * Read the message page immediately before an already loaded message id.
+   */
+  readonly getThreadMessagesPageBefore: (input: {
+    readonly threadId: ThreadId;
+    readonly beforeMessageId: MessageId;
+    readonly limit: number;
+  }) => Effect.Effect<Option.Option<ProjectionThreadMessagesPage>, ProjectionRepositoryError>;
 }
 
 /**

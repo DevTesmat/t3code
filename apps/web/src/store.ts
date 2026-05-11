@@ -12,6 +12,9 @@ import type {
   OrchestrationSession,
   OrchestrationSessionStatus,
   OrchestrationThread,
+  OrchestrationThreadDetailPageInfo,
+  OrchestrationThreadDetailResourcePageInfo,
+  OrchestrationThreadMessagesPage,
   OrchestrationThreadShell,
   OrchestrationThreadActivity,
   ProjectId,
@@ -71,6 +74,7 @@ export interface EnvironmentState {
   // ---------------------------------------------------------------------------
   messageIdsByThreadId: Record<ThreadId, MessageId[]>;
   messageByThreadId: Record<ThreadId, Record<MessageId, ChatMessage>>;
+  messagePageInfoByThreadId: Record<ThreadId, OrchestrationThreadDetailResourcePageInfo>;
   activityIdsByThreadId: Record<ThreadId, string[]>;
   activityByThreadId: Record<ThreadId, Record<string, OrchestrationThreadActivity>>;
   proposedPlanIdsByThreadId: Record<ThreadId, string[]>;
@@ -105,6 +109,7 @@ const initialEnvironmentState: EnvironmentState = {
   threadTurnStateById: {},
   messageIdsByThreadId: {},
   messageByThreadId: {},
+  messagePageInfoByThreadId: {},
   activityIdsByThreadId: {},
   activityByThreadId: {},
   proposedPlanIdsByThreadId: {},
@@ -469,6 +474,46 @@ function buildMessageSlice(thread: Thread): {
       thread.messages.map((message) => [message.id, message] as const),
     ) as Record<MessageId, ChatMessage>,
   };
+}
+
+function mergeBoundedSnapshotMessages(
+  previousMessages: ReadonlyArray<ChatMessage>,
+  snapshotMessages: ReadonlyArray<ChatMessage>,
+  pageInfo: OrchestrationThreadDetailPageInfo | undefined,
+): ChatMessage[] {
+  if (!pageInfo?.messages.hasMoreBefore || snapshotMessages.length === 0) {
+    return [...snapshotMessages];
+  }
+
+  const snapshotIds = new Set(snapshotMessages.map((message) => message.id));
+  const firstSnapshotMessage = snapshotMessages[0];
+  const retainedOlderMessages = previousMessages.filter(
+    (message) =>
+      !snapshotIds.has(message.id) &&
+      firstSnapshotMessage !== undefined &&
+      (message.createdAt < firstSnapshotMessage.createdAt ||
+        (message.createdAt === firstSnapshotMessage.createdAt &&
+          message.id < firstSnapshotMessage.id)),
+  );
+  return [...retainedOlderMessages, ...snapshotMessages];
+}
+
+function mergeOlderMessagePage(
+  previousMessages: ReadonlyArray<ChatMessage>,
+  pageMessages: ReadonlyArray<ChatMessage>,
+): ChatMessage[] {
+  if (pageMessages.length === 0) {
+    return [...previousMessages];
+  }
+  const pageIds = new Set(pageMessages.map((message) => message.id));
+  return [
+    ...pageMessages,
+    ...previousMessages.filter((message) => !pageIds.has(message.id)),
+  ].toSorted((left, right) =>
+    left.createdAt === right.createdAt
+      ? left.id.localeCompare(right.id)
+      : left.createdAt.localeCompare(right.createdAt),
+  );
 }
 
 function buildActivitySlice(thread: Thread): {
@@ -1267,25 +1312,69 @@ export function syncServerThreadDetail(
   state: AppState,
   thread: OrchestrationThread,
   environmentId: EnvironmentId,
+  pageInfo?: OrchestrationThreadDetailPageInfo,
 ): AppState {
   const environmentState = getStoredEnvironmentState(state, environmentId);
   const previousThread = getThreadFromEnvironmentState(environmentState, thread.id);
   const mappedThread = mapThread(thread, environmentId);
+  const mappedMessages = mergeBoundedSnapshotMessages(
+    previousThread?.messages ?? [],
+    mappedThread.messages,
+    pageInfo,
+  );
   const nextThread =
     previousThread && previousThread.activities.length > mappedThread.activities.length
       ? {
           ...mappedThread,
+          messages: mappedMessages,
           activities: mergeThreadDetailActivities(
             previousThread.activities,
             mappedThread.activities,
           ),
         }
-      : mappedThread;
+      : { ...mappedThread, messages: mappedMessages };
+  const nextEnvironmentState = writeThreadState(environmentState, nextThread, previousThread);
+  const nextMessagePageInfo = pageInfo?.messages;
   return commitEnvironmentState(
     state,
     environmentId,
-    writeThreadState(environmentState, nextThread, previousThread),
+    nextMessagePageInfo
+      ? {
+          ...nextEnvironmentState,
+          messagePageInfoByThreadId: {
+            ...nextEnvironmentState.messagePageInfoByThreadId,
+            [thread.id]: nextMessagePageInfo,
+          },
+        }
+      : nextEnvironmentState,
   );
+}
+
+export function prependServerThreadMessagesPage(
+  state: AppState,
+  page: OrchestrationThreadMessagesPage,
+  environmentId: EnvironmentId,
+): AppState {
+  const environmentState = getStoredEnvironmentState(state, environmentId);
+  const previousThread = getThreadFromEnvironmentState(environmentState, page.threadId);
+  if (!previousThread) {
+    return state;
+  }
+
+  const pageMessages = page.messages.map((message) => mapMessage(environmentId, message));
+  const nextThread = {
+    ...previousThread,
+    messages: mergeOlderMessagePage(previousThread.messages, pageMessages),
+    messagePageInfo: page.pageInfo,
+  };
+  const nextEnvironmentState = writeThreadState(environmentState, nextThread, previousThread);
+  return commitEnvironmentState(state, environmentId, {
+    ...nextEnvironmentState,
+    messagePageInfoByThreadId: {
+      ...nextEnvironmentState.messagePageInfoByThreadId,
+      [page.threadId]: page.pageInfo,
+    },
+  });
 }
 
 function applyEnvironmentOrchestrationEvent(
@@ -2169,7 +2258,15 @@ interface AppStore extends AppState {
     snapshot: OrchestrationShellSnapshot,
     environmentId: EnvironmentId,
   ) => void;
-  syncServerThreadDetail: (thread: OrchestrationThread, environmentId: EnvironmentId) => void;
+  syncServerThreadDetail: (
+    thread: OrchestrationThread,
+    environmentId: EnvironmentId,
+    pageInfo?: OrchestrationThreadDetailPageInfo,
+  ) => void;
+  prependServerThreadMessagesPage: (
+    page: OrchestrationThreadMessagesPage,
+    environmentId: EnvironmentId,
+  ) => void;
   applyOrchestrationEvent: (event: OrchestrationEvent, environmentId: EnvironmentId) => void;
   applyOrchestrationEvents: (
     events: ReadonlyArray<OrchestrationEvent>,
@@ -2190,8 +2287,10 @@ export const useStore = create<AppStore>((set) => ({
     set((state) => setActiveEnvironmentId(state, environmentId)),
   syncServerShellSnapshot: (snapshot, environmentId) =>
     set((state) => syncServerShellSnapshot(state, snapshot, environmentId)),
-  syncServerThreadDetail: (thread, environmentId) =>
-    set((state) => syncServerThreadDetail(state, thread, environmentId)),
+  syncServerThreadDetail: (thread, environmentId, pageInfo) =>
+    set((state) => syncServerThreadDetail(state, thread, environmentId, pageInfo)),
+  prependServerThreadMessagesPage: (page, environmentId) =>
+    set((state) => prependServerThreadMessagesPage(state, page, environmentId)),
   applyOrchestrationEvent: (event, environmentId) =>
     set((state) => applyOrchestrationEvent(state, event, environmentId)),
   applyOrchestrationEvents: (events, environmentId) =>

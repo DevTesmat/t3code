@@ -393,7 +393,13 @@ function attachThreadDetailSubscription(entry: ThreadDetailSubscriptionEntry): b
         if (!shouldApplyThreadDetailSnapshot(item.snapshot, entry.environmentId)) {
           return;
         }
-        useStore.getState().syncServerThreadDetail(item.snapshot.thread, entry.environmentId);
+        useStore
+          .getState()
+          .syncServerThreadDetail(
+            item.snapshot.thread,
+            entry.environmentId,
+            item.snapshot.pageInfo,
+          );
         markAppliedThreadDetailSnapshot(entry.environmentId, item.snapshot);
         return;
       }
