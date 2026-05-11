@@ -16,11 +16,7 @@ import {
   type PointerEvent,
 } from "react";
 import { LegendList, type LegendListRef } from "@legendapp/list/react";
-import {
-  deriveTimelineEntries,
-  formatElapsed,
-  type ActiveTurnActivityState,
-} from "../../session-logic";
+import { deriveTimelineEntries, formatElapsed } from "../../session-logic";
 import { type TurnDiffSummary } from "../../types";
 import ChatMarkdown from "../ChatMarkdown";
 import {
@@ -123,8 +119,6 @@ interface MessagesTimelineProps {
   isWorking: boolean;
   activeTurnInProgress: boolean;
   activeTurnId?: TurnId | null;
-  activeTurnStartedAt: string | null;
-  activeTurnActivityState?: ActiveTurnActivityState | undefined;
   listRef: RefObject<LegendListRef | null>;
   timelineEntries: ReturnType<typeof deriveTimelineEntries>;
   completionDividerBeforeEntryId: string | null;
@@ -156,8 +150,6 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   isWorking,
   activeTurnInProgress,
   activeTurnId,
-  activeTurnStartedAt,
-  activeTurnActivityState,
   listRef,
   timelineEntries,
   completionDividerBeforeEntryId,
@@ -186,8 +178,6 @@ export const MessagesTimeline = memo(function MessagesTimeline({
         timelineEntries,
         completionDividerBeforeEntryId,
         isWorking,
-        activeTurnStartedAt,
-        activeTurnActivityState,
         turnDiffSummaryByAssistantMessageId,
         revertTurnCountByUserMessageId,
       }),
@@ -195,8 +185,6 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       timelineEntries,
       completionDividerBeforeEntryId,
       isWorking,
-      activeTurnStartedAt,
-      activeTurnActivityState,
       turnDiffSummaryByAssistantMessageId,
       revertTurnCountByUserMessageId,
     ],
@@ -447,14 +435,6 @@ function buildTimelineAutoScrollContentKey(rows: ReadonlyArray<MessagesTimelineR
               ].join(":"),
             ),
           ].join("|");
-        case "working":
-          return [
-            row.id,
-            row.kind,
-            row.activityState.kind,
-            row.activityState.label,
-            row.activityState.detail ?? "",
-          ].join(":");
       }
     })
     .join("\n");
@@ -652,25 +632,6 @@ function TimelineRowContent({ row }: { row: TimelineRow }) {
             workspaceRoot={ctx.workspaceRoot}
             onToggleExpanded={ctx.onPreserveViewportRequest}
           />
-        </div>
-      )}
-
-      {row.kind === "working" && (
-        <div className="py-0.5 pl-1.5">
-          <div className="flex min-h-4 items-center gap-2 pt-1 text-[11px] leading-4 text-muted-foreground/70">
-            <span>{row.activityState.label}</span>
-            {ctx.isWorking ? <WorkingDots className="text-muted-foreground/55" /> : null}
-          </div>
-          <div
-            className={cn(
-              "min-h-4 max-w-full truncate pt-0.5 text-[11px] leading-4 text-muted-foreground/45",
-              !row.activityState.detail && "invisible",
-            )}
-            data-testid="working-activity-detail"
-            aria-hidden={row.activityState.detail ? undefined : true}
-          >
-            {row.activityState.detail ?? "\u00a0"}
-          </div>
         </div>
       )}
     </div>

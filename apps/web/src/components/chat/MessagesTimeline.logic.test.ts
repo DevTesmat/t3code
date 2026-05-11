@@ -209,33 +209,16 @@ describe("resolveAssistantMessageCopyState", () => {
 });
 
 describe("deriveMessagesTimelineRows", () => {
-  it("adds the derived active state to the working row", () => {
+  it("does not add a scrollable working row for active status", () => {
     const rows = deriveMessagesTimelineRows({
       timelineEntries: [],
       completionDividerBeforeEntryId: null,
       isWorking: true,
-      activeTurnStartedAt: "2026-01-01T00:00:00Z",
-      activeTurnActivityState: {
-        kind: "runningTool",
-        label: "Running terminal",
-        detail: "bun lint",
-      },
       turnDiffSummaryByAssistantMessageId: new Map(),
       revertTurnCountByUserMessageId: new Map(),
     });
 
-    expect(rows).toEqual([
-      {
-        kind: "working",
-        id: "working-indicator-row",
-        createdAt: "2026-01-01T00:00:00Z",
-        activityState: {
-          kind: "runningTool",
-          label: "Running terminal",
-          detail: "bun lint",
-        },
-      },
-    ]);
+    expect(rows).toEqual([]);
   });
 
   it("only enables assistant copy for the terminal assistant message in a turn", () => {
@@ -285,7 +268,6 @@ describe("deriveMessagesTimelineRows", () => {
       ],
       completionDividerBeforeEntryId: "assistant-final-entry",
       isWorking: false,
-      activeTurnStartedAt: null,
       turnDiffSummaryByAssistantMessageId: new Map(),
       revertTurnCountByUserMessageId: new Map(),
     });
@@ -342,7 +324,6 @@ describe("deriveMessagesTimelineRows", () => {
       ],
       completionDividerBeforeEntryId: null,
       isWorking: false,
-      activeTurnStartedAt: null,
       turnDiffSummaryByAssistantMessageId: new Map([
         ["assistant-1" as never, assistantTurnDiffSummary],
       ]),
@@ -389,7 +370,6 @@ describe("deriveMessagesTimelineRows", () => {
         ],
         completionDividerBeforeEntryId: null,
         isWorking: false,
-        activeTurnStartedAt: null,
         turnDiffSummaryByAssistantMessageId: new Map(),
         revertTurnCountByUserMessageId: new Map(),
       });
@@ -487,7 +467,6 @@ describe("deriveMessagesTimelineRows", () => {
       ],
       completionDividerBeforeEntryId: null,
       isWorking: false,
-      activeTurnStartedAt: null,
       turnDiffSummaryByAssistantMessageId: new Map(),
       revertTurnCountByUserMessageId: new Map(),
     });
@@ -567,7 +546,6 @@ describe("deriveMessagesTimelineRows", () => {
       ],
       completionDividerBeforeEntryId: null,
       isWorking: false,
-      activeTurnStartedAt: null,
       turnDiffSummaryByAssistantMessageId: new Map(),
       revertTurnCountByUserMessageId: new Map(),
     });
@@ -628,7 +606,6 @@ describe("deriveMessagesTimelineRows", () => {
       ],
       completionDividerBeforeEntryId: null,
       isWorking: false,
-      activeTurnStartedAt: null,
       turnDiffSummaryByAssistantMessageId: new Map(),
       revertTurnCountByUserMessageId: new Map(),
     });
@@ -690,7 +667,6 @@ describe("deriveMessagesTimelineRows", () => {
       ],
       completionDividerBeforeEntryId: null,
       isWorking: false,
-      activeTurnStartedAt: null,
       turnDiffSummaryByAssistantMessageId: new Map(),
       revertTurnCountByUserMessageId: new Map(),
     });
@@ -726,7 +702,6 @@ describe("deriveMessagesTimelineRows", () => {
       ],
       completionDividerBeforeEntryId: null,
       isWorking: false,
-      activeTurnStartedAt: null,
       turnDiffSummaryByAssistantMessageId: new Map(),
       revertTurnCountByUserMessageId: new Map(),
     });
@@ -785,7 +760,6 @@ describe("deriveMessagesTimelineRows", () => {
       ],
       completionDividerBeforeEntryId: null,
       isWorking: false,
-      activeTurnStartedAt: null,
       turnDiffSummaryByAssistantMessageId: new Map(),
       revertTurnCountByUserMessageId: new Map(),
     });
@@ -838,7 +812,6 @@ describe("computeStableMessagesTimelineRows", () => {
       ],
       completionDividerBeforeEntryId: null,
       isWorking: false,
-      activeTurnStartedAt: null,
       turnDiffSummaryByAssistantMessageId: new Map(),
       revertTurnCountByUserMessageId: new Map(),
     });
@@ -889,7 +862,6 @@ describe("computeStableMessagesTimelineRows", () => {
       ],
       completionDividerBeforeEntryId: null,
       isWorking: false,
-      activeTurnStartedAt: null,
       turnDiffSummaryByAssistantMessageId: new Map(),
       revertTurnCountByUserMessageId: new Map(),
     });

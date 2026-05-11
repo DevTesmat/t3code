@@ -931,6 +931,56 @@ function createSnapshotWithPendingUserInput(): OrchestrationReadModel {
   };
 }
 
+function createSnapshotWithRunningTerminalStatus(): OrchestrationReadModel {
+  const snapshot = createSnapshotForTargetUser({
+    targetMessageId: "msg-user-running-terminal-target" as MessageId,
+    targetText: "running terminal thread",
+    sessionStatus: "running",
+  });
+  const turnId = "turn-running-terminal" as TurnId;
+
+  return {
+    ...snapshot,
+    threads: snapshot.threads.map((thread) =>
+      thread.id === THREAD_ID
+        ? Object.assign({}, thread, {
+            latestTurn: {
+              turnId,
+              state: "running",
+              requestedAt: isoAt(29),
+              startedAt: isoAt(30),
+              completedAt: null,
+              assistantMessageId: null,
+            },
+            session: thread.session
+              ? {
+                  ...thread.session,
+                  status: "running" as const,
+                  activeTurnId: turnId,
+                  updatedAt: isoAt(31),
+                }
+              : thread.session,
+            activities: [
+              {
+                id: EventId.make("activity-running-terminal"),
+                createdAt: isoAt(32),
+                kind: "tool.started",
+                summary: "Terminal started",
+                tone: "tool",
+                turnId,
+                payload: {
+                  itemType: "command_execution",
+                  title: "Terminal",
+                  data: { toolCallId: "tool-running-terminal", command: "npm start" },
+                },
+              },
+            ],
+          })
+        : thread,
+    ),
+  };
+}
+
 function createSnapshotWithPlanFollowUpPrompt(options?: {
   modelSelection?: { instanceId: ProviderInstanceId; model: string };
   planMarkdown?: string;
@@ -3742,6 +3792,26 @@ describe("ChatView timeline estimator parity (full app)", () => {
         },
         { timeout: 8_000, interval: 16 },
       );
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("renders the live activity status in the composer status row instead of the messages scroll view", async () => {
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot: createSnapshotWithRunningTerminalStatus(),
+    });
+
+    try {
+      await expect.element(page.getByText("Running terminal")).toBeVisible();
+      await expect.element(page.getByText("Agent work")).toBeVisible();
+
+      const scrollViewport = await waitForElement(
+        () => document.querySelector<HTMLElement>('[data-chat-messages-scroll="true"]'),
+        "Unable to find messages scroll viewport.",
+      );
+      expect(scrollViewport.textContent ?? "").not.toContain("Running terminal");
     } finally {
       await mounted.cleanup();
     }

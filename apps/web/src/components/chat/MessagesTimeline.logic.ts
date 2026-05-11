@@ -1,5 +1,4 @@
 import { type TimelineEntry, type WorkLogEntry } from "../../session-logic";
-import { type ActiveTurnActivityState } from "../../session-logic";
 import { type ChatMessage, type ProposedPlan, type TurnDiffSummary } from "../../types";
 import { type MessageId } from "@t3tools/contracts";
 import {
@@ -46,12 +45,6 @@ export type MessagesTimelineRow =
       id: string;
       createdAt: string;
       label: string;
-    }
-  | {
-      kind: "working";
-      id: string;
-      createdAt: string | null;
-      activityState: ActiveTurnActivityState;
     };
 
 export interface StableMessagesTimelineRowsState {
@@ -128,8 +121,6 @@ export function deriveMessagesTimelineRows(input: {
   timelineEntries: ReadonlyArray<TimelineEntry>;
   completionDividerBeforeEntryId: string | null;
   isWorking: boolean;
-  activeTurnStartedAt: string | null;
-  activeTurnActivityState?: ActiveTurnActivityState | undefined;
   turnDiffSummaryByAssistantMessageId: ReadonlyMap<MessageId, TurnDiffSummary>;
   revertTurnCountByUserMessageId: ReadonlyMap<MessageId, number>;
 }): MessagesTimelineRow[] {
@@ -200,18 +191,6 @@ export function deriveMessagesTimelineRows(input: {
   }
 
   appendWorkTimelineRows(pendingWorkEntries, nextRows, workGroupIdOccurrences);
-
-  if (input.isWorking) {
-    nextRows.push({
-      kind: "working",
-      id: "working-indicator-row",
-      createdAt: input.activeTurnStartedAt,
-      activityState: input.activeTurnActivityState ?? {
-        kind: "waitingForModel",
-        label: "Working",
-      },
-    });
-  }
 
   return nextRows;
 }
@@ -327,14 +306,6 @@ function isRowUnchanged(a: MessagesTimelineRow, b: MessagesTimelineRow): boolean
   if (a.kind !== b.kind || a.id !== b.id) return false;
 
   switch (a.kind) {
-    case "working":
-      return (
-        a.createdAt === (b as typeof a).createdAt &&
-        a.activityState.kind === (b as typeof a).activityState.kind &&
-        a.activityState.label === (b as typeof a).activityState.label &&
-        a.activityState.detail === (b as typeof a).activityState.detail
-      );
-
     case "proposed-plan":
       return a.proposedPlan === (b as typeof a).proposedPlan;
 

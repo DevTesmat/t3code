@@ -57,7 +57,6 @@ import {
   derivePhase,
   deriveTimelineEntries,
   deriveActiveTurnActivityState,
-  deriveActiveWorkStartedAt,
   deriveThreadWorkDurationMs,
   deriveThreadSubagents,
   deriveThreadSubagentTranscripts,
@@ -70,6 +69,7 @@ import {
   shouldShowPlanFollowUpPrompt,
   formatElapsed,
   formatThreadWorkDuration,
+  type ActiveTurnActivityState,
 } from "../session-logic";
 import { type LegendListRef } from "@legendapp/list/react";
 import {
@@ -1383,11 +1383,6 @@ export default function ChatView(props: ChatViewProps) {
       threadActivities,
     ],
   );
-  const activeWorkStartedAt = deriveActiveWorkStartedAt(
-    activeLatestTurn,
-    activeThread?.session ?? null,
-    localDispatchStartedAt,
-  );
   useEffect(() => {
     attachmentPreviewHandoffByMessageIdRef.current = attachmentPreviewHandoffByMessageId;
   }, [attachmentPreviewHandoffByMessageId]);
@@ -1623,34 +1618,6 @@ export default function ChatView(props: ChatViewProps) {
     }
     return null;
   }, [selectedSubagentTranscript]);
-  const selectedSubagentActiveStartedAt = useMemo(() => {
-    if (!selectedSubagentTranscript || !selectedSubagentActiveTurnId) {
-      return null;
-    }
-    return (
-      selectedSubagentTranscript.activities.find((activity) => {
-        const payload = activity.payload;
-        const providerTurnId =
-          payload && typeof payload === "object" && "providerTurnId" in payload
-            ? payload.providerTurnId
-            : undefined;
-        return providerTurnId === selectedSubagentActiveTurnId;
-      })?.createdAt ??
-      selectedSubagentTranscript.messages.find(
-        (message) => message.turnId === selectedSubagentActiveTurnId,
-      )?.createdAt ??
-      selectedSubagentTranscript.subagent.createdAt
-    );
-  }, [selectedSubagentActiveTurnId, selectedSubagentTranscript]);
-  const selectedSubagentActivityState = useMemo(() => {
-    if (!selectedSubagentTranscript || !selectedSubagentIsWorking) {
-      return undefined;
-    }
-    if (selectedSubagentTranscript.messages.some((message) => message.streaming)) {
-      return { kind: "streamingAssistant" as const, label: "Streaming response" };
-    }
-    return { kind: "waitingForModel" as const, label: "Waiting for subagent" };
-  }, [selectedSubagentIsWorking, selectedSubagentTranscript]);
   const { turnDiffSummaries, inferredCheckpointTurnCountByTurnId } =
     useTurnDiffSummaries(activeThread);
   const latestChangedFilesSummary = useMemo(() => {
@@ -4278,12 +4245,6 @@ export default function ChatView(props: ChatViewProps) {
                   ? selectedSubagentActiveTurnId
                   : (activeLatestTurn?.turnId ?? null)
               }
-              activeTurnStartedAt={
-                selectedSubagentTranscript ? selectedSubagentActiveStartedAt : activeWorkStartedAt
-              }
-              activeTurnActivityState={
-                selectedSubagentTranscript ? selectedSubagentActivityState : activeTurnActivityState
-              }
               listRef={legendListRef}
               timelineEntries={
                 selectedSubagentTranscript ? selectedSubagentTimelineEntries : timelineEntries
@@ -4343,12 +4304,14 @@ export default function ChatView(props: ChatViewProps) {
               )}
             >
               {activeThread ? (
-                <ComposerThreadWorkLabel
+                <ComposerStatusRow
                   totalWorkDurationMs={activeThread.totalWorkDurationMs ?? 0}
                   latestTurn={activeLatestTurn}
                   session={activeThread.session}
                   sendStartedAt={localDispatchStartedAt}
                   activities={threadActivities}
+                  isWorking={isWorking}
+                  activityState={activeTurnActivityState}
                 />
               ) : null}
               <ComposerChangedFilesBar
@@ -4550,12 +4513,14 @@ export default function ChatView(props: ChatViewProps) {
   );
 }
 
-function ComposerThreadWorkLabel(props: {
+function ComposerStatusRow(props: {
   totalWorkDurationMs: number;
   latestTurn: Thread["latestTurn"] | null;
   session: Thread["session"] | null;
   sendStartedAt: string | null;
   activities: ReadonlyArray<OrchestrationThreadActivity>;
+  isWorking: boolean;
+  activityState?: ActiveTurnActivityState | undefined;
 }) {
   const [nowMs, setNowMs] = useState(() => Date.now());
   const workDuration = deriveThreadWorkDurationMs({
@@ -4573,13 +4538,24 @@ function ComposerThreadWorkLabel(props: {
     return () => window.clearInterval(id);
   }, [workDuration.ticking]);
 
+  const statusLabel = props.isWorking ? (props.activityState?.label ?? "Working") : null;
+
   return (
-    <div className="pointer-events-none absolute right-0 top-0 z-40 inline-flex items-center gap-1.5 rounded-full border border-border/60 bg-background/90 px-2 py-0.5 text-[10px] text-muted-foreground shadow-sm backdrop-blur">
-      <span>Agent work</span>
-      <span className="font-mono tabular-nums">
-        {formatThreadWorkDuration(workDuration.durationMs)}
-      </span>
-      {workDuration.ticking ? <WorkingDots className="text-muted-foreground/60" /> : null}
+    <div className="pointer-events-none absolute inset-x-0 top-0 z-40 flex min-h-5 items-center justify-between gap-3 text-[10px] text-muted-foreground">
+      <div className="flex min-w-0 items-center gap-1.5">
+        {statusLabel ? (
+          <>
+            <span className="truncate">{statusLabel}</span>
+            <WorkingDots className="shrink-0 text-muted-foreground/60" />
+          </>
+        ) : null}
+      </div>
+      <div className="inline-flex shrink-0 items-center gap-1.5 rounded-full border border-border/60 bg-background/90 px-2 py-0.5 shadow-sm backdrop-blur">
+        <span>Agent work</span>
+        <span className="font-mono tabular-nums">
+          {formatThreadWorkDuration(workDuration.durationMs)}
+        </span>
+      </div>
     </div>
   );
 }

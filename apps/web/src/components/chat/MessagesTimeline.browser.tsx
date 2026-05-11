@@ -141,7 +141,6 @@ function buildProps() {
     isWorking: false,
     activeTurnInProgress: false,
     activeTurnId: null,
-    activeTurnStartedAt: null,
     listRef: createRef<LegendListRef | null>(),
     completionDividerBeforeEntryId: null,
     turnDiffSummaryByAssistantMessageId: new Map(),
