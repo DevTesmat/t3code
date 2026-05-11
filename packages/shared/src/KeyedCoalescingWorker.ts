@@ -24,6 +24,8 @@ interface KeyedCoalescingWorkerState<K, V> {
   readonly activeKeys: Set<K>;
   readonly queuedAtByKey: Map<K, number>;
   readonly activeStartedAtByKey: Map<K, number>;
+  readonly attempted: number;
+  readonly accepted: number;
   readonly processed: number;
   readonly failed: number;
   readonly coalesced: number;
@@ -41,6 +43,8 @@ export const makeKeyedCoalescingWorker = <K, V, E, R>(options: {
       activeKeys: new Set(),
       queuedAtByKey: new Map(),
       activeStartedAtByKey: new Map(),
+      attempted: 0,
+      accepted: 0,
       processed: 0,
       failed: 0,
       coalesced: 0,
@@ -163,16 +167,21 @@ export const makeKeyedCoalescingWorker = <K, V, E, R>(options: {
         const existing = latestByKey.get(key);
         latestByKey.set(key, existing === undefined ? value : options.merge(existing, value));
         const coalesced = existing === undefined ? state.coalesced : state.coalesced + 1;
+        const attempted = state.attempted + 1;
+        const accepted = state.accepted + 1;
 
         if (state.queuedKeys.has(key) || state.activeKeys.has(key)) {
-          return [false, { ...state, latestByKey, coalesced }] as const;
+          return [false, { ...state, latestByKey, attempted, accepted, coalesced }] as const;
         }
 
         const queuedKeys = new Set(state.queuedKeys);
         queuedKeys.add(key);
         const queuedAtByKey = new Map(state.queuedAtByKey);
         queuedAtByKey.set(key, Date.now());
-        return [true, { ...state, latestByKey, queuedKeys, queuedAtByKey, coalesced }] as const;
+        return [
+          true,
+          { ...state, latestByKey, queuedKeys, queuedAtByKey, attempted, accepted, coalesced },
+        ] as const;
       }).pipe(
         Effect.flatMap((shouldOffer) => (shouldOffer ? TxQueue.offer(queue, key) : Effect.void)),
         Effect.tx,
@@ -212,6 +221,8 @@ export const makeKeyedCoalescingWorker = <K, V, E, R>(options: {
           queued: state.queuedKeys.size,
           active: state.activeKeys.size,
           oldestItemAgeMs: oldestItemAt === null ? null : Math.max(0, now - oldestItemAt),
+          attempted: state.attempted,
+          accepted: state.accepted,
           processed: state.processed,
           failed: state.failed,
           dropped: 0,

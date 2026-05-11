@@ -2823,11 +2823,37 @@ const make = Effect.gen(function* () {
     capacity: PROVIDER_RUNTIME_INGESTION_QUEUE_CAPACITY,
   });
 
+  const enqueueInput = (input: RuntimeIngestionInput): Effect.Effect<void> =>
+    worker.enqueue(input).pipe(
+      Effect.flatMap((accepted) =>
+        accepted
+          ? Effect.void
+          : worker.health.pipe(
+              Effect.flatMap((health) =>
+                Effect.logWarning("provider runtime ingestion queue rejected event", {
+                  source: input.source,
+                  eventId: input.event.eventId,
+                  eventType: input.event.type,
+                  threadId:
+                    input.source === "runtime"
+                      ? input.event.threadId
+                      : input.event.payload.threadId,
+                  capacity: health.capacity,
+                  attempted: health.attempted,
+                  accepted: health.accepted,
+                  dropped: health.dropped,
+                  backlog: health.backlog,
+                }),
+              ),
+            ),
+      ),
+    );
+
   const start: ProviderRuntimeIngestionShape["start"] = () =>
     Effect.gen(function* () {
       yield* Effect.forkScoped(
         Stream.runForEach(providerService.streamEvents, (event) =>
-          worker.enqueue({ source: "runtime", event }),
+          enqueueInput({ source: "runtime", event }),
         ),
       );
       yield* Effect.forkScoped(
@@ -2835,7 +2861,7 @@ const make = Effect.gen(function* () {
           if (event.type !== "thread.turn-start-requested") {
             return Effect.void;
           }
-          return worker.enqueue({ source: "domain", event });
+          return enqueueInput({ source: "domain", event });
         }),
       );
     });

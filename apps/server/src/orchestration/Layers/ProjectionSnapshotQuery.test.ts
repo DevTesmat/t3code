@@ -14,7 +14,10 @@ import * as SqlClient from "effect/unstable/sql/SqlClient";
 import { SqlitePersistenceMemory } from "../../persistence/Layers/Sqlite.ts";
 import { RepositoryIdentityResolverLive } from "../../project/Layers/RepositoryIdentityResolver.ts";
 import { ORCHESTRATION_PROJECTOR_NAMES } from "./ProjectionPipeline.ts";
-import { OrchestrationProjectionSnapshotQueryLive } from "./ProjectionSnapshotQuery.ts";
+import {
+  OrchestrationProjectionSnapshotQueryLive,
+  THREAD_DETAIL_INITIAL_MESSAGE_LIMIT,
+} from "./ProjectionSnapshotQuery.ts";
 import { ProjectionSnapshotQuery } from "../Services/ProjectionSnapshotQuery.ts";
 
 const asProjectId = (value: string): ProjectId => ProjectId.make(value);
@@ -1054,6 +1057,135 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
           createdAt: "2026-04-01T00:00:04.000Z",
         },
       ]);
+    }),
+  );
+
+  it.effect("bounds subscription thread detail snapshots to the latest messages", () =>
+    Effect.gen(function* () {
+      const snapshotQuery = yield* ProjectionSnapshotQuery;
+      const sql = yield* SqlClient.SqlClient;
+
+      yield* sql`DELETE FROM projection_projects`;
+      yield* sql`DELETE FROM projection_threads`;
+      yield* sql`DELETE FROM projection_thread_messages`;
+
+      yield* sql`
+        INSERT INTO projection_projects (
+          project_id,
+          title,
+          workspace_root,
+          default_model_selection_json,
+          scripts_json,
+          created_at,
+          updated_at,
+          deleted_at
+        )
+        VALUES (
+          'project-1',
+          'Project 1',
+          '/tmp/project-1',
+          '{"provider":"codex","model":"gpt-5-codex"}',
+          '[]',
+          '2026-04-01T00:00:00.000Z',
+          '2026-04-01T00:00:00.000Z',
+          NULL
+        )
+      `;
+
+      yield* sql`
+        INSERT INTO projection_threads (
+          thread_id,
+          project_id,
+          title,
+          model_selection_json,
+          runtime_mode,
+          interaction_mode,
+          branch,
+          worktree_path,
+          latest_turn_id,
+          latest_user_message_at,
+          pending_approval_count,
+          pending_user_input_count,
+          has_actionable_proposed_plan,
+          created_at,
+          updated_at,
+          deleted_at
+        )
+        VALUES (
+          'thread-1',
+          'project-1',
+          'Thread 1',
+          '{"provider":"codex","model":"gpt-5-codex"}',
+          'full-access',
+          'default',
+          NULL,
+          NULL,
+          NULL,
+          NULL,
+          0,
+          0,
+          0,
+          '2026-04-01T00:00:00.000Z',
+          '2026-04-01T00:00:00.000Z',
+          NULL
+        )
+      `;
+
+      yield* sql`
+        WITH RECURSIVE counter(value) AS (
+          SELECT 0
+          UNION ALL
+          SELECT value + 1 FROM counter WHERE value < ${THREAD_DETAIL_INITIAL_MESSAGE_LIMIT + 9}
+        )
+        INSERT INTO projection_thread_messages (
+          message_id,
+          thread_id,
+          turn_id,
+          role,
+          text,
+          is_streaming,
+          created_at,
+          updated_at
+        )
+        SELECT
+          printf('message-%04d', value),
+          'thread-1',
+          NULL,
+          'user',
+          printf('message %04d', value),
+          0,
+          printf('2026-04-01T00:%02d:%02d.000Z', value / 60, value % 60),
+          printf('2026-04-01T00:%02d:%02d.000Z', value / 60, value % 60)
+        FROM counter
+      `;
+
+      const fullDetail = yield* snapshotQuery.getThreadDetailById(ThreadId.make("thread-1"));
+      const subscriptionSnapshot = yield* snapshotQuery.getThreadDetailSnapshotById(
+        ThreadId.make("thread-1"),
+      );
+
+      assert.equal(fullDetail._tag, "Some");
+      assert.equal(subscriptionSnapshot._tag, "Some");
+      if (fullDetail._tag === "Some" && subscriptionSnapshot._tag === "Some") {
+        assert.equal(fullDetail.value.messages.length, THREAD_DETAIL_INITIAL_MESSAGE_LIMIT + 10);
+        assert.equal(
+          subscriptionSnapshot.value.thread.messages.length,
+          THREAD_DETAIL_INITIAL_MESSAGE_LIMIT,
+        );
+        assert.equal(
+          subscriptionSnapshot.value.thread.messages[0]?.id,
+          asMessageId("message-0010"),
+        );
+        assert.equal(
+          subscriptionSnapshot.value.thread.messages.at(-1)?.id,
+          asMessageId("message-0509"),
+        );
+        assert.deepEqual(subscriptionSnapshot.value.pageInfo.messages, {
+          limit: THREAD_DETAIL_INITIAL_MESSAGE_LIMIT,
+          included: THREAD_DETAIL_INITIAL_MESSAGE_LIMIT,
+          hasMoreBefore: true,
+        });
+      }
     }),
   );
 

@@ -4,7 +4,7 @@
 
 This file is the source of truth for the scalability work from the May 2026 audit. Keep it updated whenever scope, ordering, implementation details, or completion status changes.
 
-Current state: Stage 1 mostly complete. Replay RPC pagination is implemented, current callers loop through pages, and shell-stream sequence gaps trigger paged domain-event replay before applying the gapped live shell event. Retry policy for interrupted live replay remains open.
+Current state: Stage 3 in progress. Replay RPC pagination and shell-stream gap recovery are implemented and verified in dev logs. Provider ingestion now exposes enqueue/backpressure accounting through worker health and operational health; explicit overflow recovery policy remains open. Thread subscription snapshots now bound initial message hydration and expose page metadata, while older message page loading remains open.
 
 ## Goal
 
@@ -49,7 +49,7 @@ Relevant files:
 
 ### High: Unbounded Thread Detail Snapshot
 
-Thread subscription snapshots hydrate and send the entire thread detail. A single very large thread can block open/resume or exhaust memory.
+Thread subscription snapshots previously hydrated and sent the entire thread detail. Initial subscription snapshots now send only the latest bounded message page with protocol-visible page metadata. Activities, proposed plans, checkpoints, and older-message page retrieval still need dedicated pagination before this stage is complete.
 
 Relevant files:
 
@@ -86,7 +86,7 @@ Relevant files:
 
 ### High: Provider Ingestion Backpressure Is Not Observable
 
-Provider runtime ingestion uses a bounded worker, but enqueue failure is ignored and worker health reports dropped work as zero.
+Provider runtime ingestion uses a bounded worker. Shared worker health now reports attempted, accepted, processed, failed, dropped, and coalesced counts, and provider ingestion logs rejected enqueue paths. The remaining gap is deciding whether a real overflow/rejection should fail the affected provider session or trigger provider/session recovery.
 
 Relevant files:
 
@@ -157,30 +157,48 @@ Expected outcome: reconnect recovery is complete, bounded per request, and proto
 
 ### Stage 2: Provider Backpressure Accounting
 
-- [ ] Make `DrainableWorker` track attempted, accepted, rejected/dropped, processed, and failed counts.
-- [ ] Stop hardcoding `dropped: 0`.
-- [ ] Make provider runtime ingestion handle `enqueue === false`.
+- [x] Make `DrainableWorker` track attempted, accepted, rejected/dropped, processed, and failed counts.
+- [x] Stop hardcoding `dropped: 0` in drainable worker health.
+- [x] Make provider runtime ingestion handle `enqueue === false`.
 - [ ] Decide the failure policy for queue overflow:
   - fail affected provider session, or
   - pause/recover by forcing a provider/session resync, if available.
-- [ ] Expose overflow state through operational health.
-- [ ] Add tests for bounded queue overflow and surfaced health.
+- [x] Expose overflow/backpressure state through operational health.
+- [x] Add tests for bounded queue backpressure accounting and surfaced health.
+
+Progress notes:
+
+- `WorkerHealthSnapshot` now includes `attempted` and `accepted` counters.
+- `DrainableWorker` counts enqueue attempts before bounded queue admission, counts accepted work when it is actually queued, and counts rejected offers as dropped.
+- Bounded queue behavior remains lossless backpressure by default; tests assert a blocked enqueue is visible as `attempted > accepted` without dropping work.
+- `ProviderRuntimeIngestion` logs rejected enqueue attempts with source, event id/type, thread id, capacity, backlog, and counters.
+- `OperationalHealth` passes the richer provider ingestion health snapshot through unchanged.
+- `KeyedCoalescingWorker` reports attempted/accepted/coalesced counters for terminal history style workers.
 
 Expected outcome: event pressure cannot cause invisible data loss.
 
 ### Stage 3: Thread Detail Pagination
 
 - [ ] Split thread detail contract into shell plus paged resources:
-  - messages
+  - [x] bounded initial message page metadata on thread subscription snapshots
+  - [ ] explicit older-message page fetch API/UI
   - activities
   - proposed plans
   - checkpoints
   - command output/file diffs where needed
-- [ ] Add server queries with stable ordering and cursors.
-- [ ] Make `subscribeThread` send bounded initial detail.
+- [x] Add stable latest-message server query for subscription snapshots.
+- [x] Make `subscribeThread` send bounded initial message detail.
 - [ ] Keep live updates append/update based.
 - [ ] Add UI loading states for older detail pages.
 - [ ] Add tests for opening a thread with more than the initial page size.
+
+Progress notes:
+
+- `OrchestrationThreadDetailSnapshot` now optionally includes `pageInfo.messages` with `limit`, `included`, and `hasMoreBefore`.
+- `ProjectionSnapshotQuery.getThreadDetailSnapshotById` returns the latest `THREAD_DETAIL_INITIAL_MESSAGE_LIMIT` messages for subscription snapshots, using `limit + 1` to detect older content.
+- `ProjectionSnapshotQuery.getThreadDetailById` remains the full-detail internal query for existing server-side callers.
+- `subscribeThread` initial and history-sync reload snapshots now use the bounded detail snapshot path.
+- Focused coverage seeds more than the initial message limit and verifies the subscription snapshot contains only the latest page in stable chronological order.
 
 Expected outcome: opening a huge thread is bounded, and older content loads on demand.
 

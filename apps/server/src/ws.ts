@@ -780,8 +780,8 @@ const makeWsRpcLayer = (currentSessionId: AuthSessionId) =>
           observeRpcStreamEffect(
             ORCHESTRATION_WS_METHODS.subscribeThread,
             Effect.gen(function* () {
-              const [threadDetail, snapshotSequence] = yield* Effect.all([
-                projectionSnapshotQuery.getThreadDetailById(input.threadId).pipe(
+              const [threadDetailSnapshot, snapshotSequence] = yield* Effect.all([
+                projectionSnapshotQuery.getThreadDetailSnapshotById(input.threadId).pipe(
                   Effect.mapError(
                     (cause) =>
                       new OrchestrationGetSnapshotError({
@@ -795,7 +795,7 @@ const makeWsRpcLayer = (currentSessionId: AuthSessionId) =>
                   .pipe(Effect.map((readModel) => readModel.snapshotSequence)),
               ]);
 
-              if (Option.isNone(threadDetail)) {
+              if (Option.isNone(threadDetailSnapshot)) {
                 return yield* new OrchestrationGetSnapshotError({
                   message: `Thread ${input.threadId} was not found`,
                   cause: input.threadId,
@@ -874,7 +874,8 @@ const makeWsRpcLayer = (currentSessionId: AuthSessionId) =>
                 readonly kind: "snapshot";
                 readonly snapshot: {
                   readonly snapshotSequence: number;
-                  readonly thread: NonNullable<typeof threadDetail.value>;
+                  readonly thread: NonNullable<typeof threadDetailSnapshot.value>["thread"];
+                  readonly pageInfo: NonNullable<typeof threadDetailSnapshot.value>["pageInfo"];
                 };
               }>((queue) =>
                 Effect.acquireRelease(
@@ -889,7 +890,7 @@ const makeWsRpcLayer = (currentSessionId: AuthSessionId) =>
                         .reload(
                           historySyncSnapshotKey,
                           Effect.all([
-                            projectionSnapshotQuery.getThreadDetailById(input.threadId),
+                            projectionSnapshotQuery.getThreadDetailSnapshotById(input.threadId),
                             orchestrationEngine
                               .getReadModel()
                               .pipe(Effect.map((readModel) => readModel.snapshotSequence)),
@@ -899,13 +900,14 @@ const makeWsRpcLayer = (currentSessionId: AuthSessionId) =>
                           Effect.flatMap((snapshot) =>
                             Option.match(snapshot, {
                               onNone: () => Effect.void,
-                              onSome: ([nextThreadDetail, nextSnapshotSequence]) =>
-                                Option.isSome(nextThreadDetail)
+                              onSome: ([nextThreadDetailSnapshot, nextSnapshotSequence]) =>
+                                Option.isSome(nextThreadDetailSnapshot)
                                   ? Queue.offer(queue, {
                                       kind: "snapshot" as const,
                                       snapshot: {
                                         snapshotSequence: nextSnapshotSequence,
-                                        thread: nextThreadDetail.value,
+                                        thread: nextThreadDetailSnapshot.value.thread,
+                                        pageInfo: nextThreadDetailSnapshot.value.pageInfo,
                                       },
                                     }).pipe(Effect.asVoid)
                                   : Effect.void,
@@ -932,7 +934,8 @@ const makeWsRpcLayer = (currentSessionId: AuthSessionId) =>
                     kind: "snapshot" as const,
                     snapshot: {
                       snapshotSequence,
-                      thread: threadDetail.value,
+                      thread: threadDetailSnapshot.value.thread,
+                      pageInfo: threadDetailSnapshot.value.pageInfo,
                     },
                   }),
                   commandOutputSnapshotStream,

@@ -139,6 +139,8 @@ export const makeCommandGate = Effect.gen(function* () {
           queued: backlog,
           active: 0,
           oldestItemAgeMs: null,
+          attempted: 0,
+          accepted: 0,
           processed: 0,
           failed: 0,
           dropped: 0,

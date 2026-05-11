@@ -13,6 +13,7 @@ import type {
   OrchestrationReadModel,
   OrchestrationShellSnapshot,
   OrchestrationThread,
+  OrchestrationThreadDetailPageInfo,
   OrchestrationThreadShell,
   ProjectId,
   ThreadId,
@@ -34,6 +35,11 @@ export interface ProjectionThreadCheckpointContext {
   readonly workspaceRoot: string;
   readonly worktreePath: string | null;
   readonly checkpoints: ReadonlyArray<OrchestrationCheckpointSummary>;
+}
+
+export interface ProjectionThreadDetailSnapshot {
+  readonly thread: OrchestrationThread;
+  readonly pageInfo: OrchestrationThreadDetailPageInfo;
 }
 
 /**
@@ -105,6 +111,14 @@ export interface ProjectionSnapshotQueryShape {
   readonly getThreadDetailById: (
     threadId: ThreadId,
   ) => Effect.Effect<Option.Option<OrchestrationThread>, ProjectionRepositoryError>;
+
+  /**
+   * Read a single active thread detail snapshot by id with bounded resource
+   * metadata for subscription snapshots.
+   */
+  readonly getThreadDetailSnapshotById: (
+    threadId: ThreadId,
+  ) => Effect.Effect<Option.Option<ProjectionThreadDetailSnapshot>, ProjectionRepositoryError>;
 }
 
 /**

@@ -56,7 +56,11 @@ describe("makeDrainableWorker", () => {
         expect(yield* worker.backlog).toBe(0);
         const health = yield* worker.health;
         expect(health.backlog).toBe(0);
+        expect(health.attempted).toBe(2);
+        expect(health.accepted).toBe(2);
         expect(health.processed).toBe(2);
+        expect(health.failed).toBe(0);
+        expect(health.dropped).toBe(0);
       }),
     ),
   );
@@ -72,6 +76,9 @@ describe("makeDrainableWorker", () => {
         const busyHealth = yield* worker.health;
         expect(busyHealth.capacity).toBe(1);
         expect(busyHealth.backlog).toBe(2);
+        expect(busyHealth.attempted).toBe(2);
+        expect(busyHealth.accepted).toBe(2);
+        expect(busyHealth.dropped).toBe(0);
 
         const thirdEnqueued = yield* Deferred.make<void>();
         yield* Effect.forkChild(
@@ -80,7 +87,12 @@ describe("makeDrainableWorker", () => {
             .pipe(Effect.tap(() => Deferred.succeed(thirdEnqueued, undefined).pipe(Effect.orDie))),
         );
 
+        yield* Effect.yieldNow;
         expect(yield* Deferred.isDone(thirdEnqueued)).toBe(false);
+        const backpressuredHealth = yield* worker.health;
+        expect(backpressuredHealth.attempted).toBe(3);
+        expect(backpressuredHealth.accepted).toBe(2);
+        expect(backpressuredHealth.dropped).toBe(0);
 
         yield* Deferred.succeed(release, undefined);
         yield* Deferred.await(thirdEnqueued);

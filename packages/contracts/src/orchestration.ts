@@ -464,9 +464,23 @@ export const OrchestrationSubscribeThreadInput = Schema.Struct({
 });
 export type OrchestrationSubscribeThreadInput = typeof OrchestrationSubscribeThreadInput.Type;
 
+const OrchestrationThreadDetailResourcePageInfo = Schema.Struct({
+  limit: PositiveInt,
+  included: NonNegativeInt,
+  hasMoreBefore: Schema.Boolean,
+});
+export type OrchestrationThreadDetailResourcePageInfo =
+  typeof OrchestrationThreadDetailResourcePageInfo.Type;
+
+export const OrchestrationThreadDetailPageInfo = Schema.Struct({
+  messages: OrchestrationThreadDetailResourcePageInfo,
+});
+export type OrchestrationThreadDetailPageInfo = typeof OrchestrationThreadDetailPageInfo.Type;
+
 export const OrchestrationThreadDetailSnapshot = Schema.Struct({
   snapshotSequence: NonNegativeInt,
   thread: OrchestrationThread,
+  pageInfo: Schema.optionalKey(OrchestrationThreadDetailPageInfo),
 });
 export type OrchestrationThreadDetailSnapshot = typeof OrchestrationThreadDetailSnapshot.Type;
 

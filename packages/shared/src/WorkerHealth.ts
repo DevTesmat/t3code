@@ -4,6 +4,8 @@ export interface WorkerHealthSnapshot {
   readonly queued: number;
   readonly active: number;
   readonly oldestItemAgeMs: number | null;
+  readonly attempted: number;
+  readonly accepted: number;
   readonly processed: number;
   readonly failed: number;
   readonly dropped: number;
@@ -16,6 +18,8 @@ export const emptyWorkerHealthSnapshot = (): WorkerHealthSnapshot => ({
   queued: 0,
   active: 0,
   oldestItemAgeMs: null,
+  attempted: 0,
+  accepted: 0,
   processed: 0,
   failed: 0,
   dropped: 0,

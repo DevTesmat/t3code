@@ -249,6 +249,7 @@ describe("ProviderRuntimeIngestion", () => {
     scope = await Effect.runPromise(Scope.make("sequential"));
     await Effect.runPromise(ingestion.start().pipe(Scope.provide(scope)));
     const drain = () => Effect.runPromise(ingestion.drain);
+    const health = () => Effect.runPromise(ingestion.health);
 
     const createdAt = new Date().toISOString();
     await Effect.runPromise(
@@ -314,10 +315,43 @@ describe("ProviderRuntimeIngestion", () => {
       emit: provider.emit,
       setProviderSession: provider.setSession,
       drain,
+      health,
       workspaceRoot,
       fileDiffs,
     };
   }
+
+  it("tracks runtime ingestion enqueue and processing counters", async () => {
+    const harness = await createHarness();
+    const initialHealth = await harness.health();
+    expect(initialHealth).toMatchObject({
+      attempted: 0,
+      accepted: 0,
+      processed: 0,
+      failed: 0,
+      dropped: 0,
+    });
+
+    harness.emit({
+      type: "turn.started",
+      eventId: asEventId("evt-runtime-health-turn-started"),
+      provider: ProviderDriverKind.make("codex"),
+      threadId: asThreadId("thread-1"),
+      createdAt: new Date().toISOString(),
+      turnId: asTurnId("turn-health"),
+    });
+
+    await harness.drain();
+
+    expect(await harness.health()).toMatchObject({
+      attempted: 1,
+      accepted: 1,
+      processed: 1,
+      failed: 0,
+      dropped: 0,
+      backlog: 0,
+    });
+  });
 
   it("maps turn started/completed events into thread session updates", async () => {
     const harness = await createHarness();

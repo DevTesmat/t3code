@@ -58,7 +58,10 @@ describe("makeKeyedCoalescingWorker", () => {
         expect(processed).toEqual(["terminal-1:first", "terminal-1:second"]);
         const health = yield* worker.health;
         expect(health.backlog).toBe(0);
+        expect(health.attempted).toBe(2);
+        expect(health.accepted).toBe(2);
         expect(health.processed).toBe(2);
+        expect(health.dropped).toBe(0);
       }),
     ),
   );
@@ -100,8 +103,11 @@ describe("makeKeyedCoalescingWorker", () => {
 
         expect(processed).toEqual(["terminal-1:first", "terminal-1:third"]);
         const health = yield* worker.health;
+        expect(health.attempted).toBe(3);
+        expect(health.accepted).toBe(3);
         expect(health.failed).toBe(1);
         expect(health.processed).toBe(1);
+        expect(health.dropped).toBe(0);
       }),
     ),
   );

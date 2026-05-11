@@ -25,10 +25,11 @@ export interface DrainableWorker<A> {
   /**
    * Enqueue a work item and track it for `drain()`.
    *
-   * This wraps `Queue.offer` so drain state is updated atomically with the
-   * enqueue path instead of inferring it from queue internals.
+   * Returns `true` when the item was accepted by the queue. Bounded queues
+   * normally backpressure instead of rejecting, but rejected offers are surfaced
+   * for shutdown or future queue policies.
    */
-  readonly enqueue: (item: A) => Effect.Effect<void>;
+  readonly enqueue: (item: A) => Effect.Effect<boolean>;
 
   /**
    * Number of queued or actively processing items tracked by this worker.
@@ -49,15 +50,21 @@ export interface DrainableWorker<A> {
 interface DrainableWorkerState {
   readonly queuedAtMs: ReadonlyArray<number>;
   readonly activeStartedAtMs: number | null;
+  readonly attempted: number;
+  readonly accepted: number;
   readonly processed: number;
   readonly failed: number;
+  readonly dropped: number;
 }
 
 const initialState: DrainableWorkerState = {
   queuedAtMs: [],
   activeStartedAtMs: null,
+  attempted: 0,
+  accepted: 0,
   processed: 0,
   failed: 0,
+  dropped: 0,
 };
 
 /**
@@ -123,15 +130,22 @@ export const makeDrainableWorker = <A, E, R>(
       Effect.tx,
     );
 
-    const enqueue = (element: A): Effect.Effect<boolean, never, never> =>
-      TxQueue.offer(queue, element).pipe(
-        Effect.tap(() =>
-          TxRef.update(stateRef, (state) => ({
-            ...state,
-            queuedAtMs: [...state.queuedAtMs, Date.now()],
-          })),
-        ),
+    const enqueue: DrainableWorker<A>["enqueue"] = (element) =>
+      TxRef.update(stateRef, (state) => ({ ...state, attempted: state.attempted + 1 })).pipe(
         Effect.tx,
+        Effect.andThen(
+          TxQueue.offer(queue, element).pipe(
+            Effect.flatMap((accepted) =>
+              TxRef.update(stateRef, (state) => ({
+                ...state,
+                accepted: accepted ? state.accepted + 1 : state.accepted,
+                dropped: accepted ? state.dropped : state.dropped + 1,
+                queuedAtMs: accepted ? [...state.queuedAtMs, Date.now()] : state.queuedAtMs,
+              })).pipe(Effect.as(accepted)),
+            ),
+            Effect.tx,
+          ),
+        ),
       );
 
     const health: DrainableWorker<A>["health"] = TxRef.get(stateRef).pipe(
@@ -149,9 +163,11 @@ export const makeDrainableWorker = <A, E, R>(
           queued: state.queuedAtMs.length,
           active,
           oldestItemAgeMs: oldestItemAt === undefined ? null : Math.max(0, now - oldestItemAt),
+          attempted: state.attempted,
+          accepted: state.accepted,
           processed: state.processed,
           failed: state.failed,
-          dropped: 0,
+          dropped: state.dropped,
           coalesced: 0,
         } satisfies WorkerHealthSnapshot;
       }),
