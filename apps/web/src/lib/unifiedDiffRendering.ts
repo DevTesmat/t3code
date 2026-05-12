@@ -101,6 +101,67 @@ export const INLINE_FILE_CHANGE_RUNNING_UNSAFE_CSS = `
 }
 `;
 
+export const INLINE_DIFF_RENDER_UNSAFE_CSS = `
+[data-diffs-header],
+[data-diff],
+[data-file],
+[data-error-wrapper],
+[data-virtualizer-buffer] {
+  --diffs-font-size: 11px;
+  --diffs-line-height: 16px;
+  --diffs-header-font-size: 10px;
+  --diffs-gap-block: 2px;
+  --diffs-gap-inline: 6px;
+}
+
+[data-diffs-header],
+[data-file-info] {
+  min-height: 1.35rem !important;
+  padding-inline: 0.5rem !important;
+  font-size: 10px !important;
+  line-height: 1.2 !important;
+}
+
+[data-header-content] {
+  gap: 0.35rem !important;
+}
+
+[data-title],
+[data-prev-name],
+[data-metadata],
+[data-unmodified-lines] {
+  font-size: 10px !important;
+  line-height: 1.2 !important;
+}
+
+[data-separator-wrapper] {
+  min-height: 1.45rem !important;
+}
+
+[data-separator-content] {
+  padding-block: 2px !important;
+  padding-inline: 0.5rem !important;
+}
+
+[data-line],
+[data-column-number],
+[data-no-newline],
+[data-code] {
+  font-size: 11px !important;
+  line-height: 16px !important;
+}
+
+[data-line],
+[data-column-number],
+[data-no-newline] {
+  padding-inline: 0.65ch !important;
+}
+
+[data-column-number] {
+  padding-left: 1ch !important;
+}
+`;
+
 export type RenderablePatch =
   | {
       kind: "files";

@@ -152,7 +152,6 @@ import { ChatComposer, type ChatComposerHandle } from "./chat/ChatComposer";
 import { WorkingDots } from "./chat/WorkingDots";
 import { ComposerChangedFilesBar } from "./chat/ComposerChangedFilesBar";
 import { ComposerQueuedMessagesBar } from "./chat/ComposerQueuedMessagesBar";
-import { ComposerSubagentsBar } from "./chat/ComposerSubagentsBar";
 import { ExpandedImageDialog } from "./chat/ExpandedImageDialog";
 import { PullRequestThreadDialog } from "./PullRequestThreadDialog";
 import { MessagesTimeline } from "./chat/MessagesTimeline";
@@ -1759,8 +1758,13 @@ export default function ChatView(props: ChatViewProps) {
   }, [serverMessages, attachmentPreviewHandoffByMessageId, optimisticUserMessages]);
   const timelineEntries = useMemo(
     () =>
-      deriveTimelineEntries(timelineMessages, activeThread?.proposedPlans ?? [], workLogEntries),
-    [activeThread?.proposedPlans, timelineMessages, workLogEntries],
+      deriveTimelineEntries(
+        timelineMessages,
+        activeThread?.proposedPlans ?? [],
+        workLogEntries,
+        threadSubagents,
+      ),
+    [activeThread?.proposedPlans, threadSubagents, timelineMessages, workLogEntries],
   );
   const selectedSubagentTimelineEntries = useMemo(
     () =>
@@ -4446,6 +4450,7 @@ export default function ChatView(props: ChatViewProps) {
               isRevertingCheckpoint={isRevertingCheckpoint}
               onImageExpand={onExpandTimelineImage}
               onOpenTurnDiff={selectedSubagentTranscript ? undefined : onOpenTurnDiff}
+              onSelectSubagent={selectedSubagentTranscript ? undefined : selectSubagentThread}
               markdownCwd={gitCwd ?? undefined}
               timestampFormat={timestampFormat}
               workspaceRoot={activeWorkspaceRoot}
@@ -4509,11 +4514,6 @@ export default function ChatView(props: ChatViewProps) {
               <ComposerQueuedMessagesBar
                 messages={queuedComposerMessages}
                 onDeleteMessage={onDeleteQueuedComposerMessage}
-              />
-              <ComposerSubagentsBar
-                subagents={threadSubagents}
-                selectedThreadId={selectedSubagentThreadId}
-                onSelectSubagent={selectSubagentThread}
               />
               {selectedSubagentTranscript ? (
                 <div className="rounded-md border border-border/70 bg-card/45 px-3 py-2 text-muted-foreground text-xs">

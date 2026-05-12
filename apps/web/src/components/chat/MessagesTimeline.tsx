@@ -22,7 +22,12 @@ import {
   type PointerEvent,
 } from "react";
 import { LegendList, type LegendListRef } from "@legendapp/list/react";
-import { deriveTimelineEntries, formatElapsed, type ReasoningSegment } from "../../session-logic";
+import {
+  deriveTimelineEntries,
+  formatElapsed,
+  type ReasoningSegment,
+  type ThreadSubagent,
+} from "../../session-logic";
 import { type TurnDiffSummary } from "../../types";
 import ChatMarkdown from "../ChatMarkdown";
 import {
@@ -30,6 +35,7 @@ import {
   CheckIcon,
   ChevronRightIcon,
   CircleAlertIcon,
+  CpuIcon,
   EyeIcon,
   GlobeIcon,
   HammerIcon,
@@ -70,6 +76,7 @@ import { resolveDiffThemeName } from "../../lib/diffRendering";
 import { isScrollViewportAtBottom } from "./scrollStickiness";
 import {
   DIFF_RENDER_UNSAFE_CSS,
+  INLINE_DIFF_RENDER_UNSAFE_CSS,
   INLINE_FILE_CHANGE_RUNNING_UNSAFE_CSS,
   getRenderablePatch,
   resolveFileDiffPath,
@@ -115,6 +122,7 @@ interface TimelineRowSharedState {
   onImageExpand: (preview: ExpandedImagePreview) => void;
   onPreserveViewportRequest?: ((anchor: HTMLElement, mutate: () => void) => void) | undefined;
   onOpenTurnDiff?: ((turnId: TurnId, filePath?: string) => void) | undefined;
+  onSelectSubagent?: ((threadId: string) => void) | undefined;
 }
 
 const TimelineRowCtx = createContext<TimelineRowSharedState>(null!);
@@ -140,6 +148,7 @@ interface MessagesTimelineProps {
   isRevertingCheckpoint: boolean;
   onImageExpand: (preview: ExpandedImagePreview) => void;
   onOpenTurnDiff?: ((turnId: TurnId, filePath?: string) => void) | undefined;
+  onSelectSubagent?: ((threadId: string) => void) | undefined;
   activeThreadId: ThreadId;
   activeThreadEnvironmentId: EnvironmentId;
   markdownCwd: string | undefined;
@@ -172,6 +181,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   isRevertingCheckpoint,
   onImageExpand,
   onOpenTurnDiff,
+  onSelectSubagent,
   activeThreadId,
   activeThreadEnvironmentId,
   markdownCwd,
@@ -315,6 +325,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       onRevertUserMessage,
       onImageExpand,
       onOpenTurnDiff,
+      onSelectSubagent,
       onPreserveViewportRequest,
     }),
     [
@@ -332,6 +343,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       onRevertUserMessage,
       onImageExpand,
       onOpenTurnDiff,
+      onSelectSubagent,
       onPreserveViewportRequest,
     ],
   );
@@ -427,6 +439,8 @@ function TimelineRowContent({ row }: { row: TimelineRow }) {
           <div className="h-px flex-1 bg-border/70" />
         </div>
       )}
+
+      {row.kind === "subagent" && <SubagentInlineSection subagent={row.subagent} />}
 
       {row.kind === "message" &&
         row.message.role === "user" &&
@@ -598,6 +612,71 @@ function TimelineRowContent({ row }: { row: TimelineRow }) {
         </div>
       )}
     </div>
+  );
+}
+
+function shortThreadId(threadId: string): string {
+  return threadId.length <= 8 ? threadId : threadId.slice(0, 8);
+}
+
+function subagentStatusLabel(status: ThreadSubagent["status"]): string {
+  return status.charAt(0).toUpperCase() + status.slice(1);
+}
+
+function subagentStatusClassName(status: ThreadSubagent["status"]): string {
+  switch (status) {
+    case "running":
+      return "border-primary/20 bg-primary/8 text-primary/80";
+    case "failed":
+      return "border-destructive/25 bg-destructive/8 text-destructive/80";
+    case "completed":
+      return "border-emerald-500/20 bg-emerald-500/8 text-emerald-700 dark:text-emerald-300";
+    case "closed":
+      return "border-border/60 bg-muted/30 text-muted-foreground/75";
+    default:
+      return "border-border/60 bg-muted/30 text-muted-foreground/75";
+  }
+}
+
+function SubagentInlineSection({ subagent }: { subagent: ThreadSubagent }) {
+  const ctx = use(TimelineRowCtx);
+  const title = subagent.nickname || subagent.role || shortThreadId(subagent.threadId);
+  const meta = [subagent.role, subagent.model, subagent.reasoningEffort]
+    .filter(Boolean)
+    .join(" · ");
+  const detail = subagent.promptPreview || meta || subagent.threadId;
+
+  return (
+    <button
+      type="button"
+      className="group flex w-full min-w-0 items-start gap-3 rounded-md border border-border/70 bg-card/45 px-3.5 py-3 text-left transition-colors hover:border-border hover:bg-card/70"
+      onClick={() => ctx.onSelectSubagent?.(subagent.threadId)}
+      data-subagent-timeline-section="true"
+    >
+      <span className="mt-0.5 flex size-8 shrink-0 items-center justify-center rounded-md border border-border/70 bg-background/70 text-muted-foreground">
+        <CpuIcon aria-hidden="true" className="size-4" />
+      </span>
+      <span className="min-w-0 flex-1">
+        <span className="flex min-w-0 items-center gap-2">
+          <span className="truncate font-medium text-sm text-foreground">{title}</span>
+          <span
+            className={cn(
+              "inline-flex shrink-0 items-center rounded-full border px-2 py-0.5 text-[10px]",
+              subagentStatusClassName(subagent.status),
+            )}
+          >
+            {subagentStatusLabel(subagent.status)}
+          </span>
+        </span>
+        <span className="mt-1 line-clamp-2 block text-muted-foreground text-xs leading-5">
+          {detail}
+        </span>
+      </span>
+      <ChevronRightIcon
+        aria-hidden="true"
+        className="mt-1 size-4 shrink-0 text-muted-foreground/55 transition-transform group-hover:translate-x-0.5 group-hover:text-foreground/70"
+      />
+    </button>
   );
 }
 
@@ -1777,8 +1856,8 @@ const LiveFileChangePreview = memo(function LiveFileChangePreview(props: {
             }
           }}
           className={cn(
-            "relative min-h-14 overflow-auto rounded-md border border-border/55 bg-card/25 [scrollbar-width:thin] [&::-webkit-scrollbar]:h-1.5 [&::-webkit-scrollbar]:w-1.5",
-            expanded ? "max-h-80" : "max-h-[7.25rem]",
+            "relative min-h-10 overflow-auto rounded-md bg-card/10 ring-1 ring-border/25 [scrollbar-width:thin] [&::-webkit-scrollbar]:h-1.5 [&::-webkit-scrollbar]:w-1.5",
+            expanded ? "max-h-72" : "max-h-[5.25rem]",
           )}
         >
           {liveOutput.truncated && (
@@ -1796,8 +1875,8 @@ const LiveFileChangePreview = memo(function LiveFileChangePreview(props: {
                 theme: resolveDiffThemeName(resolvedTheme),
                 themeType: resolvedTheme as InlineDiffThemeType,
                 unsafeCSS: running
-                  ? `${DIFF_RENDER_UNSAFE_CSS}\n${INLINE_FILE_CHANGE_RUNNING_UNSAFE_CSS}`
-                  : DIFF_RENDER_UNSAFE_CSS,
+                  ? `${DIFF_RENDER_UNSAFE_CSS}\n${INLINE_DIFF_RENDER_UNSAFE_CSS}\n${INLINE_FILE_CHANGE_RUNNING_UNSAFE_CSS}`
+                  : `${DIFF_RENDER_UNSAFE_CSS}\n${INLINE_DIFF_RENDER_UNSAFE_CSS}`,
               }}
             />
           </div>
@@ -2281,7 +2360,7 @@ const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
       inlineDiffExpanded || (defaultInlineDiffExpanded && !defaultInlineDiffCollapsed);
     const inlineDiffControlExpanded = isRunningLivePatch ? false : inlineDiffPreviewExpanded;
     return (
-      <div className="group rounded-lg border border-border/35 bg-card/20 px-1 py-0.5 transition-colors duration-150 hover:bg-muted/20 focus-within:bg-muted/20">
+      <div className="group rounded-lg bg-card/10 px-1 py-0.5 transition-colors duration-150 hover:bg-muted/20 focus-within:bg-muted/20">
         <button
           type="button"
           className="flex min-h-7 w-full min-w-0 items-center gap-2 text-left transition-[opacity,translate] duration-200 focus-visible:outline-none"

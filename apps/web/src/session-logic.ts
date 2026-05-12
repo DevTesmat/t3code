@@ -210,6 +210,12 @@ export type TimelineEntry =
     }
   | {
       id: string;
+      kind: "subagent";
+      createdAt: string;
+      subagent: ThreadSubagent;
+    }
+  | {
+      id: string;
       kind: "separator";
       createdAt: string;
       label: string;
@@ -2446,6 +2452,7 @@ export function deriveTimelineEntries(
   messages: ChatMessage[],
   proposedPlans: ProposedPlan[],
   workEntries: WorkLogEntry[],
+  subagents: ReadonlyArray<ThreadSubagent> = [],
 ): TimelineEntry[] {
   const messageRows: TimelineEntry[] = messages
     .filter((message) => isUserAuthoredMessage(message))
@@ -2469,15 +2476,27 @@ export function deriveTimelineEntries(
     createdAt: proposedPlan.createdAt,
     proposedPlan,
   }));
-  const workRows: TimelineEntry[] = workEntries.map((entry) => ({
-    id: entry.id,
-    kind: "work",
-    createdAt: entry.createdAt,
-    entry,
+  const workRows: TimelineEntry[] = workEntries
+    .filter((entry) => entry.itemType !== "collab_agent_tool_call")
+    .map((entry) => ({
+      id: entry.id,
+      kind: "work",
+      createdAt: entry.createdAt,
+      entry,
+    }));
+  const subagentRows: TimelineEntry[] = subagents.map((subagent) => ({
+    id: `subagent:${subagent.threadId}`,
+    kind: "subagent",
+    createdAt: subagent.createdAt,
+    subagent,
   }));
-  return [...messageRows, ...separatorRows, ...proposedPlanRows, ...workRows].toSorted((a, b) =>
-    a.createdAt.localeCompare(b.createdAt),
-  );
+  return [
+    ...messageRows,
+    ...separatorRows,
+    ...proposedPlanRows,
+    ...workRows,
+    ...subagentRows,
+  ].toSorted((a, b) => a.createdAt.localeCompare(b.createdAt));
 }
 
 export function deriveCompletionDividerBeforeEntryId(

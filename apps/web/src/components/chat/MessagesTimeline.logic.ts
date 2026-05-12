@@ -1,4 +1,9 @@
-import { type ReasoningSegment, type TimelineEntry, type WorkLogEntry } from "../../session-logic";
+import {
+  type ReasoningSegment,
+  type ThreadSubagent,
+  type TimelineEntry,
+  type WorkLogEntry,
+} from "../../session-logic";
 import { type ChatMessage, type ProposedPlan, type TurnDiffSummary } from "../../types";
 import { type MessageId } from "@t3tools/contracts";
 import {
@@ -40,6 +45,12 @@ export type MessagesTimelineRow =
       id: string;
       createdAt: string;
       proposedPlan: ProposedPlan;
+    }
+  | {
+      kind: "subagent";
+      id: string;
+      createdAt: string;
+      subagent: ThreadSubagent;
     }
   | {
       kind: "separator";
@@ -165,6 +176,16 @@ export function deriveMessagesTimelineRows(input: {
         id: timelineEntry.id,
         createdAt: timelineEntry.createdAt,
         label: timelineEntry.label,
+      });
+      continue;
+    }
+
+    if (timelineEntry.kind === "subagent") {
+      nextRows.push({
+        kind: "subagent",
+        id: timelineEntry.id,
+        createdAt: timelineEntry.createdAt,
+        subagent: timelineEntry.subagent,
       });
       continue;
     }
@@ -368,6 +389,9 @@ function isRowUnchanged(a: MessagesTimelineRow, b: MessagesTimelineRow): boolean
 
     case "separator":
       return a.createdAt === (b as typeof a).createdAt && a.label === (b as typeof a).label;
+
+    case "subagent":
+      return a.createdAt === (b as typeof a).createdAt && a.subagent === (b as typeof a).subagent;
 
     case "work":
       return (
