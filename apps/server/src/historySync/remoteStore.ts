@@ -2,7 +2,12 @@ import { type HistorySyncMysqlFields, type OrchestrationEvent } from "@t3tools/c
 import { Data, Effect } from "effect";
 import type { Pool, RowDataPacket } from "mysql2/promise";
 
-import { chunkHistorySyncEvents, type HistorySyncEventRow } from "./planner.ts";
+import {
+  chunkHistorySyncEvents,
+  collectProjectCandidates,
+  type HistorySyncEventRow,
+  type ProjectCandidate,
+} from "./planner.ts";
 
 const HISTORY_SYNC_MYSQL_BATCH_SIZE = 500;
 const HISTORY_SYNC_MYSQL_CONNECT_TIMEOUT_MS = 10_000;
@@ -322,6 +327,42 @@ export const readRemoteLatestThreadShells = (
         latestEventSequence: Number(row.latest_event_sequence),
         deletedAt: row.deleted_at === null ? null : String(row.deleted_at),
         archivedAt: row.archived_at === null ? null : String(row.archived_at),
+      }),
+    );
+  });
+
+export const readRemoteProjectMappingCandidates = (connectionString: string) =>
+  withHistorySyncMysqlPool(connectionString, async (pool) => {
+    await ensureRemoteSchema(pool);
+    const canUseIndexes = await ensureRemoteIndexesBackfilled(pool);
+    if (!canUseIndexes) {
+      return collectProjectCandidates(await readAllRemoteEventsFromPool(pool));
+    }
+    const [rows] = await pool.query<RowDataPacket[]>(
+      `SELECT
+          project.project_id,
+          project.title,
+          project.workspace_root,
+          project.deleted_at,
+          COUNT(thread.thread_id) AS thread_count
+         FROM history_sync_projects AS project
+         LEFT JOIN history_sync_threads AS thread
+           ON thread.project_id = project.project_id
+          AND thread.deleted_at IS NULL
+        GROUP BY
+          project.project_id,
+          project.title,
+          project.workspace_root,
+          project.deleted_at
+        ORDER BY project.project_id ASC`,
+    );
+    return rows.map(
+      (row): ProjectCandidate => ({
+        projectId: String(row.project_id),
+        title: String(row.title),
+        workspaceRoot: String(row.workspace_root),
+        deleted: row.deleted_at !== null,
+        threadCount: Number(row.thread_count),
       }),
     );
   });

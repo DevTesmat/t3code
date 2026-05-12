@@ -210,6 +210,21 @@ export const buildProjectMappingPlanFromEvents = Effect.fn(
     readonly remoteMaxSequence: number;
   },
 ) {
+  return yield* buildProjectMappingPlanFromCandidates(sql, {
+    remoteProjects: collectProjectCandidates(input.remoteEvents),
+    remoteMaxSequence: input.remoteMaxSequence,
+  });
+});
+
+export const buildProjectMappingPlanFromCandidates = Effect.fn(
+  "HistorySync.buildProjectMappingPlanFromCandidates",
+)(function* (
+  sql: SqlClient.SqlClient,
+  input: {
+    readonly remoteProjects: readonly ProjectCandidate[];
+    readonly remoteMaxSequence: number;
+  },
+) {
   const [mappings, localProjects, syncId] = yield* Effect.all([
     readProjectMappings(sql),
     readLocalProjects(sql),
@@ -219,8 +234,8 @@ export const buildProjectMappingPlanFromEvents = Effect.fn(
   const mappingByRemote = new Map(
     validMappings.map((mapping) => [mapping.remoteProjectId, mapping]),
   );
-  const activeRemoteProjects = collectProjectCandidates(input.remoteEvents).filter(
-    (project) => project.threadCount > 0,
+  const activeRemoteProjects = input.remoteProjects.filter(
+    (project) => !project.deleted && project.threadCount > 0,
   );
   const candidates: HistorySyncProjectMappingCandidate[] = [];
 
@@ -338,9 +353,24 @@ export function applyMappingActions(
     readonly now: string;
   },
 ) {
+  return applyMappingActionsForProjectCandidates(sql, {
+    actions: input.actions,
+    remoteProjects: collectProjectCandidates(input.remoteEvents),
+    now: input.now,
+  });
+}
+
+export function applyMappingActionsForProjectCandidates(
+  sql: SqlClient.SqlClient,
+  input: {
+    readonly actions: readonly HistorySyncProjectMappingAction[];
+    readonly remoteProjects: readonly ProjectCandidate[];
+    readonly now: string;
+  },
+) {
   return Effect.gen(function* () {
     const remoteProjectById = new Map(
-      collectProjectCandidates(input.remoteEvents).map((project) => [project.projectId, project]),
+      input.remoteProjects.map((project) => [project.projectId, project]),
     );
     const localProjects = yield* readLocalProjects(sql);
     yield* Effect.forEach(

@@ -289,6 +289,8 @@ Progress notes:
 - Latest-first bootstrap page dedupe now queries local event refs only for the candidate remote page sequences, instead of rereading all local orchestration events once per remote thread page.
 - Completed full-sync runs now have a fast path that checks remote max sequence and unpushed local rows before loading the full local event log, so already-current workspaces can return idle without materializing all local history.
 - Autosave now has a pre-visible-sync pushability boundary: when remote history has not advanced, it checks for unpushed local events and runs the existing autosave pushability planner before publishing `syncing`. No-op autosave reschedules from close-together events stay invisible instead of flashing the spinner.
+- The project mapping wizard now reads remote project candidates from the remote project/thread indexes instead of requiring full remote event history. The older event-based planner remains available for sync paths that already have event pages loaded or for fallback compatibility.
+- Autosave pushability now treats a thread as settled when a provider session transitions from an observed active turn to a settled session with `activeTurnId: null`, even if the provider produced no `thread.turn-diff-completed` event. This keeps text-only/no-diff turns from remaining permanently deferred while still keeping active turns unpushable.
 
 ### Stage 7: Frontend Active Thread Derivation
 

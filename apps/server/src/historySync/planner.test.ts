@@ -5,6 +5,7 @@ import {
   buildPushedEventReceiptRows,
   classifyAutosyncThreadStates,
   countActiveThreadCreates,
+  filterPushableLocalEvents,
   filterAlreadyImportedRemoteDeltaEvents,
   isRemoteBehindLocal,
   planAutosaveLocalPush,
@@ -102,6 +103,27 @@ function turnDiffCompleted(sequence: number, threadId: string, turnId: string) {
     status: "ready",
     files: [],
     completedAt: baseEvent.occurredAt,
+  });
+}
+
+function sessionSet(
+  sequence: number,
+  threadId: string,
+  status: "starting" | "running" | "ready" | "stopped" | "interrupted" | "error",
+  activeTurnId: string | null,
+) {
+  return event(sequence, threadId, "thread.session-set", {
+    threadId,
+    session: {
+      threadId,
+      status,
+      providerName: "codex",
+      providerInstanceId: "codex",
+      runtimeMode: "full-access",
+      activeTurnId,
+      lastError: null,
+      updatedAt: baseEvent.occurredAt,
+    },
   });
 }
 
@@ -493,6 +515,69 @@ describe("history sync planner", () => {
       }),
     ).toEqual([]);
     expect(countActiveThreadCreates(local)).toBe(2);
+  });
+
+  test("autosave treats a settled no-diff text turn as completed after an observed active turn", () => {
+    const local = [
+      threadCreated(1, "thread-text"),
+      messageSent(2, "thread-text", "write text"),
+      turnStartRequested(3, "thread-text", "turn-text"),
+      sessionSet(4, "thread-text", "ready", null),
+      sessionSet(5, "thread-text", "running", "turn-text"),
+      messageSent(6, "thread-text", "assistant text"),
+      sessionSet(7, "thread-text", "ready", null),
+    ];
+
+    expect(
+      planAutosaveLocalPush({
+        localEvents: local,
+        unpushedLocalEvents: local,
+        remoteMaxSequence: 0,
+        projectionThreadRows: [
+          {
+            threadId: "thread-text",
+            pendingUserInputCount: 0,
+            hasActionableProposedPlan: 0,
+            latestTurnId: "turn-text",
+            sessionStatus: "ready",
+            sessionActiveTurnId: null,
+          },
+        ],
+      }),
+    ).toMatchObject({
+      action: "push-local",
+      candidateEvents: local,
+      pushableEvents: local,
+    });
+    expect(filterPushableLocalEvents(local, local)).toEqual(local);
+  });
+
+  test("autosave keeps a no-diff text turn deferred while the session is still active", () => {
+    const local = [
+      threadCreated(1, "thread-running"),
+      messageSent(2, "thread-running", "write text"),
+      turnStartRequested(3, "thread-running", "turn-running"),
+      sessionSet(4, "thread-running", "running", "turn-running"),
+      messageSent(5, "thread-running", "assistant text"),
+    ];
+
+    expect(
+      planAutosaveLocalPush({
+        localEvents: local,
+        unpushedLocalEvents: local,
+        remoteMaxSequence: 0,
+        projectionThreadRows: [
+          {
+            threadId: "thread-running",
+            pendingUserInputCount: 0,
+            hasActionableProposedPlan: 0,
+            latestTurnId: "turn-running",
+            sessionStatus: "running",
+            sessionActiveTurnId: "turn-running",
+          },
+        ],
+      }),
+    ).toEqual({ action: "idle" });
   });
 
   test("autosave planner separates remote conflict, covered receipts, and local push decisions", () => {

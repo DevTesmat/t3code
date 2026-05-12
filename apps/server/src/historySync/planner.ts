@@ -188,6 +188,30 @@ function readPayload(row: HistorySyncEventRow): Record<string, unknown> | null {
   }
 }
 
+function readPayloadSession(row: HistorySyncEventRow): Record<string, unknown> | null {
+  const session = readPayload(row)?.session;
+  return typeof session === "object" && session !== null
+    ? (session as Record<string, unknown>)
+    : null;
+}
+
+function readPayloadSessionActiveTurnId(row: HistorySyncEventRow): string | null {
+  const activeTurnId = readPayloadSession(row)?.activeTurnId;
+  return typeof activeTurnId === "string" && activeTurnId.length > 0 ? activeTurnId : null;
+}
+
+function isSettledSessionWithoutActiveTurn(row: HistorySyncEventRow): boolean {
+  if (row.eventType !== "thread.session-set") return false;
+  const session = readPayloadSession(row);
+  if (!session || session.activeTurnId !== null) return false;
+  return (
+    session.status === "ready" ||
+    session.status === "stopped" ||
+    session.status === "interrupted" ||
+    session.status === "error"
+  );
+}
+
 export function computeThreadUserSequenceHash(
   events: readonly HistorySyncEventRow[],
 ): string | null {
@@ -930,10 +954,24 @@ export function classifyAutosyncThreadStates(
   const openTurnByThread = new Map<string, string>();
   const completedTurnThreads = new Set<string>();
   const threadIds = new Set<string>();
+  const observedActiveTurnThreads = new Set<string>();
   for (const event of events.toSorted((left, right) => left.sequence - right.sequence)) {
     if (event.aggregateKind !== "thread") continue;
     const threadId = readPayloadThreadId(event);
     threadIds.add(threadId);
+    if (event.eventType === "thread.session-set") {
+      const activeTurnId = readPayloadSessionActiveTurnId(event);
+      if (activeTurnId !== null) {
+        openTurnByThread.set(threadId, activeTurnId);
+        observedActiveTurnThreads.add(threadId);
+        continue;
+      }
+      if (observedActiveTurnThreads.has(threadId) && isSettledSessionWithoutActiveTurn(event)) {
+        openTurnByThread.delete(threadId);
+        completedTurnThreads.add(threadId);
+        continue;
+      }
+    }
     if (event.eventType === "thread.turn-start-requested") {
       const turnId = readPayloadTurnId(event);
       const messageId = readString(readPayload(event), "messageId");
@@ -1132,7 +1170,21 @@ export function filterPushableLocalEvents(
   allLocalEvents: readonly HistorySyncEventRow[] = candidateEvents,
 ): readonly HistorySyncEventRow[] {
   const openTurnByThread = new Map<string, string>();
+  const observedActiveTurnThreads = new Set<string>();
   for (const event of allLocalEvents.toSorted((left, right) => left.sequence - right.sequence)) {
+    if (event.eventType === "thread.session-set") {
+      const threadId = readPayloadThreadId(event);
+      const activeTurnId = readPayloadSessionActiveTurnId(event);
+      if (activeTurnId !== null) {
+        openTurnByThread.set(threadId, activeTurnId);
+        observedActiveTurnThreads.add(threadId);
+        continue;
+      }
+      if (observedActiveTurnThreads.has(threadId) && isSettledSessionWithoutActiveTurn(event)) {
+        openTurnByThread.delete(threadId);
+        continue;
+      }
+    }
     if (event.eventType === "thread.turn-start-requested") {
       const turnId = readPayloadTurnId(event);
       const messageId = readString(readPayload(event), "messageId");

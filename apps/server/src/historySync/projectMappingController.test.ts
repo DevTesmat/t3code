@@ -6,27 +6,19 @@ import { Effect, Exit } from "effect";
 import { describe, expect, test } from "vitest";
 
 import type { HistorySyncStateRow } from "./localRepository.ts";
-import type { HistorySyncEventRow } from "./planner.ts";
+import type { ProjectCandidate } from "./planner.ts";
 import {
   createHistorySyncProjectMappingController,
   planProjectMappingApplyContinuation,
   type HistorySyncProjectMappingControllerDependencies,
 } from "./projectMappingController.ts";
 
-const remoteEvent: HistorySyncEventRow = {
-  sequence: 7,
-  eventId: "event-7",
-  aggregateKind: "project",
-  streamId: "project-1",
-  streamVersion: 1,
-  eventType: "project.created",
-  occurredAt: "2026-05-01T00:00:00.000Z",
-  commandId: null,
-  causationEventId: null,
-  correlationId: null,
-  actorKind: "system",
-  payloadJson: "{}",
-  metadataJson: "{}",
+const remoteProject: ProjectCandidate = {
+  projectId: "project-1",
+  title: "Project 1",
+  workspaceRoot: "/remote/project-1",
+  deleted: false,
+  threadCount: 1,
 };
 
 const plan: HistorySyncProjectMappingPlan = {
@@ -47,8 +39,9 @@ function makeController(
 ) {
   const deps: HistorySyncProjectMappingControllerDependencies = {
     getConnectionString: Effect.succeed("mysql://history"),
-    readRemoteEvents: () => Effect.succeed([remoteEvent]),
-    buildProjectMappingPlanFromEvents: () =>
+    readRemoteMaxSequence: () => Effect.succeed(7),
+    readRemoteProjectMappingCandidates: () => Effect.succeed([remoteProject]),
+    buildProjectMappingPlanFromCandidates: () =>
       Effect.sync(() => {
         calls.push("plan");
         return plan;
@@ -58,7 +51,7 @@ function makeController(
         calls.push("autoPersist");
       }),
     getSyncId: (remoteMaxSequence) => Effect.succeed(`client:${remoteMaxSequence}`),
-    applyMappingActions: () =>
+    applyMappingActionsForProjectCandidates: () =>
       Effect.sync(() => {
         calls.push("apply");
       }),
@@ -111,6 +104,32 @@ describe("history sync project mapping controller", () => {
     await expect(Effect.runPromise(controller.getProjectMappings)).resolves.toEqual(plan);
 
     expect(calls).toEqual(["plan", "autoPersist", "plan"]);
+  });
+
+  test("reads mapping plan from remote project indexes without full remote events", async () => {
+    const calls: string[] = [];
+    const controller = makeController(
+      {
+        readRemoteProjectMappingCandidates: () =>
+          Effect.sync(() => {
+            calls.push("readIndexedProjects");
+            return [remoteProject];
+          }),
+        readRemoteMaxSequence: () =>
+          Effect.sync(() => {
+            calls.push("readRemoteMax");
+            return 7;
+          }),
+      },
+      calls,
+    );
+
+    await expect(Effect.runPromise(controller.getProjectMappings)).resolves.toEqual(plan);
+
+    expect(calls).toContain("readIndexedProjects");
+    expect(calls).toContain("readRemoteMax");
+    expect(calls).toEqual(expect.arrayContaining(["plan", "autoPersist"]));
+    expect(calls.filter((call) => call === "plan")).toHaveLength(2);
   });
 
   test("rejects stale apply sync id", async () => {

@@ -44,6 +44,7 @@ import {
   readRemoteEventsForThreadIds,
   readRemoteMaxSequence,
   readRemoteLatestThreadShells,
+  readRemoteProjectMappingCandidates,
   readRemoteProjectEventsForProjectIds,
 } from "./remoteStore.ts";
 import { createHistorySyncRestoreController } from "./restoreController.ts";
@@ -388,13 +389,15 @@ export const HistorySyncServiceLive = Layer.effect(
 
     const mappingController = createHistorySyncProjectMappingController({
       getConnectionString,
-      readRemoteEvents,
-      buildProjectMappingPlanFromEvents: (input) =>
-        ProjectMappings.buildProjectMappingPlanFromEvents(sql, input),
+      readRemoteMaxSequence,
+      readRemoteProjectMappingCandidates,
       autoPersistExactProjectMappings: (plan) =>
         ProjectMappings.autoPersistExactProjectMappings(sql, plan),
+      buildProjectMappingPlanFromCandidates: (input) =>
+        ProjectMappings.buildProjectMappingPlanFromCandidates(sql, input),
       getSyncId: (remoteMaxSequence) => ProjectMappings.getSyncId(sql, remoteMaxSequence),
-      applyMappingActions: (input) => ProjectMappings.applyMappingActions(sql, input),
+      applyMappingActionsForProjectCandidates: (input) =>
+        ProjectMappings.applyMappingActionsForProjectCandidates(sql, input),
       clearStopped: () => lifecycle.clearStopped,
       readState,
       syncNow: () => syncNow,

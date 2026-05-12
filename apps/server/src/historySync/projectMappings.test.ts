@@ -12,6 +12,7 @@ import type {
 } from "./planner.ts";
 import {
   buildProjectMappingPlanFromEvents,
+  buildProjectMappingPlanFromCandidates,
   filterValidProjectMappings,
   findProjectMappingSuggestion,
   getSyncId,
@@ -261,6 +262,59 @@ layer("history sync project mapping repository", (it) => {
 
       assert.strictEqual(plan.candidates[0]?.suggestedLocalProjectId, "local-old");
       assert.strictEqual(plan.candidates[0]?.status, "mapped");
+    }),
+  );
+
+  it.effect("builds mapping plans from indexed remote project candidates", () =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      yield* runMigrations({ toMigrationInclusive: 37 });
+      yield* insertLocalProject(sql, {
+        projectId: "local-indexed-api",
+        workspaceRoot: "/Users/me/indexed-api",
+      });
+
+      const plan = yield* buildProjectMappingPlanFromCandidates(sql, {
+        remoteProjects: [
+          {
+            projectId: "remote-api",
+            title: "Remote API",
+            workspaceRoot: "/Volumes/remote/indexed-api",
+            deleted: false,
+            threadCount: 3,
+          },
+          {
+            projectId: "remote-empty",
+            title: "Remote empty",
+            workspaceRoot: "/Volumes/remote/empty",
+            deleted: false,
+            threadCount: 0,
+          },
+          {
+            projectId: "remote-deleted",
+            title: "Remote deleted",
+            workspaceRoot: "/Volumes/remote/deleted",
+            deleted: true,
+            threadCount: 4,
+          },
+        ],
+        remoteMaxSequence: 9,
+      });
+
+      assert.deepStrictEqual(
+        plan.candidates.map((candidate) => ({
+          remoteProjectId: String(candidate.remoteProjectId),
+          threadCount: candidate.threadCount,
+          suggestedLocalProjectId: String(candidate.suggestedLocalProjectId),
+        })),
+        [
+          {
+            remoteProjectId: "remote-api",
+            threadCount: 3,
+            suggestedLocalProjectId: "local-indexed-api",
+          },
+        ],
+      );
     }),
   );
 

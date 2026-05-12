@@ -7,24 +7,25 @@ import { Effect } from "effect";
 
 import { describeSyncFailure } from "./config.ts";
 import type { HistorySyncStateRow } from "./localRepository.ts";
-import { maxHistoryEventSequence, type HistorySyncEventRow } from "./planner.ts";
+import type { ProjectCandidate } from "./planner.ts";
 
 export interface HistorySyncProjectMappingControllerDependencies {
   readonly getConnectionString: Effect.Effect<string | null, object>;
-  readonly readRemoteEvents: (
+  readonly readRemoteMaxSequence: (connectionString: string) => Effect.Effect<number, object>;
+  readonly readRemoteProjectMappingCandidates: (
     connectionString: string,
-  ) => Effect.Effect<readonly HistorySyncEventRow[], object>;
-  readonly buildProjectMappingPlanFromEvents: (input: {
-    readonly remoteEvents: readonly HistorySyncEventRow[];
+  ) => Effect.Effect<readonly ProjectCandidate[], object>;
+  readonly buildProjectMappingPlanFromCandidates: (input: {
+    readonly remoteProjects: readonly ProjectCandidate[];
     readonly remoteMaxSequence: number;
   }) => Effect.Effect<HistorySyncProjectMappingPlan, object>;
   readonly autoPersistExactProjectMappings: (
     plan: HistorySyncProjectMappingPlan,
   ) => Effect.Effect<void, object>;
   readonly getSyncId: (remoteMaxSequence: number) => Effect.Effect<string, object>;
-  readonly applyMappingActions: (input: {
+  readonly applyMappingActionsForProjectCandidates: (input: {
     readonly actions: HistorySyncProjectMappingsApplyInput["actions"];
-    readonly remoteEvents: readonly HistorySyncEventRow[];
+    readonly remoteProjects: readonly ProjectCandidate[];
     readonly now: string;
   }) => Effect.Effect<void, object>;
   readonly clearStopped: () => Effect.Effect<void>;
@@ -44,10 +45,6 @@ function requireConnectionString(
   );
 }
 
-function remoteMaxSequence(events: readonly HistorySyncEventRow[]): number {
-  return maxHistoryEventSequence(events);
-}
-
 export function planProjectMappingApplyContinuation(
   state: Pick<HistorySyncStateRow, "hasCompletedInitialSync"> | null,
 ): "sync-now" | "start-initial-sync" {
@@ -61,15 +58,17 @@ export function createHistorySyncProjectMappingController(
     const connectionString = yield* input.getConnectionString.pipe(
       Effect.flatMap(requireConnectionString),
     );
-    const remoteEvents = yield* input.readRemoteEvents(connectionString);
-    const maxSequence = remoteMaxSequence(remoteEvents);
-    const plan = yield* input.buildProjectMappingPlanFromEvents({
-      remoteEvents,
+    const [remoteProjects, maxSequence] = yield* Effect.all([
+      input.readRemoteProjectMappingCandidates(connectionString),
+      input.readRemoteMaxSequence(connectionString),
+    ]);
+    const plan = yield* input.buildProjectMappingPlanFromCandidates({
+      remoteProjects,
       remoteMaxSequence: maxSequence,
     });
     yield* input.autoPersistExactProjectMappings(plan);
-    return yield* input.buildProjectMappingPlanFromEvents({
-      remoteEvents,
+    return yield* input.buildProjectMappingPlanFromCandidates({
+      remoteProjects,
       remoteMaxSequence: maxSequence,
     });
   }).pipe(
@@ -81,8 +80,10 @@ export function createHistorySyncProjectMappingController(
       const connectionString = yield* input.getConnectionString.pipe(
         Effect.flatMap(requireConnectionString),
       );
-      const remoteEvents = yield* input.readRemoteEvents(connectionString);
-      const maxSequence = remoteMaxSequence(remoteEvents);
+      const [remoteProjects, maxSequence] = yield* Effect.all([
+        input.readRemoteProjectMappingCandidates(connectionString),
+        input.readRemoteMaxSequence(connectionString),
+      ]);
       const expectedSyncId = yield* input.getSyncId(maxSequence);
       if (mappingInput.syncId !== expectedSyncId) {
         return yield* new HistorySyncConfigError({
@@ -91,9 +92,9 @@ export function createHistorySyncProjectMappingController(
       }
 
       const now = new Date().toISOString();
-      yield* input.applyMappingActions({
+      yield* input.applyMappingActionsForProjectCandidates({
         actions: mappingInput.actions,
-        remoteEvents,
+        remoteProjects,
         now,
       });
       yield* input.clearStopped();
@@ -104,8 +105,8 @@ export function createHistorySyncProjectMappingController(
       } else {
         yield* input.startInitialSync();
       }
-      return yield* input.buildProjectMappingPlanFromEvents({
-        remoteEvents,
+      return yield* input.buildProjectMappingPlanFromCandidates({
+        remoteProjects,
         remoteMaxSequence: maxSequence,
       });
     }).pipe(
