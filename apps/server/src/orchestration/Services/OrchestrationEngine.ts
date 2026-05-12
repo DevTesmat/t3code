@@ -1,9 +1,10 @@
 /**
  * OrchestrationEngineService - Service interface for orchestration command handling.
  *
- * Owns command validation/dispatch and in-memory read-model updates backed by
- * `OrchestrationEventStore` persistence. It does not own provider process
- * management or transport concerns (e.g. websocket request parsing).
+ * Owns command validation/dispatch and compact in-memory command-decision state
+ * backed by `OrchestrationEventStore` persistence. Full read models are loaded
+ * from projections on demand so historical thread bodies are not retained by
+ * the engine hot path.
  *
  * Uses Effect `Context.Service` for dependency injection. Command dispatch,
  * replay, and unknown-input decoding all return typed domain errors.
@@ -27,14 +28,14 @@ import type { ProjectionRepositoryError } from "../../persistence/Errors.ts";
  */
 export interface OrchestrationEngineShape {
   /**
-   * Read the current in-memory orchestration read model.
+   * Read the current orchestration read model from projections.
    *
    * @returns Effect containing the latest read model.
    */
   readonly getReadModel: () => Effect.Effect<OrchestrationReadModel, never, never>;
 
   /**
-   * Rebuild projections and the in-memory read model from persisted storage.
+   * Rebuild projections and the engine command-decision state from persisted storage.
    *
    * Used after history sync replaces local event storage from the remote
    * source of truth.

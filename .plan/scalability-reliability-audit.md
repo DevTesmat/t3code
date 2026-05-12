@@ -4,7 +4,7 @@
 
 This file is the source of truth for the scalability work from the May 2026 audit. Keep it updated whenever scope, ordering, implementation details, or completion status changes.
 
-Current state: Stages 1, 2, 3, and 5 are complete. Replay RPC pagination and shell-stream gap recovery are implemented, including retry coverage for interrupted live paged replay. Provider ingestion now exposes enqueue/backpressure accounting through worker health and operational health, and rejected must-deliver runtime events now best-effort fail the affected session instead of leaving projection continuity ambiguous. Thread subscription snapshots now bound initial message, activity, proposed-plan, checkpoint, and persisted file-diff hydration and expose page metadata for paged resources; older messages, activities, proposed plans, and checkpoints can be loaded through explicit bounded page APIs, with the active-thread UI loading them together when older history is requested. Older persisted file diffs are fetched on demand for visible file-change rows by tool-call id instead of unconditionally hydrating all diffs on thread open. Thread shell summary refresh now uses targeted SQL aggregates instead of hydrating all thread messages, proposed plans, activities, and approvals; latest user-message timestamps, pending approval/user-input counts, latest pending user-input timestamp, and actionable proposed-plan state are now maintained incrementally on normal projection events.
+Current state: Stages 1, 2, 3, 4, and 5 are complete. Replay RPC pagination and shell-stream gap recovery are implemented, including retry coverage for interrupted live paged replay. Provider ingestion now exposes enqueue/backpressure accounting through worker health and operational health, and rejected must-deliver runtime events now best-effort fail the affected session instead of leaving projection continuity ambiguous. Thread subscription snapshots now bound initial message, activity, proposed-plan, checkpoint, and persisted file-diff hydration and expose page metadata for paged resources; older messages, activities, proposed plans, and checkpoints can be loaded through explicit bounded page APIs, with the active-thread UI loading them together when older history is requested. Older persisted file diffs are fetched on demand for visible file-change rows by tool-call id instead of unconditionally hydrating all diffs on thread open. Thread shell summary refresh now uses targeted SQL aggregates instead of hydrating all thread messages, proposed plans, activities, and approvals; latest user-message timestamps, pending approval/user-input counts, latest pending user-input timestamp, and actionable proposed-plan state are now maintained incrementally on normal projection events. The orchestration engine now retains compact command-decision state instead of the full historical thread read model; full read models remain available as on-demand projection snapshots for compatibility.
 
 ## Goal
 
@@ -218,12 +218,12 @@ Expected outcome: opening a huge thread is bounded, and older content loads on d
 
 ### Stage 4: Shell-Only Hot Read Model
 
-- [ ] Define a shell read model for command decisions and global subscriptions.
+- [x] Define a shell read model for command decisions and global subscriptions.
   - [x] Decouple thread subscription snapshot sequencing from `OrchestrationEngine.getReadModel()` by adding a projection-state-only snapshot sequence query.
-- [ ] Move thread body access behind targeted query APIs.
-- [ ] Audit `decider.ts`, provider ingestion, checkpointing, and project setup for thread-body assumptions.
-- [ ] Keep only fields needed for command invariants, sidebar state, active sessions, and latest turn state in the hot model.
-- [ ] Add regression tests for command decisions after removing full bodies from the hot model.
+- [x] Move thread body access behind targeted query APIs.
+- [x] Audit `decider.ts`, provider ingestion, checkpointing, and project setup for thread-body assumptions.
+- [x] Keep only fields needed for command invariants, sidebar state, active sessions, and latest turn state in the hot model.
+- [x] Add regression tests for command decisions after removing full bodies from the hot model.
 
 Expected outcome: total historical messages/activities are no longer baseline server heap.
 
@@ -243,7 +243,9 @@ Progress notes:
 - Project setup scripts, shell-stream project metadata enrichment, stale session recovery, and idle provider session reaping now use projection shell queries instead of full `OrchestrationEngine.getReadModel()` snapshots.
 - Provider runtime ingestion no longer calls `OrchestrationEngine.getReadModel()`; runtime event processing uses per-thread shell lookups, proposed-plan lookups, snapshot sequence reads, and workspace cwd shell/project resolution.
 - Provider command handling and checkpoint handling no longer call `OrchestrationEngine.getReadModel()`; they use thread/project shell queries plus existing targeted message/checkpoint/proposed-plan queries.
-- No non-test server runtime caller of `OrchestrationEngine.getReadModel()` remains outside the service interface documentation. The next Stage 4 boundary is the engine's internal full read-model state and command-decision path.
+- No non-test server runtime caller of `OrchestrationEngine.getReadModel()` remains outside the service interface documentation.
+- `OrchestrationEngine` now retains a compact command-decision read model instead of the full historical read model. The compact model preserves project/thread identity, deletion/archive/pin state, runtime/interaction mode, sessions, latest turns, and work-duration summaries, while stripping messages, activities, checkpoints, and proposed-plan bodies after bootstrap and every applied event. Public `getReadModel()` remains a full projection snapshot query so compatibility is preserved without pinning full history in engine memory.
+- Command decision regression coverage now proves source proposed-plan validation works through the targeted projection lookup after body compaction, and projection-failure reconciliation is verified through subsequent command decisions instead of direct access to private engine state.
 
 ### Stage 5: Incremental Shell Summary Projection
 
@@ -311,13 +313,12 @@ Expected outcome: provider logging resource usage scales with active/recent thre
 
 ## Remaining Suggested Order
 
-1. Stage 4: Shell-only hot read model.
-2. Stage 6: History sync paging and indexing.
-3. Stage 7: Frontend active thread derivation.
-4. Stage 8: Frontend global list scaling.
-5. Stage 9: Logger writer lifecycle.
+1. Stage 6: History sync paging and indexing.
+2. Stage 7: Frontend active thread derivation.
+3. Stage 8: Frontend global list scaling.
+4. Stage 9: Logger writer lifecycle.
 
-Stages 1, 2, 3, and 5 are complete. Stage 4 should come next because it removes the remaining full-body read-model pressure from routine server operation.
+Stages 1, 2, 3, 4, and 5 are complete. Stage 6 should come next because history sync still has whole-log materialization paths.
 
 ## Validation Requirements
 
@@ -333,7 +334,6 @@ Use `bun run test`, never `bun test`. For focused tests, run the package-local t
 
 ## Open Design Questions
 
-- Stage 4 needs a precise boundary for what remains in the hot shell read model versus targeted thread-body queries.
 - Stage 6 needs a remote-store paging contract that can resume safely across partial pushes and conflict-recovery states.
 - Should old message/activity projection rows be retained forever, compacted, or moved to archive tables?
 - Should history sync receipts be represented by compact cursors/ranges instead of one row per event?

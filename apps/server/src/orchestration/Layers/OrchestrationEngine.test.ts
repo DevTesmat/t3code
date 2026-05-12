@@ -3,6 +3,7 @@ import {
   CommandId,
   DEFAULT_PROVIDER_INTERACTION_MODE,
   MessageId,
+  OrchestrationProposedPlanId,
   ProjectId,
   ThreadId,
   TurnId,
@@ -37,6 +38,8 @@ const asProjectId = (value: string): ProjectId => ProjectId.make(value);
 const asMessageId = (value: string): MessageId => MessageId.make(value);
 const asTurnId = (value: string): TurnId => TurnId.make(value);
 const asCheckpointRef = (value: string): CheckpointRef => CheckpointRef.make(value);
+const asProposedPlanId = (value: string): OrchestrationProposedPlanId =>
+  OrchestrationProposedPlanId.make(value);
 
 async function createOrchestrationSystem() {
   const ServerConfigLayer = ServerConfig.layerTest(process.cwd(), {
@@ -275,6 +278,96 @@ describe("OrchestrationEngine", () => {
     const readModelA = await system.run(engine.getReadModel());
     const readModelB = await system.run(engine.getReadModel());
     expect(readModelB).toEqual(readModelA);
+    await system.dispose();
+  });
+
+  it("validates source proposed plans through projection lookups after compacting decision state", async () => {
+    const createdAt = now();
+    const projectId = asProjectId("project-source-plan");
+    const sourceThreadId = ThreadId.make("thread-source-plan");
+    const targetThreadId = ThreadId.make("thread-source-plan-target");
+    const planId = asProposedPlanId("plan-source-1");
+    const system = await createOrchestrationSystem();
+    const { engine } = system;
+
+    await system.run(
+      engine.dispatch({
+        type: "project.create",
+        commandId: CommandId.make("cmd-source-plan-project-create"),
+        projectId,
+        title: "Source Plan Project",
+        workspaceRoot: "/tmp/project-source-plan",
+        defaultModelSelection: {
+          instanceId: ProviderInstanceId.make("codex"),
+          model: "gpt-5-codex",
+        },
+        createdAt,
+      }),
+    );
+    for (const [threadId, title] of [
+      [sourceThreadId, "Source plan thread"],
+      [targetThreadId, "Target plan thread"],
+    ] as const) {
+      await system.run(
+        engine.dispatch({
+          type: "thread.create",
+          commandId: CommandId.make(`cmd-${threadId}-create`),
+          threadId,
+          projectId,
+          title,
+          modelSelection: {
+            instanceId: ProviderInstanceId.make("codex"),
+            model: "gpt-5-codex",
+          },
+          interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+          runtimeMode: "full-access",
+          branch: null,
+          worktreePath: null,
+          createdAt,
+        }),
+      );
+    }
+
+    await system.run(
+      engine.dispatch({
+        type: "thread.proposed-plan.import",
+        commandId: CommandId.make("cmd-source-plan-import"),
+        threadId: sourceThreadId,
+        planId,
+        planMarkdown: "Implement the compact-state follow-up.",
+        createdAt,
+      }),
+    );
+
+    await system.run(
+      engine.dispatch({
+        type: "thread.turn.start",
+        commandId: CommandId.make("cmd-source-plan-turn-start"),
+        threadId: targetThreadId,
+        sourceProposedPlan: {
+          threadId: sourceThreadId,
+          planId,
+        },
+        message: {
+          messageId: asMessageId("msg-source-plan-1"),
+          role: "user",
+          text: "run it",
+          attachments: [],
+        },
+        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+        runtimeMode: "full-access",
+        createdAt,
+      }),
+    );
+
+    const readModel = await system.run(engine.getReadModel());
+    expect(
+      readModel.threads.find((thread) => thread.id === sourceThreadId)?.proposedPlans,
+    ).toHaveLength(1);
+    expect(
+      readModel.threads.find((thread) => thread.id === targetThreadId)?.messages.at(-1)?.source,
+    ).toBe("harness");
+
     await system.dispose();
   });
 
@@ -836,7 +929,6 @@ describe("OrchestrationEngine", () => {
       "project.created",
       "thread.created",
     ]);
-    expect((await runtime.runPromise(engine.getReadModel())).snapshotSequence).toBe(2);
 
     const retryResult = await runtime.runPromise(engine.dispatch(turnStartCommand));
     expect(retryResult.sequence).toBe(4);
@@ -894,7 +986,7 @@ describe("OrchestrationEngine", () => {
       projectEvent: (event) => {
         if (
           shouldFailProjection &&
-          event.commandId === CommandId.make("cmd-thread-meta-sync-fail")
+          event.commandId === CommandId.make("cmd-thread-archive-sync-fail")
         ) {
           shouldFailProjection = false;
           return Effect.fail(
@@ -957,20 +1049,22 @@ describe("OrchestrationEngine", () => {
     await expect(
       runtime.runPromise(
         engine.dispatch({
-          type: "thread.meta.update",
-          commandId: CommandId.make("cmd-thread-meta-sync-fail"),
+          type: "thread.archive",
+          commandId: CommandId.make("cmd-thread-archive-sync-fail"),
           threadId: ThreadId.make("thread-sync"),
-          title: "sync-after-failed-projection",
         }),
       ),
     ).rejects.toThrow("projection failed");
 
-    const readModelAfterFailure = await runtime.runPromise(engine.getReadModel());
-    const updatedThread = readModelAfterFailure.threads.find(
-      (thread) => thread.id === "thread-sync",
-    );
-    expect(readModelAfterFailure.snapshotSequence).toBe(3);
-    expect(updatedThread?.title).toBe("sync-after-failed-projection");
+    await expect(
+      runtime.runPromise(
+        engine.dispatch({
+          type: "thread.archive",
+          commandId: CommandId.make("cmd-thread-archive-sync-duplicate"),
+          threadId: ThreadId.make("thread-sync"),
+        }),
+      ),
+    ).rejects.toThrow("already archived");
 
     await runtime.dispose();
   });

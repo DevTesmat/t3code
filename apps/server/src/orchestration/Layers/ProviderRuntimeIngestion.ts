@@ -2937,24 +2937,26 @@ const make = Effect.gen(function* () {
           return Effect.void;
         }
 
-        return orchestrationEngine.dispatch({
-          type: "thread.session.set",
-          commandId: providerCommandId(event, "runtime-ingestion-queue-rejected"),
-          threadId: thread.value.id,
-          session: {
+        return orchestrationEngine
+          .dispatch({
+            type: "thread.session.set",
+            commandId: providerCommandId(event, "runtime-ingestion-queue-rejected"),
             threadId: thread.value.id,
-            status: "error",
-            providerName: event.provider,
-            ...(event.providerInstanceId !== undefined
-              ? { providerInstanceId: event.providerInstanceId }
-              : {}),
-            runtimeMode: thread.value.session?.runtimeMode ?? "full-access",
-            activeTurnId: toTurnId(event.turnId) ?? thread.value.session?.activeTurnId ?? null,
-            lastError: `Provider runtime ingestion rejected a must-deliver ${event.type} event; session state may be incomplete.`,
-            updatedAt: now,
-          },
-          createdAt: now,
-        });
+            session: {
+              threadId: thread.value.id,
+              status: "error",
+              providerName: event.provider,
+              ...(event.providerInstanceId !== undefined
+                ? { providerInstanceId: event.providerInstanceId }
+                : {}),
+              runtimeMode: thread.value.session?.runtimeMode ?? "full-access",
+              activeTurnId: toTurnId(event.turnId) ?? thread.value.session?.activeTurnId ?? null,
+              lastError: `Provider runtime ingestion rejected a must-deliver ${event.type} event; session state may be incomplete.`,
+              updatedAt: now,
+            },
+            createdAt: now,
+          })
+          .pipe(Effect.asVoid);
       }),
       Effect.catchCause((cause) =>
         Effect.logWarning("provider runtime ingestion failed to mark rejected session error", {
