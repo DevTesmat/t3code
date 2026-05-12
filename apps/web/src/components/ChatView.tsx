@@ -216,6 +216,12 @@ const EMPTY_PROPOSED_PLANS: Thread["proposedPlans"] = [];
 const EMPTY_PROVIDERS: ServerProvider[] = [];
 const EMPTY_PENDING_USER_INPUT_ANSWERS: Record<string, PendingUserInputDraftAnswer> = {};
 const OLDER_MESSAGES_AUTOLOAD_THRESHOLD_PX = 96;
+// Temporarily disable the right-side Tasks/Plan visualization. The current
+// sidebar lifecycle is not reliable enough: sync refreshes and thread changes
+// can reopen it or disturb the timeline. Plan creation/refinement/implementation
+// remains enabled through the normal chat and composer flows while this UI is
+// redesigned.
+const PLAN_SIDEBAR_VISUALIZATION_ENABLED = false;
 type QueuedComposerFlushReason = "agent-finished" | "empty-enter-force";
 
 async function dispatchAndApplyCommittedEvents(input: {
@@ -2453,6 +2459,10 @@ export default function ChatView(props: ChatViewProps) {
     handleInteractionModeChange(interactionMode === "plan" ? "default" : "plan");
   }, [handleInteractionModeChange, interactionMode]);
   const togglePlanSidebar = useCallback(() => {
+    if (!PLAN_SIDEBAR_VISUALIZATION_ENABLED) {
+      setPlanSidebarOpen(false);
+      return;
+    }
     setPlanSidebarOpen((open) => {
       if (open) {
         planSidebarDismissedForTurnRef.current =
@@ -2727,7 +2737,10 @@ export default function ChatView(props: ChatViewProps) {
       window.cancelAnimationFrame(restoreMaintainScrollAtEndFrameRef.current);
       restoreMaintainScrollAtEndFrameRef.current = null;
     }
-    if (planSidebarOpenOnNextThreadRef.current) {
+    if (!PLAN_SIDEBAR_VISUALIZATION_ENABLED) {
+      planSidebarOpenOnNextThreadRef.current = false;
+      setPlanSidebarOpen(false);
+    } else if (planSidebarOpenOnNextThreadRef.current) {
       planSidebarOpenOnNextThreadRef.current = false;
       setPlanSidebarOpen(true);
     } else {
@@ -2745,6 +2758,7 @@ export default function ChatView(props: ChatViewProps) {
   // Auto-open the plan sidebar when plan/todo steps arrive for the current turn.
   // Don't auto-open for plans carried over from a previous turn (the user can open manually).
   useEffect(() => {
+    if (!PLAN_SIDEBAR_VISUALIZATION_ENABLED) return;
     if (!autoOpenPlanSidebar) return;
     if (!activePlan) return;
     if (planSidebarOpen) return;
@@ -3894,7 +3908,11 @@ export default function ChatView(props: ChatViewProps) {
         // Optimistically open the plan sidebar when implementing (not refining).
         // "default" mode here means the agent is executing the plan, which produces
         // step-tracking activities that the sidebar will display.
-        if (nextInteractionMode === "default" && autoOpenPlanSidebar) {
+        if (
+          PLAN_SIDEBAR_VISUALIZATION_ENABLED &&
+          nextInteractionMode === "default" &&
+          autoOpenPlanSidebar
+        ) {
           planSidebarDismissedForTurnRef.current = null;
           setPlanSidebarOpen(true);
         }
@@ -4018,7 +4036,8 @@ export default function ChatView(props: ChatViewProps) {
       })
       .then(() => {
         // Signal that the plan sidebar should open on the new thread when enabled.
-        planSidebarOpenOnNextThreadRef.current = autoOpenPlanSidebar;
+        planSidebarOpenOnNextThreadRef.current =
+          PLAN_SIDEBAR_VISUALIZATION_ENABLED && autoOpenPlanSidebar;
         return navigate({
           to: "/$environmentId/$threadId",
           params: {
@@ -4551,7 +4570,7 @@ export default function ChatView(props: ChatViewProps) {
                   activePlan={activePlan as { turnId?: TurnId } | null}
                   sidebarProposedPlan={sidebarProposedPlan as { turnId?: TurnId } | null}
                   planSidebarLabel={planSidebarLabel}
-                  planSidebarOpen={planSidebarOpen}
+                  planSidebarOpen={PLAN_SIDEBAR_VISUALIZATION_ENABLED && planSidebarOpen}
                   runtimeMode={runtimeMode}
                   interactionMode={interactionMode}
                   lockedProvider={lockedProvider}
@@ -4642,7 +4661,7 @@ export default function ChatView(props: ChatViewProps) {
         {/* end chat column */}
 
         {/* Plan sidebar */}
-        {planSidebarOpen && !shouldUsePlanSidebarSheet ? (
+        {PLAN_SIDEBAR_VISUALIZATION_ENABLED && planSidebarOpen && !shouldUsePlanSidebarSheet ? (
           <PlanSidebar
             activePlan={activePlan}
             activeProposedPlan={sidebarProposedPlan}
@@ -4675,7 +4694,7 @@ export default function ChatView(props: ChatViewProps) {
           onAddTerminalContext={addTerminalContextToDraft}
         />
       ))}
-      {shouldUsePlanSidebarSheet ? (
+      {PLAN_SIDEBAR_VISUALIZATION_ENABLED && shouldUsePlanSidebarSheet ? (
         <RightPanelSheet open={planSidebarOpen} onClose={closePlanSidebar}>
           <PlanSidebar
             activePlan={activePlan}

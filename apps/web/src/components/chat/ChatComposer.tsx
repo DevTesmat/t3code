@@ -145,6 +145,10 @@ const runtimeModeConfig: Record<
 const runtimeModeOptions = Object.keys(runtimeModeConfig) as RuntimeMode[];
 const COMPOSER_PATH_QUERY_DEBOUNCE_MS = 120;
 const EMPTY_PROJECT_ENTRIES: ProjectEntry[] = [];
+// Temporarily hide the composer entry point for the right-side Tasks/Plan
+// visualization. Users can still create, refine, import, and implement plans;
+// only the unreliable sidebar toggle is disabled until that UI is redesigned.
+const PLAN_SIDEBAR_COMPOSER_TOGGLE_ENABLED = false;
 
 const extendReplacementRangeForTrailingSpace = (
   text: string,
@@ -962,7 +966,9 @@ export const ChatComposer = memo(
       (showPlanFollowUpPrompt && activeProposedPlan !== null);
 
     const composerFooterHasWideActions = showPlanFollowUpPrompt || activePendingProgress !== null;
-    const showPlanSidebarToggle = Boolean(activePlan || sidebarProposedPlan || planSidebarOpen);
+    const showPlanSidebarToggle =
+      PLAN_SIDEBAR_COMPOSER_TOGGLE_ENABLED &&
+      Boolean(activePlan || sidebarProposedPlan || planSidebarOpen);
     const composerFooterActionLayoutKey = useMemo(() => {
       if (activePendingProgress) {
         return `pending:${activePendingProgress.questionIndex}:${activePendingProgress.isLastQuestion}:${activePendingIsResponding}`;

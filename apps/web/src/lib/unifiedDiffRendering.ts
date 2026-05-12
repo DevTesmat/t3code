@@ -139,6 +139,11 @@ export const INLINE_DIFF_RENDER_UNSAFE_CSS = `
   min-height: 1.25rem !important;
 }
 
+[data-separator-first][data-separator='line-info'],
+[data-separator-first][data-separator='line-info-basic'] {
+  display: none !important;
+}
+
 [data-separator-content] {
   padding-block: 0 !important;
   padding-inline: 0.5rem !important;
