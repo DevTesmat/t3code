@@ -528,12 +528,88 @@ describe("deriveMessagesTimelineRows", () => {
       .map((row) => row.id);
 
     expect(workRowIds).toEqual([
-      "work-group:exploration:tool:call-explore",
-      "work-group:exploration:tool:call-explore:2",
+      "work-group:exploration:before:assistant-entry",
+      "work-group:exploration:before:user-entry",
+      "work-group:other:before:user-entry",
       "work-group:other:tool:call-other",
-      "work-group:other:tool:call-other:2",
     ]);
     expect(new Set(workRowIds).size).toBe(workRowIds.length);
+  });
+
+  it("keeps work row ids stable when older work entries are prepended before a message", () => {
+    const userEntry = {
+      id: "user-entry",
+      kind: "message" as const,
+      createdAt: "2026-01-01T00:00:03Z",
+      message: {
+        id: "user-1" as never,
+        role: "user" as const,
+        text: "Continue.",
+        turnId: null,
+        createdAt: "2026-01-01T00:00:03Z",
+        streaming: false,
+      },
+    };
+    const visibleRows = deriveMessagesTimelineRows({
+      timelineEntries: [
+        {
+          id: "visible-work",
+          kind: "work",
+          createdAt: "2026-01-01T00:00:02Z",
+          entry: {
+            id: "visible-work",
+            createdAt: "2026-01-01T00:00:02Z",
+            label: "Tool call",
+            tone: "tool",
+            itemType: "dynamic_tool_call",
+            toolKey: "tool:visible",
+          },
+        },
+        userEntry,
+      ],
+      completionDividerBeforeEntryId: null,
+      isWorking: false,
+      turnDiffSummaryByAssistantMessageId: new Map(),
+      revertTurnCountByUserMessageId: new Map(),
+    });
+    const withOlderRows = deriveMessagesTimelineRows({
+      timelineEntries: [
+        {
+          id: "older-work",
+          kind: "work",
+          createdAt: "2026-01-01T00:00:01Z",
+          entry: {
+            id: "older-work",
+            createdAt: "2026-01-01T00:00:01Z",
+            label: "Tool call",
+            tone: "tool",
+            itemType: "dynamic_tool_call",
+            toolKey: "tool:older",
+          },
+        },
+        {
+          id: "visible-work",
+          kind: "work",
+          createdAt: "2026-01-01T00:00:02Z",
+          entry: {
+            id: "visible-work",
+            createdAt: "2026-01-01T00:00:02Z",
+            label: "Tool call",
+            tone: "tool",
+            itemType: "dynamic_tool_call",
+            toolKey: "tool:visible",
+          },
+        },
+        userEntry,
+      ],
+      completionDividerBeforeEntryId: null,
+      isWorking: false,
+      turnDiffSummaryByAssistantMessageId: new Map(),
+      revertTurnCountByUserMessageId: new Map(),
+    });
+
+    expect(visibleRows[0]?.id).toBe("work-group:other:before:user-entry");
+    expect(withOlderRows[0]?.id).toBe(visibleRows[0]?.id);
   });
 
   it("groups exploration rows within the same visible-message interval", () => {

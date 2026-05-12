@@ -27,6 +27,7 @@ import {
   selectThreadExistsByRef,
   setThreadBranch,
   selectThreadsAcrossEnvironments,
+  prependServerThreadDetailPages,
   prependServerThreadMessagesPage,
   syncServerShellSnapshot,
   syncServerThreadDetail,
@@ -1026,6 +1027,96 @@ describe("incremental orchestration updates", () => {
       "checkpoint-3",
       "checkpoint-4",
     ]);
+  });
+
+  it("prepends coherent thread detail pages in one state transition", () => {
+    const threadId = ThreadId.make("thread-1");
+    const initialSnapshot = makeServerThread({
+      messages: [
+        {
+          id: MessageId.make("message-3"),
+          role: "user",
+          text: "third",
+          turnId: null,
+          streaming: false,
+          createdAt: "2026-02-27T00:00:03.000Z",
+          updatedAt: "2026-02-27T00:00:03.000Z",
+        },
+      ],
+      activities: [
+        {
+          id: EventId.make("activity-3"),
+          createdAt: "2026-02-27T00:00:03.000Z",
+          turnId: null,
+          sequence: 3,
+          kind: "test.activity",
+          summary: "activity 3",
+          tone: "info",
+          payload: {},
+        },
+      ],
+    });
+    const withSnapshot = syncServerThreadDetail(
+      makeEmptyState({ activeEnvironmentId: localEnvironmentId }),
+      initialSnapshot,
+      localEnvironmentId,
+      {
+        messages: { limit: 1, included: 1, hasMoreBefore: true },
+        activities: { limit: 1, included: 1, hasMoreBefore: true },
+      },
+    );
+
+    const next = prependServerThreadDetailPages(
+      withSnapshot,
+      {
+        messages: {
+          threadId,
+          messages: [
+            {
+              id: MessageId.make("message-2"),
+              role: "user",
+              text: "second",
+              turnId: null,
+              streaming: false,
+              createdAt: "2026-02-27T00:00:02.000Z",
+              updatedAt: "2026-02-27T00:00:02.000Z",
+            },
+          ],
+          pageInfo: { limit: 1, included: 1, hasMoreBefore: true },
+        },
+        activities: [
+          {
+            threadId,
+            activities: [
+              {
+                id: EventId.make("activity-2"),
+                createdAt: "2026-02-27T00:00:02.000Z",
+                turnId: null,
+                sequence: 2,
+                kind: "test.activity",
+                summary: "activity 2",
+                tone: "info",
+                payload: {},
+              },
+            ],
+            pageInfo: { limit: 1, included: 1, hasMoreBefore: true },
+          },
+        ],
+      },
+      localEnvironmentId,
+    );
+    const projectedThread = selectThreadByRef(next, scopeThreadRef(localEnvironmentId, threadId));
+
+    expect(projectedThread?.messages.map((message) => message.id)).toEqual([
+      "message-2",
+      "message-3",
+    ]);
+    expect(projectedThread?.activities.map((activity) => activity.id)).toEqual([
+      "activity-2",
+      "activity-3",
+    ]);
+    expect(projectedThread?.messagePageInfo?.hasMoreBefore).toBe(true);
+    expect(projectedThread?.activityPageInfo?.hasMoreBefore).toBe(true);
   });
 
   it("streams proposed plan deltas and replaces them with the completed plan", () => {

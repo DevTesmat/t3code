@@ -1640,6 +1640,111 @@ export function prependServerThreadCheckpointsPage(
   });
 }
 
+export interface ThreadDetailPagesPrepend {
+  messages?: OrchestrationThreadMessagesPage | undefined;
+  activities?: readonly OrchestrationThreadActivitiesPage[] | undefined;
+  proposedPlans?: readonly OrchestrationThreadProposedPlansPage[] | undefined;
+  checkpoints?: readonly OrchestrationThreadCheckpointsPage[] | undefined;
+}
+
+export function prependServerThreadDetailPages(
+  state: AppState,
+  pages: ThreadDetailPagesPrepend,
+  environmentId: EnvironmentId,
+): AppState {
+  const threadId =
+    pages.messages?.threadId ??
+    pages.activities?.[0]?.threadId ??
+    pages.proposedPlans?.[0]?.threadId ??
+    pages.checkpoints?.[0]?.threadId;
+  if (!threadId) {
+    return state;
+  }
+
+  const environmentState = getStoredEnvironmentState(state, environmentId);
+  const previousThread = getThreadFromEnvironmentState(environmentState, threadId);
+  if (!previousThread) {
+    return state;
+  }
+
+  const nextThread: Thread = { ...previousThread };
+  const nextPageInfo: {
+    message?: OrchestrationThreadDetailResourcePageInfo;
+    activity?: OrchestrationThreadDetailResourcePageInfo;
+    proposedPlan?: OrchestrationThreadDetailResourcePageInfo;
+    checkpoint?: OrchestrationThreadDetailResourcePageInfo;
+  } = {};
+
+  if (pages.messages) {
+    const pageMessages = pages.messages.messages.map((message) =>
+      mapMessage(environmentId, message),
+    );
+    nextThread.messages = mergeOlderMessagePage(previousThread.messages, pageMessages);
+    nextThread.messagePageInfo = pages.messages.pageInfo;
+    nextPageInfo.message = pages.messages.pageInfo;
+  }
+
+  for (const page of pages.activities ?? []) {
+    nextThread.activities = mergeOlderActivityPage(nextThread.activities, page.activities);
+    nextThread.activityPageInfo = page.pageInfo;
+    nextPageInfo.activity = page.pageInfo;
+  }
+
+  for (const page of pages.proposedPlans ?? []) {
+    const proposedPlans = page.proposedPlans.map(mapProposedPlan);
+    nextThread.proposedPlans = mergeOlderProposedPlanPage(nextThread.proposedPlans, proposedPlans);
+    nextThread.proposedPlanPageInfo = page.pageInfo;
+    nextPageInfo.proposedPlan = page.pageInfo;
+  }
+
+  for (const page of pages.checkpoints ?? []) {
+    const turnDiffSummaries = page.checkpoints.map(mapTurnDiffSummary);
+    nextThread.turnDiffSummaries = mergeOlderTurnDiffSummaryPage(
+      nextThread.turnDiffSummaries,
+      turnDiffSummaries,
+    );
+    nextThread.checkpointPageInfo = page.pageInfo;
+    nextPageInfo.checkpoint = page.pageInfo;
+  }
+
+  const nextEnvironmentState = writeThreadState(environmentState, nextThread, previousThread);
+  return commitEnvironmentState(state, environmentId, {
+    ...nextEnvironmentState,
+    ...(nextPageInfo.message
+      ? {
+          messagePageInfoByThreadId: {
+            ...nextEnvironmentState.messagePageInfoByThreadId,
+            [threadId]: nextPageInfo.message,
+          },
+        }
+      : {}),
+    ...(nextPageInfo.activity
+      ? {
+          activityPageInfoByThreadId: {
+            ...nextEnvironmentState.activityPageInfoByThreadId,
+            [threadId]: nextPageInfo.activity,
+          },
+        }
+      : {}),
+    ...(nextPageInfo.proposedPlan
+      ? {
+          proposedPlanPageInfoByThreadId: {
+            ...nextEnvironmentState.proposedPlanPageInfoByThreadId,
+            [threadId]: nextPageInfo.proposedPlan,
+          },
+        }
+      : {}),
+    ...(nextPageInfo.checkpoint
+      ? {
+          checkpointPageInfoByThreadId: {
+            ...nextEnvironmentState.checkpointPageInfoByThreadId,
+            [threadId]: nextPageInfo.checkpoint,
+          },
+        }
+      : {}),
+  });
+}
+
 function applyEnvironmentOrchestrationEvent(
   state: EnvironmentState,
   event: OrchestrationEvent,
@@ -2542,6 +2647,10 @@ interface AppStore extends AppState {
     page: OrchestrationThreadCheckpointsPage,
     environmentId: EnvironmentId,
   ) => void;
+  prependServerThreadDetailPages: (
+    pages: ThreadDetailPagesPrepend,
+    environmentId: EnvironmentId,
+  ) => void;
   applyOrchestrationEvent: (event: OrchestrationEvent, environmentId: EnvironmentId) => void;
   applyOrchestrationEvents: (
     events: ReadonlyArray<OrchestrationEvent>,
@@ -2572,6 +2681,8 @@ export const useStore = create<AppStore>((set) => ({
     set((state) => prependServerThreadProposedPlansPage(state, page, environmentId)),
   prependServerThreadCheckpointsPage: (page, environmentId) =>
     set((state) => prependServerThreadCheckpointsPage(state, page, environmentId)),
+  prependServerThreadDetailPages: (pages, environmentId) =>
+    set((state) => prependServerThreadDetailPages(state, pages, environmentId)),
   applyOrchestrationEvent: (event, environmentId) =>
     set((state) => applyOrchestrationEvent(state, event, environmentId)),
   applyOrchestrationEvents: (events, environmentId) =>

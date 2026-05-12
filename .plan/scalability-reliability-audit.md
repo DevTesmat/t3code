@@ -305,6 +305,8 @@ Expected outcome: active chat CPU cost is bounded by changed/visible data where 
 Progress notes:
 
 - Fixed a streaming flicker regression in the active timeline: message/reasoning content length changes no longer schedule an imperative `scrollToEnd` on every streamed chunk. LegendList remains the scroll owner through `maintainScrollAtEnd`, avoiding scroll anchoring fights while the agent is working.
+- Thread history pagination now loads a coherent detail window instead of repainting one resource at a time: older message pages are paired with any older activities, proposed plans, and checkpoints needed to cover the same oldest message timestamp, then committed in one store update with viewport anchoring. The previous 1-second backfill polling loop has been replaced by deterministic window backfill.
+- Timeline work-group row ids now anchor to the following timeline boundary when available, so prepending older work events no longer renames/remounts an already visible work group.
 
 ### Stage 8: Frontend Global List Scaling
 

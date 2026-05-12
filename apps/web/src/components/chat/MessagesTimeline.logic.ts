@@ -157,7 +157,7 @@ export function deriveMessagesTimelineRows(input: {
       continue;
     }
 
-    appendWorkTimelineRows(pendingWorkEntries, nextRows, workGroupIdOccurrences);
+    appendWorkTimelineRows(pendingWorkEntries, nextRows, workGroupIdOccurrences, timelineEntry.id);
     pendingWorkEntries = [];
 
     if (timelineEntry.kind === "proposed-plan") {
@@ -277,6 +277,7 @@ function appendWorkTimelineRows(
   timelineEntries: ReadonlyArray<Extract<TimelineEntry, { kind: "work" }>>,
   nextRows: MessagesTimelineRow[],
   workGroupIdOccurrences: Map<string, number>,
+  followingBoundaryId?: string,
 ) {
   let explorationRow: Extract<MessagesTimelineRow, { kind: "work" }> | null = null;
 
@@ -294,7 +295,11 @@ function appendWorkTimelineRows(
       }
 
       const groupedEntries = [timelineEntry.entry];
-      const baseRowId = stableWorkGroupRowId(groupedEntries, activityGroupKind);
+      const baseRowId = stableWorkGroupRowId(
+        groupedEntries,
+        activityGroupKind,
+        followingBoundaryId,
+      );
       explorationRow = {
         kind: "work",
         id: uniqueWorkGroupRowId(baseRowId, workGroupIdOccurrences),
@@ -316,7 +321,7 @@ function appendWorkTimelineRows(
       groupedEntries.push(nextEntry.entry);
       cursor += 1;
     }
-    const baseRowId = stableWorkGroupRowId(groupedEntries, activityGroupKind);
+    const baseRowId = stableWorkGroupRowId(groupedEntries, activityGroupKind, followingBoundaryId);
     nextRows.push({
       kind: "work",
       id: uniqueWorkGroupRowId(baseRowId, workGroupIdOccurrences),
@@ -335,7 +340,11 @@ function stableWorkEntryKey(entry: WorkLogEntry): string {
 function stableWorkGroupRowId(
   entries: ReadonlyArray<WorkLogEntry>,
   activityGroupKind: ToolActivityGroupKind,
+  followingBoundaryId?: string,
 ): string {
+  if (followingBoundaryId) {
+    return `work-group:${activityGroupKind}:before:${followingBoundaryId}`;
+  }
   const firstEntry = entries[0];
   return `work-group:${activityGroupKind}:${firstEntry ? stableWorkEntryKey(firstEntry) : "empty"}`;
 }

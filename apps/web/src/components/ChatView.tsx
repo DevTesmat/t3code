@@ -22,6 +22,10 @@ import {
   RuntimeMode,
   TerminalOpenInput,
   type OrchestrationEvent,
+  type OrchestrationThreadActivitiesPage,
+  type OrchestrationThreadCheckpointsPage,
+  type OrchestrationThreadMessagesPage,
+  type OrchestrationThreadProposedPlansPage,
 } from "@t3tools/contracts";
 import {
   parseScopedThreadKey,
@@ -216,6 +220,7 @@ const EMPTY_PROPOSED_PLANS: Thread["proposedPlans"] = [];
 const EMPTY_PROVIDERS: ServerProvider[] = [];
 const EMPTY_PENDING_USER_INPUT_ANSWERS: Record<string, PendingUserInputDraftAnswer> = {};
 const OLDER_MESSAGES_AUTOLOAD_THRESHOLD_PX = 96;
+const THREAD_DETAIL_WINDOW_BACKFILL_MAX_PAGES_PER_RESOURCE = 8;
 // Temporarily disable the right-side Tasks/Plan visualization. The current
 // sidebar lifecycle is not reliable enough: sync refreshes and thread changes
 // can reopen it or disturb the timeline. Plan creation/refinement/implementation
@@ -223,6 +228,36 @@ const OLDER_MESSAGES_AUTOLOAD_THRESHOLD_PX = 96;
 // redesigned.
 const PLAN_SIDEBAR_VISUALIZATION_ENABLED = false;
 type QueuedComposerFlushReason = "agent-finished" | "empty-enter-force";
+
+interface ThreadDetailWindowPages {
+  messages?: OrchestrationThreadMessagesPage | undefined;
+  activities: OrchestrationThreadActivitiesPage[];
+  proposedPlans: OrchestrationThreadProposedPlansPage[];
+  checkpoints: OrchestrationThreadCheckpointsPage[];
+}
+
+function resourceNeedsThreadDetailWindowBackfill(
+  oldestResourceAt: string | null | undefined,
+  targetStartAt: string,
+  hasMoreBefore: boolean | undefined,
+): boolean {
+  return hasMoreBefore === true && oldestResourceAt !== undefined && oldestResourceAt !== null
+    ? oldestResourceAt > targetStartAt
+    : false;
+}
+
+function firstVisibleTimelineAnchor(root: HTMLElement | null): HTMLElement | null {
+  const viewport = root?.querySelector<HTMLElement>("[data-chat-messages-scroll='true']");
+  if (!viewport) return null;
+
+  const viewportTop = viewport.getBoundingClientRect().top;
+  for (const row of viewport.querySelectorAll<HTMLElement>("[data-timeline-row-id]")) {
+    if (row.getBoundingClientRect().bottom >= viewportTop) {
+      return row;
+    }
+  }
+  return viewport.querySelector<HTMLElement>("[data-timeline-row-id]");
+}
 
 async function dispatchAndApplyCommittedEvents(input: {
   api: NonNullable<ReturnType<typeof readEnvironmentApi>>;
@@ -717,18 +752,7 @@ export default function ChatView(props: ChatViewProps) {
     ),
   );
   const setStoreThreadError = useStore((store) => store.setError);
-  const prependServerThreadMessagesPage = useStore(
-    (store) => store.prependServerThreadMessagesPage,
-  );
-  const prependServerThreadActivitiesPage = useStore(
-    (store) => store.prependServerThreadActivitiesPage,
-  );
-  const prependServerThreadProposedPlansPage = useStore(
-    (store) => store.prependServerThreadProposedPlansPage,
-  );
-  const prependServerThreadCheckpointsPage = useStore(
-    (store) => store.prependServerThreadCheckpointsPage,
-  );
+  const prependServerThreadDetailPages = useStore((store) => store.prependServerThreadDetailPages);
   const markThreadVisited = useUiStateStore((store) => store.markThreadVisited);
   const activeThreadLastVisitedAt = useUiStateStore((store) =>
     routeKind === "server" ? store.threadLastVisitedAtById[routeThreadKey] : undefined,
@@ -1483,6 +1507,133 @@ export default function ChatView(props: ChatViewProps) {
   const serverMessages = activeThread?.messages;
   const isLoadingOlderMessages =
     activeThreadKey !== null && olderMessagesLoadingThreadKey === activeThreadKey;
+  const commitThreadDetailWindowPages = useCallback(
+    (pages: ThreadDetailWindowPages, environmentId: EnvironmentId) => {
+      const anchor = firstVisibleTimelineAnchor(chatColumnRef.current);
+      const viewport = chatColumnRef.current?.querySelector<HTMLElement>(
+        "[data-chat-messages-scroll='true']",
+      );
+      const previousTop = anchor?.getBoundingClientRect().top ?? null;
+
+      suppressComposerStickToBottomRef.current = true;
+      setSuppressTimelineMaintainScrollAtEnd(true);
+      prependServerThreadDetailPages(pages, environmentId);
+
+      window.requestAnimationFrame(() => {
+        if (anchor && viewport && previousTop !== null) {
+          const delta = anchor.getBoundingClientRect().top - previousTop;
+          if (Number.isFinite(delta) && Math.abs(delta) >= 0.5) {
+            viewport.scrollTop += delta;
+          }
+        }
+        window.requestAnimationFrame(() => {
+          suppressComposerStickToBottomRef.current = false;
+          setSuppressTimelineMaintainScrollAtEnd(false);
+        });
+      });
+    },
+    [prependServerThreadDetailPages],
+  );
+  const loadThreadDetailWindowPages = useCallback(
+    async (
+      thread: Thread,
+      targetStartAt: string,
+      messagesPage?: OrchestrationThreadMessagesPage,
+    ): Promise<ThreadDetailWindowPages> => {
+      const api = readEnvironmentApi(thread.environmentId);
+      if (!api) {
+        throw new Error("Environment disconnected.");
+      }
+
+      const pages: ThreadDetailWindowPages = {
+        messages: messagesPage,
+        activities: [],
+        proposedPlans: [],
+        checkpoints: [],
+      };
+
+      let beforeActivityId = thread.activities[0]?.id ?? null;
+      let activityOldestAt = thread.activities[0]?.createdAt ?? null;
+      let activityHasMoreBefore = thread.activityPageInfo?.hasMoreBefore === true;
+      for (
+        let pageCount = 0;
+        beforeActivityId &&
+        resourceNeedsThreadDetailWindowBackfill(
+          activityOldestAt,
+          targetStartAt,
+          activityHasMoreBefore,
+        ) &&
+        pageCount < THREAD_DETAIL_WINDOW_BACKFILL_MAX_PAGES_PER_RESOURCE;
+        pageCount += 1
+      ) {
+        const page = await api.orchestration.getThreadActivitiesPage({
+          threadId: thread.id,
+          beforeActivityId,
+        });
+        pages.activities.push(page);
+        const oldestActivity = page.activities[0];
+        if (!oldestActivity) break;
+        beforeActivityId = oldestActivity.id;
+        activityOldestAt = oldestActivity.createdAt;
+        activityHasMoreBefore = page.pageInfo.hasMoreBefore;
+      }
+
+      let beforeProposedPlanId = thread.proposedPlans[0]?.id ?? null;
+      let proposedPlanOldestAt = thread.proposedPlans[0]?.createdAt ?? null;
+      let proposedPlanHasMoreBefore = thread.proposedPlanPageInfo?.hasMoreBefore === true;
+      for (
+        let pageCount = 0;
+        beforeProposedPlanId &&
+        resourceNeedsThreadDetailWindowBackfill(
+          proposedPlanOldestAt,
+          targetStartAt,
+          proposedPlanHasMoreBefore,
+        ) &&
+        pageCount < THREAD_DETAIL_WINDOW_BACKFILL_MAX_PAGES_PER_RESOURCE;
+        pageCount += 1
+      ) {
+        const page = await api.orchestration.getThreadProposedPlansPage({
+          threadId: thread.id,
+          beforeProposedPlanId,
+        });
+        pages.proposedPlans.push(page);
+        const oldestPlan = page.proposedPlans[0];
+        if (!oldestPlan) break;
+        beforeProposedPlanId = oldestPlan.id;
+        proposedPlanOldestAt = oldestPlan.createdAt;
+        proposedPlanHasMoreBefore = page.pageInfo.hasMoreBefore;
+      }
+
+      let beforeCheckpointTurnCount = thread.turnDiffSummaries[0]?.checkpointTurnCount ?? null;
+      let checkpointOldestAt = thread.turnDiffSummaries[0]?.completedAt ?? null;
+      let checkpointHasMoreBefore = thread.checkpointPageInfo?.hasMoreBefore === true;
+      for (
+        let pageCount = 0;
+        beforeCheckpointTurnCount !== null &&
+        resourceNeedsThreadDetailWindowBackfill(
+          checkpointOldestAt,
+          targetStartAt,
+          checkpointHasMoreBefore,
+        ) &&
+        pageCount < THREAD_DETAIL_WINDOW_BACKFILL_MAX_PAGES_PER_RESOURCE;
+        pageCount += 1
+      ) {
+        const page = await api.orchestration.getThreadCheckpointsPage({
+          threadId: thread.id,
+          beforeCheckpointTurnCount,
+        });
+        pages.checkpoints.push(page);
+        const oldestCheckpoint = page.checkpoints[0];
+        if (oldestCheckpoint?.checkpointTurnCount === undefined) break;
+        beforeCheckpointTurnCount = oldestCheckpoint.checkpointTurnCount;
+        checkpointOldestAt = oldestCheckpoint.completedAt;
+        checkpointHasMoreBefore = page.pageInfo.hasMoreBefore;
+      }
+
+      return pages;
+    },
+    [],
+  );
   const loadOlderMessages = useCallback(async () => {
     if (
       !activeThread ||
@@ -1519,7 +1670,17 @@ export default function ChatView(props: ChatViewProps) {
         threadId: activeThread.id,
         beforeMessageId,
       });
-      prependServerThreadMessagesPage(messagesPage, activeThread.environmentId);
+      const targetStartAt =
+        messagesPage.messages[0]?.createdAt ?? activeThread.messages[0]?.createdAt;
+      if (!targetStartAt) {
+        commitThreadDetailWindowPages(
+          { messages: messagesPage, activities: [], proposedPlans: [], checkpoints: [] },
+          activeThread.environmentId,
+        );
+        return;
+      }
+      const pages = await loadThreadDetailWindowPages(activeThread, targetStartAt, messagesPage);
+      commitThreadDetailWindowPages(pages, activeThread.environmentId);
       if (messagesPage.pageInfo.hasMoreBefore) {
         olderMessagesLastRequestedKeyRef.current = null;
       }
@@ -1538,11 +1699,12 @@ export default function ChatView(props: ChatViewProps) {
   }, [
     activeThread,
     activeThreadKey,
+    commitThreadDetailWindowPages,
     isLoadingOlderMessages,
-    prependServerThreadMessagesPage,
+    loadThreadDetailWindowPages,
     selectedSubagentTranscript,
   ]);
-  const backfillThreadDetailForLoadedMessages = useCallback(async () => {
+  const backfillThreadDetailWindowForLoadedMessages = useCallback(async () => {
     if (!activeThread || !activeThreadKey || selectedSubagentTranscript) {
       return;
     }
@@ -1558,75 +1720,38 @@ export default function ChatView(props: ChatViewProps) {
       return;
     }
 
-    const api = readEnvironmentApi(activeThread.environmentId);
-    if (!api) {
-      return;
-    }
-
     threadDetailBackfillInFlightRef.current = true;
     threadDetailBackfillLastRequestedKeyRef.current = request.requestKey;
     threadDetailBackfillResourceOffsetRef.current = request.nextResourceOffset;
     try {
-      if (request.resource === "activities") {
-        const beforeActivityId = activeThread.activities[0]?.id;
-        if (!beforeActivityId) return;
-        const page = await api.orchestration.getThreadActivitiesPage({
-          threadId: activeThread.id,
-          beforeActivityId,
-        });
-        prependServerThreadActivitiesPage(page, activeThread.environmentId);
+      const targetStartAt = activeThread.messages[0]?.createdAt;
+      if (!targetStartAt) return;
+      const pages = await loadThreadDetailWindowPages(activeThread, targetStartAt);
+      if (
+        pages.activities.length === 0 &&
+        pages.proposedPlans.length === 0 &&
+        pages.checkpoints.length === 0
+      ) {
         return;
       }
-
-      if (request.resource === "proposedPlans") {
-        const beforeProposedPlanId = activeThread.proposedPlans[0]?.id;
-        if (!beforeProposedPlanId) return;
-        const page = await api.orchestration.getThreadProposedPlansPage({
-          threadId: activeThread.id,
-          beforeProposedPlanId,
-        });
-        prependServerThreadProposedPlansPage(page, activeThread.environmentId);
-        return;
-      }
-
-      const beforeCheckpointTurnCount = activeThread.turnDiffSummaries[0]?.checkpointTurnCount;
-      if (beforeCheckpointTurnCount === undefined) return;
-      const page = await api.orchestration.getThreadCheckpointsPage({
-        threadId: activeThread.id,
-        beforeCheckpointTurnCount,
-      });
-      prependServerThreadCheckpointsPage(page, activeThread.environmentId);
+      commitThreadDetailWindowPages(pages, activeThread.environmentId);
     } catch (error) {
-      console.warn("Failed to backfill thread detail for loaded messages.", error);
+      threadDetailBackfillLastRequestedKeyRef.current = null;
+      console.warn("Failed to backfill thread detail window.", error);
     } finally {
       threadDetailBackfillInFlightRef.current = false;
     }
   }, [
     activeThread,
     activeThreadKey,
-    prependServerThreadActivitiesPage,
-    prependServerThreadCheckpointsPage,
-    prependServerThreadProposedPlansPage,
+    commitThreadDetailWindowPages,
+    loadThreadDetailWindowPages,
     selectedSubagentTranscript,
   ]);
 
   useEffect(() => {
-    if (!activeThread || !activeThreadKey || selectedSubagentTranscript) {
-      return;
-    }
-
-    const interval = window.setInterval(() => {
-      void backfillThreadDetailForLoadedMessages();
-    }, 1_000);
-    return () => {
-      window.clearInterval(interval);
-    };
-  }, [
-    activeThread,
-    activeThreadKey,
-    backfillThreadDetailForLoadedMessages,
-    selectedSubagentTranscript,
-  ]);
+    void backfillThreadDetailWindowForLoadedMessages();
+  }, [backfillThreadDetailWindowForLoadedMessages]);
 
   useEffect(() => {
     if (typeof Image === "undefined" || !serverMessages || serverMessages.length === 0) {
