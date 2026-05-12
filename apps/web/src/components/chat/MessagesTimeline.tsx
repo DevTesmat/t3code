@@ -1819,7 +1819,7 @@ const LiveFileChangePreview = memo(function LiveFileChangePreview(props: {
           <button
             type="button"
             aria-label={expanded ? "Collapse inline file diff" : "Expand inline file diff"}
-            className="absolute top-1 -right-1 z-10 flex size-5 items-center justify-center rounded-md text-muted-foreground/60 transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring/45"
+            className="absolute top-0.5 right-1 z-10 flex size-5 items-center justify-center rounded-md text-muted-foreground/60 transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring/45"
             onClick={(event) => {
               event.stopPropagation();
               onToggleExpanded();
@@ -1870,7 +1870,7 @@ const LiveFileChangePreview = memo(function LiveFileChangePreview(props: {
               fileDiff={selectedFileDiff}
               options={{
                 diffStyle: "unified",
-                lineDiffType: "none",
+                lineDiffType: "word",
                 overflow: settings.diffWordWrap ? "wrap" : "scroll",
                 theme: resolveDiffThemeName(resolvedTheme),
                 themeType: resolvedTheme as InlineDiffThemeType,

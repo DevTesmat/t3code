@@ -118,6 +118,7 @@ export const INLINE_DIFF_RENDER_UNSAFE_CSS = `
 [data-file-info] {
   min-height: 1.35rem !important;
   padding-inline: 0.5rem !important;
+  padding-right: 1.75rem !important;
   font-size: 10px !important;
   line-height: 1.2 !important;
 }
@@ -135,11 +136,11 @@ export const INLINE_DIFF_RENDER_UNSAFE_CSS = `
 }
 
 [data-separator-wrapper] {
-  min-height: 1.45rem !important;
+  min-height: 1.25rem !important;
 }
 
 [data-separator-content] {
-  padding-block: 2px !important;
+  padding-block: 0 !important;
   padding-inline: 0.5rem !important;
 }
 
