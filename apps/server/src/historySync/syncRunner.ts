@@ -96,6 +96,9 @@ export interface HistorySyncRunnerDependencies {
   readonly readLocalEvents: (
     sequenceExclusive?: number,
   ) => Effect.Effect<readonly HistorySyncEventRow[], object>;
+  readonly readLocalEventRefsForSequences: (
+    sequences: readonly number[],
+  ) => Effect.Effect<readonly { readonly sequence: number; readonly eventId: string }[], object>;
   readonly readUnpushedLocalEvents: Effect.Effect<readonly HistorySyncEventRow[], object>;
   readonly readProjectionThreadAutosyncRows: Effect.Effect<
     readonly HistorySyncAutosyncProjectionThreadRow[],
@@ -361,6 +364,24 @@ export function createHistorySyncRunner(input: HistorySyncRunnerDependencies) {
       });
     });
 
+  const filterAlreadyImportedRemotePageEvents = (
+    remoteEvents: readonly HistorySyncEventRow[],
+  ): Effect.Effect<readonly HistorySyncEventRow[], object> =>
+    Effect.gen(function* () {
+      if (remoteEvents.length === 0) {
+        return remoteEvents;
+      }
+      const localRefs = yield* input.readLocalEventRefsForSequences(
+        remoteEvents.map((event) => event.sequence),
+      );
+      const localEventIdBySequence = new Map(
+        localRefs.map((event) => [event.sequence, event.eventId] as const),
+      );
+      return remoteEvents.filter(
+        (event) => localEventIdBySequence.get(event.sequence) !== event.eventId,
+      );
+    });
+
   const publishLatestFirstProgress = (
     context: {
       readonly startedAt: string;
@@ -458,11 +479,8 @@ export function createHistorySyncRunner(input: HistorySyncRunnerDependencies) {
             normalizeRemoteEventsForLocalImport(remoteEvents),
             bootstrapInput.projectMappings,
           );
-          const localEvents = yield* input.readLocalEvents();
-          const remoteEventsToImport = filterAlreadyImportedRemoteDeltaEvents(
-            remoteEventsForLocal,
-            localEvents,
-          );
+          const remoteEventsToImport =
+            yield* filterAlreadyImportedRemotePageEvents(remoteEventsForLocal);
           if (remoteEventsToImport.length > 0) {
             yield* publishLatestFirstProgress(
               bootstrapInput.context,
@@ -598,6 +616,40 @@ export function createHistorySyncRunner(input: HistorySyncRunnerDependencies) {
           : null;
       const syncStartedAt = new Date().toISOString();
       const syncContext = { startedAt: syncStartedAt, lastSyncedAt };
+      const lastSyncedRemoteSequence = state?.lastSyncedRemoteSequence ?? 0;
+      if (hasCompletedInitialSync && isAutosave) {
+        const remoteMaxSequence = yield* input.readRemoteMaxSequence(connectionString);
+        if (remoteMaxSequence <= lastSyncedRemoteSequence) {
+          const unpushedLocalEvents = yield* input.readUnpushedLocalEvents;
+          if (unpushedLocalEvents.length === 0) {
+            console.info("[history-sync] autosave skipped before visible sync", {
+              reason: "no-unpushed-events",
+              remoteMaxSequence,
+              lastSyncedRemoteSequence,
+            });
+            return;
+          }
+          const localEvents = yield* input.readLocalEvents();
+          const projectionThreadRows = yield* input.readProjectionThreadAutosyncRows;
+          const localPushPlan = planAutosaveLocalPush({
+            localEvents,
+            unpushedLocalEvents,
+            remoteMaxSequence,
+            projectionThreadRows,
+            ...(options.autosaveMaxSequence !== undefined
+              ? { maxSequence: options.autosaveMaxSequence }
+              : {}),
+          });
+          if (localPushPlan.action !== "push-local") {
+            console.info("[history-sync] autosave skipped before visible sync", {
+              reason: "no-pushable-events",
+              remoteMaxSequence,
+              lastSyncedRemoteSequence,
+            });
+            return;
+          }
+        }
+      }
       yield* input.publishStatus({
         state: "syncing",
         configured: true,
@@ -605,11 +657,39 @@ export function createHistorySyncRunner(input: HistorySyncRunnerDependencies) {
         lastSyncedAt,
       });
 
+      if (hasCompletedInitialSync && !isInitialSync && !isAutosave) {
+        console.info("[history-sync] checking completed sync fast path", {
+          mode: options.mode,
+          lastSyncedRemoteSequence,
+        });
+        const remoteMaxSequence = yield* input.readRemoteMaxSequence(connectionString);
+        if (remoteMaxSequence === lastSyncedRemoteSequence) {
+          const unpushedLocalEvents = yield* input.readUnpushedLocalEvents;
+          if (unpushedLocalEvents.length === 0) {
+            const now = new Date().toISOString();
+            console.info("[history-sync] completed sync fast path idle", {
+              remoteMaxSequence,
+              lastSyncedRemoteSequence,
+            });
+            yield* input.commitHistorySyncState({
+              hasCompletedInitialSync: true,
+              lastSyncedRemoteSequence,
+              lastSuccessfulSyncAt: now,
+            });
+            yield* input.publishStatus({ state: "idle", configured: true, lastSyncedAt: now });
+            return;
+          }
+          console.info("[history-sync] completed sync fast path found local pending history", {
+            remoteMaxSequence,
+            unpushedLocalEvents: unpushedLocalEvents.length,
+          });
+        }
+      }
+
       console.info("[history-sync] reading local history", { mode: options.mode });
       let localEvents = yield* input.readLocalEvents();
       const localProjectionCounts = yield* input.readLocalProjectionCounts;
       const localMaxSequence = maxHistoryEventSequence(localEvents);
-      const lastSyncedRemoteSequence = state?.lastSyncedRemoteSequence ?? 0;
       console.info("[history-sync] local history loaded", {
         mode: options.mode,
         localEvents: localEvents.length,

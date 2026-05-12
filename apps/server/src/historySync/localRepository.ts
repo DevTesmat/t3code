@@ -15,6 +15,11 @@ import { HISTORY_SYNC_LOCAL_HISTORY_TABLES } from "./tableManifest.ts";
 const HISTORY_SYNC_SQLITE_BATCH_SIZE = 50;
 export const CLEAR_LOCAL_HISTORY_TABLES = HISTORY_SYNC_LOCAL_HISTORY_TABLES;
 
+export interface HistorySyncLocalEventRef {
+  readonly sequence: number;
+  readonly eventId: string;
+}
+
 export type HistorySyncInitialSyncPhase =
   | "backup"
   | "push-local"
@@ -95,6 +100,39 @@ export function readLocalEvents(sql: SqlClient.SqlClient, sequenceExclusive = 0)
     WHERE sequence > ${sequenceExclusive}
     ORDER BY sequence ASC
   `;
+}
+
+export function readLocalEventRefsForSequences(
+  sql: SqlClient.SqlClient,
+  sequences: readonly number[],
+) {
+  return Effect.gen(function* () {
+    const uniqueSequences = [...new Set(sequences)]
+      .filter((sequence) => Number.isInteger(sequence) && sequence > 0)
+      .toSorted((left, right) => left - right);
+    if (uniqueSequences.length === 0) {
+      return [] satisfies HistorySyncLocalEventRef[];
+    }
+
+    const batches: number[][] = [];
+    for (let index = 0; index < uniqueSequences.length; index += HISTORY_SYNC_SQLITE_BATCH_SIZE) {
+      batches.push(uniqueSequences.slice(index, index + HISTORY_SYNC_SQLITE_BATCH_SIZE));
+    }
+    const rows = yield* Effect.forEach(
+      batches,
+      (batch) =>
+        sql<HistorySyncLocalEventRef>`
+          SELECT
+            sequence,
+            event_id AS "eventId"
+          FROM orchestration_events
+          WHERE sequence IN ${sql.in(batch)}
+          ORDER BY sequence ASC
+        `,
+      { concurrency: 1 },
+    );
+    return rows.flat();
+  });
 }
 
 export function readUnpushedLocalEvents(sql: SqlClient.SqlClient) {

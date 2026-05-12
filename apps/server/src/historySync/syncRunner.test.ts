@@ -110,6 +110,7 @@ function makeRunner(overrides: Partial<HistorySyncRunnerDependencies> = {}, call
       createBackup: Effect.sync(() => calls.push("backup")).pipe(Effect.asVoid),
       reloadProjections: () => Effect.sync(() => calls.push("reload")).pipe(Effect.asVoid),
       readLocalEvents: () => Effect.succeed([]),
+      readLocalEventRefsForSequences: () => Effect.succeed([]),
       readUnpushedLocalEvents: Effect.succeed([]),
       readProjectionThreadAutosyncRows: Effect.succeed([]),
       readLocalProjectionCounts: Effect.succeed({ projectCount: 0, threadCount: 0 }),
@@ -350,6 +351,39 @@ describe("history sync runner", () => {
     });
   });
 
+  test("autosave skips visible syncing status when nothing is pushable", async () => {
+    const calls: string[] = [];
+    const { runner, statuses } = await Effect.runPromise(
+      makeRunner(
+        {
+          readState: Effect.succeed({
+            hasCompletedInitialSync: 1,
+            lastSyncedRemoteSequence: 7,
+            lastSuccessfulSyncAt: "2026-05-01T00:00:00.000Z",
+          }),
+          readRemoteMaxSequence: () => Effect.succeed(7),
+          readUnpushedLocalEvents: Effect.sync(() => {
+            calls.push("readUnpushed");
+            return [];
+          }),
+          readLocalEvents: () =>
+            Effect.sync(() => {
+              calls.push("readLocalEvents");
+              return [remoteEvent];
+            }),
+        },
+        calls,
+      ),
+    );
+
+    await Effect.runPromise(runner.performSync({ mode: "autosave", markStopped: Effect.void }));
+
+    expect(calls).toContain("readUnpushed");
+    expect(calls).not.toContain("readLocalEvents");
+    expect(calls).not.toContain("push");
+    expect(statuses).toEqual([]);
+  });
+
   test("full sync skips latest-first bootstrap for small remote deltas", async () => {
     const calls: string[] = [];
     const { runner, statuses } = await Effect.runPromise(
@@ -376,6 +410,103 @@ describe("history sync runner", () => {
     expect(calls).not.toContain("readLatestThreads");
     expect(calls).toContain("importDelta");
     expect(statuses.at(-1)).toMatchObject({ state: "idle", configured: true });
+  });
+
+  test("completed full sync skips full local history load when remote and receipts are current", async () => {
+    const calls: string[] = [];
+    const { runner, statuses } = await Effect.runPromise(
+      makeRunner(
+        {
+          readState: Effect.succeed({
+            hasCompletedInitialSync: 1,
+            lastSyncedRemoteSequence: 7,
+            lastSuccessfulSyncAt: "2026-05-01T00:00:00.000Z",
+          }),
+          readRemoteMaxSequence: () => Effect.succeed(7),
+          readUnpushedLocalEvents: Effect.sync(() => {
+            calls.push("readUnpushed");
+            return [];
+          }),
+          readLocalEvents: () =>
+            Effect.sync(() => {
+              calls.push("readLocalEvents");
+              return [remoteEvent];
+            }),
+        },
+        calls,
+      ),
+    );
+
+    await Effect.runPromise(runner.performSync({ mode: "full", markStopped: Effect.void }));
+
+    expect(calls).toContain("readUnpushed");
+    expect(calls).not.toContain("readLocalEvents");
+    expect(calls).toContain("commitState");
+    expect(statuses.at(-1)).toMatchObject({ state: "idle", configured: true });
+  });
+
+  test("latest-first bootstrap dedupes page imports with bounded local refs", async () => {
+    const calls: string[] = [];
+    const localReadCalls: string[] = [];
+    const localRefSequenceBatches: number[][] = [];
+    const remoteDeltaEvents = Array.from({ length: 500 }, (_, index) =>
+      threadCreatedEvent({
+        sequence: index + 2,
+        threadId: `thread-${index + 1}`,
+        projectId: "project-1",
+      }),
+    );
+    const latestThreadEvent = remoteDeltaEvents.at(-1)!;
+    const { runner } = await Effect.runPromise(
+      makeRunner(
+        {
+          readState: Effect.succeed({
+            hasCompletedInitialSync: 1,
+            lastSyncedRemoteSequence: 1,
+            lastSuccessfulSyncAt: "2026-05-01T00:00:00.000Z",
+          }),
+          readLocalEvents: () =>
+            Effect.sync(() => {
+              localReadCalls.push("readLocalEvents");
+              return [remoteEvent];
+            }),
+          readLocalEventRefsForSequences: (sequences) =>
+            Effect.sync(() => {
+              localRefSequenceBatches.push([...sequences]);
+              return [{ sequence: remoteEvent.sequence, eventId: remoteEvent.eventId }];
+            }),
+          readLocalProjectionCounts: Effect.succeed({ projectCount: 1, threadCount: 1 }),
+          readRemoteMaxSequence: () => Effect.succeed(latestThreadEvent.sequence),
+          readRemoteEvents: () => Effect.succeed(remoteDeltaEvents),
+          readRemoteLatestThreadShells: (_connectionString, input) =>
+            Effect.succeed(
+              input.offset === 0
+                ? [
+                    {
+                      threadId: latestThreadEvent.streamId,
+                      projectId: "project-1",
+                      title: latestThreadEvent.streamId,
+                      createdAt: latestThreadEvent.occurredAt,
+                      updatedAt: latestThreadEvent.occurredAt,
+                      latestEventSequence: latestThreadEvent.sequence,
+                      deletedAt: null,
+                      archivedAt: null,
+                    },
+                  ]
+                : [],
+            ),
+          readRemoteEventsForThreadIds: () => Effect.succeed([latestThreadEvent]),
+          readRemoteProjectEventsForProjectIds: () => Effect.succeed([remoteEvent]),
+        },
+        calls,
+      ),
+    );
+
+    await Effect.runPromise(runner.performSync({ mode: "full", markStopped: Effect.void }));
+
+    expect(localReadCalls).toHaveLength(2);
+    expect(localRefSequenceBatches).toEqual([[remoteEvent.sequence, latestThreadEvent.sequence]]);
+    expect(calls).toContain("importDelta");
   });
 
   test("full sync waits for explicit initial sync before initialization", async () => {

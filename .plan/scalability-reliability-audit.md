@@ -276,13 +276,19 @@ Use `.plan/history-sync-latest-first-mysql.md` as the detailed sync architecture
 
 - [ ] Remove normal-path all-local-event materialization.
 - [ ] Remove normal-path all-remote-event materialization.
-- [ ] Fix latest-first bootstrap so it does not reread full local history per remote page.
+- [x] Fix latest-first bootstrap so it does not reread full local history per remote page.
 - [ ] Replace remote fallback/index backfill paths that load all remote events.
 - [ ] Make project mapping use indexed/project-level remote reads instead of full remote history.
 - [ ] Revisit per-event pushed receipt growth and add retention or compact cursor strategy.
 - [ ] Add tests with large synthetic histories for latest-first, priority-thread, append, and mapping flows.
 
 Expected outcome: sync startup and backfill scale by page/thread, not total history.
+
+Progress notes:
+
+- Latest-first bootstrap page dedupe now queries local event refs only for the candidate remote page sequences, instead of rereading all local orchestration events once per remote thread page.
+- Completed full-sync runs now have a fast path that checks remote max sequence and unpushed local rows before loading the full local event log, so already-current workspaces can return idle without materializing all local history.
+- Autosave now has a pre-visible-sync pushability boundary: when remote history has not advanced, it checks for unpushed local events and runs the existing autosave pushability planner before publishing `syncing`. No-op autosave reschedules from close-together events stay invisible instead of flashing the spinner.
 
 ### Stage 7: Frontend Active Thread Derivation
 
@@ -292,6 +298,10 @@ Expected outcome: sync startup and backfill scale by page/thread, not total hist
 - [ ] Add performance-oriented tests or benchmarks for streaming assistant deltas and activity bursts.
 
 Expected outcome: active chat CPU cost is bounded by changed/visible data where practical.
+
+Progress notes:
+
+- Fixed a streaming flicker regression in the active timeline: message/reasoning content length changes no longer schedule an imperative `scrollToEnd` on every streamed chunk. LegendList remains the scroll owner through `maintainScrollAtEnd`, avoiding scroll anchoring fights while the agent is working.
 
 ### Stage 8: Frontend Global List Scaling
 

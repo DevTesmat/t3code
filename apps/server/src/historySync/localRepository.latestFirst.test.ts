@@ -7,6 +7,7 @@ import * as NodeSqliteClient from "../persistence/NodeSqliteClient.ts";
 import {
   importRemoteDeltaEvents,
   markHistorySyncThreadPriority,
+  readLocalEventRefsForSequences,
   readLocalEvents,
   readHistorySyncThreadStateCounts,
   updateHistorySyncLatestFirstState,
@@ -94,6 +95,21 @@ layer("history sync latest-first local repository", (it) => {
         rows.map((row) => row.sequence),
         [1, 2, 3],
       );
+    }),
+  );
+
+  it.effect("reads bounded local event refs for candidate remote sequences", () =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      yield* runMigrations({ toMigrationInclusive: 37 });
+
+      yield* importRemoteDeltaEvents(sql, [event(1), event(2), event(3)]);
+
+      const refs = yield* readLocalEventRefsForSequences(sql, [3, 1, 3, 99]);
+      assert.deepStrictEqual(refs, [
+        { sequence: 1, eventId: "event-1" },
+        { sequence: 3, eventId: "event-3" },
+      ]);
     }),
   );
 });
