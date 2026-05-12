@@ -6,6 +6,8 @@ import {
   ProviderDriverKind,
   ProviderInstanceId,
   type OrchestrationCommand,
+  type OrchestrationReadModel,
+  type OrchestrationShellSnapshot,
 } from "@t3tools/contracts";
 import { Effect, Exit, Layer, ManagedRuntime, Option, Scope, Stream } from "effect";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -14,6 +16,7 @@ import {
   OrchestrationEngineService,
   type OrchestrationEngineShape,
 } from "../../orchestration/Services/OrchestrationEngine.ts";
+import { ProjectionSnapshotQuery } from "../../orchestration/Services/ProjectionSnapshotQuery.ts";
 import { SqlitePersistenceMemory } from "../../persistence/Layers/Sqlite.ts";
 import { ProviderSessionRuntimeRepositoryLive } from "../../persistence/Layers/ProviderSessionRuntime.ts";
 import { ProviderSessionRuntimeRepository } from "../../persistence/Services/ProviderSessionRuntime.ts";
@@ -69,7 +72,7 @@ function makeReadModel(
       readonly updatedAt: string;
     } | null;
   }>,
-) {
+): OrchestrationReadModel {
   const now = new Date().toISOString();
   const projectId = ProjectId.make("project-provider-session-reaper");
 
@@ -81,6 +84,7 @@ function makeReadModel(
         id: projectId,
         title: "Provider Reaper Project",
         workspaceRoot: "/tmp/provider-reaper-project",
+        repositoryIdentity: null,
         defaultModelSelection,
         scripts: [],
         createdAt: now,
@@ -99,14 +103,55 @@ function makeReadModel(
       worktreePath: null,
       createdAt: now,
       updatedAt: now,
+      pinnedAt: null,
       archivedAt: null,
       latestTurn: null,
+      totalWorkDurationMs: 0,
       messages: [],
       session: thread.session,
       activities: [],
       proposedPlans: [],
       checkpoints: [],
       deletedAt: null,
+    })),
+  };
+}
+
+function makeShellSnapshot(readModel: OrchestrationReadModel): OrchestrationShellSnapshot {
+  return {
+    snapshotSequence: readModel.snapshotSequence,
+    updatedAt: readModel.updatedAt,
+    projects: readModel.projects.map((project) => ({
+      id: project.id,
+      title: project.title,
+      workspaceRoot: project.workspaceRoot,
+      repositoryIdentity: project.repositoryIdentity ?? null,
+      defaultModelSelection: project.defaultModelSelection,
+      scripts: project.scripts,
+      createdAt: project.createdAt,
+      updatedAt: project.updatedAt,
+    })),
+    threads: readModel.threads.map((thread) => ({
+      id: thread.id,
+      projectId: thread.projectId,
+      title: thread.title,
+      modelSelection: thread.modelSelection,
+      runtimeMode: thread.runtimeMode,
+      interactionMode: thread.interactionMode,
+      branch: thread.branch,
+      worktreePath: thread.worktreePath,
+      latestTurn: thread.latestTurn,
+      totalWorkDurationMs: thread.totalWorkDurationMs ?? 0,
+      createdAt: thread.createdAt,
+      updatedAt: thread.updatedAt,
+      pinnedAt: thread.pinnedAt ?? null,
+      archivedAt: thread.archivedAt,
+      session: thread.session,
+      latestUserMessageAt: null,
+      hasPendingApprovals: false,
+      hasPendingUserInput: false,
+      latestPendingUserInputAt: null,
+      hasActionableProposedPlan: false,
     })),
   };
 }
@@ -174,7 +219,7 @@ describe("ProviderSessionReaper", () => {
     };
 
     const orchestrationEngine: OrchestrationEngineShape = {
-      getReadModel: () => Effect.succeed(input.readModel),
+      getReadModel: () => Effect.die("unused"),
       readEvents: () => Stream.empty,
       dispatch: (command) =>
         Effect.sync(() => {
@@ -198,6 +243,11 @@ describe("ProviderSessionReaper", () => {
       Layer.provideMerge(runtimeRepositoryLayer),
       Layer.provideMerge(Layer.succeed(ProviderService, providerService)),
       Layer.provideMerge(Layer.succeed(OrchestrationEngineService, orchestrationEngine)),
+      Layer.provideMerge(
+        Layer.mock(ProjectionSnapshotQuery)({
+          getShellSnapshot: () => Effect.succeed(makeShellSnapshot(input.readModel)),
+        }),
+      ),
       Layer.provideMerge(NodeServices.layer),
     );
 

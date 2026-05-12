@@ -171,6 +171,7 @@ import {
   createLocalDispatchSnapshot,
   deleteQueuedComposerMessage,
   deriveComposerSendState,
+  deriveThreadDetailBackfillRequest,
   hasServerAcknowledgedLocalDispatch,
   LAST_INVOKED_SCRIPT_BY_PROJECT_KEY,
   LastInvokedScriptByProjectSchema,
@@ -961,6 +962,9 @@ export default function ChatView(props: ChatViewProps) {
     null,
   );
   const olderMessagesLastRequestedKeyRef = useRef<string | null>(null);
+  const threadDetailBackfillInFlightRef = useRef(false);
+  const threadDetailBackfillLastRequestedKeyRef = useRef<string | null>(null);
+  const threadDetailBackfillResourceOffsetRef = useRef(0);
   const existingOpenTerminalThreadKeys = useMemo(() => {
     const existingThreadKeys = new Set<string>([...serverThreadKeys, ...draftThreadKeys]);
     return openTerminalThreadKeys.filter((nextThreadKey) => existingThreadKeys.has(nextThreadKey));
@@ -1472,47 +1476,22 @@ export default function ChatView(props: ChatViewProps) {
     });
   }, []);
   const serverMessages = activeThread?.messages;
-  const canLoadOlderMessages =
-    !selectedSubagentTranscript &&
-    ((activeThread?.messagePageInfo?.hasMoreBefore === true && activeThread.messages.length > 0) ||
-      (activeThread?.activityPageInfo?.hasMoreBefore === true &&
-        activeThread.activities.length > 0) ||
-      (activeThread?.proposedPlanPageInfo?.hasMoreBefore === true &&
-        activeThread.proposedPlans.length > 0) ||
-      (activeThread?.checkpointPageInfo?.hasMoreBefore === true &&
-        activeThread.turnDiffSummaries.length > 0));
   const isLoadingOlderMessages =
     activeThreadKey !== null && olderMessagesLoadingThreadKey === activeThreadKey;
   const loadOlderMessages = useCallback(async () => {
-    const hasOlderThreadDetail =
-      activeThread?.messagePageInfo?.hasMoreBefore === true ||
-      activeThread?.activityPageInfo?.hasMoreBefore === true ||
-      activeThread?.proposedPlanPageInfo?.hasMoreBefore === true ||
-      activeThread?.checkpointPageInfo?.hasMoreBefore === true;
-    if (!activeThread || !activeThreadKey || selectedSubagentTranscript || !hasOlderThreadDetail) {
-      return;
-    }
-    const beforeMessageId = activeThread.messages[0]?.id;
-    const beforeActivityId = activeThread.activities[0]?.id;
-    const beforeProposedPlanId = activeThread.proposedPlans[0]?.id;
-    const beforeCheckpointTurnCount = activeThread.turnDiffSummaries[0]?.checkpointTurnCount;
     if (
-      isLoadingOlderMessages ||
-      (activeThread.messagePageInfo?.hasMoreBefore === true && !beforeMessageId) ||
-      (activeThread.activityPageInfo?.hasMoreBefore === true && !beforeActivityId) ||
-      (activeThread.proposedPlanPageInfo?.hasMoreBefore === true && !beforeProposedPlanId) ||
-      (activeThread.checkpointPageInfo?.hasMoreBefore === true &&
-        beforeCheckpointTurnCount === undefined)
+      !activeThread ||
+      !activeThreadKey ||
+      selectedSubagentTranscript ||
+      activeThread.messagePageInfo?.hasMoreBefore !== true
     ) {
       return;
     }
-    const requestKey = [
-      activeThreadKey,
-      beforeMessageId ?? "",
-      beforeActivityId ?? "",
-      beforeProposedPlanId ?? "",
-      beforeCheckpointTurnCount ?? "",
-    ].join(":");
+    const beforeMessageId = activeThread.messages[0]?.id;
+    if (isLoadingOlderMessages || !beforeMessageId) {
+      return;
+    }
+    const requestKey = `${activeThreadKey}:${beforeMessageId}`;
     if (olderMessagesLastRequestedKeyRef.current === requestKey) {
       return;
     }
@@ -1531,51 +1510,12 @@ export default function ChatView(props: ChatViewProps) {
     setOlderMessagesLoadingThreadKey(activeThreadKey);
     olderMessagesLastRequestedKeyRef.current = requestKey;
     try {
-      const [messagesPage, activitiesPage, proposedPlansPage, checkpointsPage] = await Promise.all([
-        activeThread.messagePageInfo?.hasMoreBefore === true && beforeMessageId
-          ? api.orchestration.getThreadMessagesPage({
-              threadId: activeThread.id,
-              beforeMessageId,
-            })
-          : Promise.resolve(null),
-        activeThread.activityPageInfo?.hasMoreBefore === true && beforeActivityId
-          ? api.orchestration.getThreadActivitiesPage({
-              threadId: activeThread.id,
-              beforeActivityId,
-            })
-          : Promise.resolve(null),
-        activeThread.proposedPlanPageInfo?.hasMoreBefore === true && beforeProposedPlanId
-          ? api.orchestration.getThreadProposedPlansPage({
-              threadId: activeThread.id,
-              beforeProposedPlanId,
-            })
-          : Promise.resolve(null),
-        activeThread.checkpointPageInfo?.hasMoreBefore === true &&
-        beforeCheckpointTurnCount !== undefined
-          ? api.orchestration.getThreadCheckpointsPage({
-              threadId: activeThread.id,
-              beforeCheckpointTurnCount,
-            })
-          : Promise.resolve(null),
-      ]);
-      if (messagesPage) {
-        prependServerThreadMessagesPage(messagesPage, activeThread.environmentId);
-      }
-      if (activitiesPage) {
-        prependServerThreadActivitiesPage(activitiesPage, activeThread.environmentId);
-      }
-      if (proposedPlansPage) {
-        prependServerThreadProposedPlansPage(proposedPlansPage, activeThread.environmentId);
-      }
-      if (checkpointsPage) {
-        prependServerThreadCheckpointsPage(checkpointsPage, activeThread.environmentId);
-      }
-      if (
-        messagesPage?.pageInfo.hasMoreBefore ||
-        activitiesPage?.pageInfo.hasMoreBefore ||
-        proposedPlansPage?.pageInfo.hasMoreBefore ||
-        checkpointsPage?.pageInfo.hasMoreBefore
-      ) {
+      const messagesPage = await api.orchestration.getThreadMessagesPage({
+        threadId: activeThread.id,
+        beforeMessageId,
+      });
+      prependServerThreadMessagesPage(messagesPage, activeThread.environmentId);
+      if (messagesPage.pageInfo.hasMoreBefore) {
         olderMessagesLastRequestedKeyRef.current = null;
       }
     } catch (error) {
@@ -1594,12 +1534,95 @@ export default function ChatView(props: ChatViewProps) {
     activeThread,
     activeThreadKey,
     isLoadingOlderMessages,
+    prependServerThreadMessagesPage,
+    selectedSubagentTranscript,
+  ]);
+  const backfillThreadDetailForLoadedMessages = useCallback(async () => {
+    if (!activeThread || !activeThreadKey || selectedSubagentTranscript) {
+      return;
+    }
+    if (threadDetailBackfillInFlightRef.current) {
+      return;
+    }
+
+    const request = deriveThreadDetailBackfillRequest({
+      thread: activeThread,
+      resourceOffset: threadDetailBackfillResourceOffsetRef.current,
+    });
+    if (!request || threadDetailBackfillLastRequestedKeyRef.current === request.requestKey) {
+      return;
+    }
+
+    const api = readEnvironmentApi(activeThread.environmentId);
+    if (!api) {
+      return;
+    }
+
+    threadDetailBackfillInFlightRef.current = true;
+    threadDetailBackfillLastRequestedKeyRef.current = request.requestKey;
+    threadDetailBackfillResourceOffsetRef.current = request.nextResourceOffset;
+    try {
+      if (request.resource === "activities") {
+        const beforeActivityId = activeThread.activities[0]?.id;
+        if (!beforeActivityId) return;
+        const page = await api.orchestration.getThreadActivitiesPage({
+          threadId: activeThread.id,
+          beforeActivityId,
+        });
+        prependServerThreadActivitiesPage(page, activeThread.environmentId);
+        return;
+      }
+
+      if (request.resource === "proposedPlans") {
+        const beforeProposedPlanId = activeThread.proposedPlans[0]?.id;
+        if (!beforeProposedPlanId) return;
+        const page = await api.orchestration.getThreadProposedPlansPage({
+          threadId: activeThread.id,
+          beforeProposedPlanId,
+        });
+        prependServerThreadProposedPlansPage(page, activeThread.environmentId);
+        return;
+      }
+
+      const beforeCheckpointTurnCount = activeThread.turnDiffSummaries[0]?.checkpointTurnCount;
+      if (beforeCheckpointTurnCount === undefined) return;
+      const page = await api.orchestration.getThreadCheckpointsPage({
+        threadId: activeThread.id,
+        beforeCheckpointTurnCount,
+      });
+      prependServerThreadCheckpointsPage(page, activeThread.environmentId);
+    } catch (error) {
+      console.warn("Failed to backfill thread detail for loaded messages.", error);
+    } finally {
+      threadDetailBackfillInFlightRef.current = false;
+    }
+  }, [
+    activeThread,
+    activeThreadKey,
     prependServerThreadActivitiesPage,
     prependServerThreadCheckpointsPage,
-    prependServerThreadMessagesPage,
     prependServerThreadProposedPlansPage,
     selectedSubagentTranscript,
   ]);
+
+  useEffect(() => {
+    if (!activeThread || !activeThreadKey || selectedSubagentTranscript) {
+      return;
+    }
+
+    const interval = window.setInterval(() => {
+      void backfillThreadDetailForLoadedMessages();
+    }, 1_000);
+    return () => {
+      window.clearInterval(interval);
+    };
+  }, [
+    activeThread,
+    activeThreadKey,
+    backfillThreadDetailForLoadedMessages,
+    selectedSubagentTranscript,
+  ]);
+
   useEffect(() => {
     if (typeof Image === "undefined" || !serverMessages || serverMessages.length === 0) {
       return;
@@ -4385,18 +4408,6 @@ export default function ChatView(props: ChatViewProps) {
                     Read-only subagent transcript
                   </div>
                 </div>
-              </div>
-            ) : null}
-            {canLoadOlderMessages ? (
-              <div className="pointer-events-none absolute top-2 left-1/2 z-30 flex -translate-x-1/2 justify-center">
-                <button
-                  type="button"
-                  onClick={loadOlderMessages}
-                  disabled={isLoadingOlderMessages}
-                  className="pointer-events-auto rounded-full border border-border/60 bg-card px-3 py-1 text-muted-foreground text-xs shadow-sm transition-colors hover:border-border hover:text-foreground disabled:cursor-wait disabled:opacity-60"
-                >
-                  {isLoadingOlderMessages ? "Loading..." : "Load older history"}
-                </button>
               </div>
             ) : null}
             {/* Messages — LegendList handles virtualization and scrolling internally */}

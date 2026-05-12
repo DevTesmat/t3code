@@ -1,7 +1,8 @@
-import { CommandId, type OrchestrationThread, type ThreadId } from "@t3tools/contracts";
+import { CommandId, type OrchestrationThreadShell, type ThreadId } from "@t3tools/contracts";
 import { Cause, Effect, Layer } from "effect";
 
 import { OrchestrationEngineService } from "../../orchestration/Services/OrchestrationEngine.ts";
+import { ProjectionSnapshotQuery } from "../../orchestration/Services/ProjectionSnapshotQuery.ts";
 import {
   ProviderSessionRecovery,
   type ProviderSessionRecoveryShape,
@@ -9,7 +10,7 @@ import {
 
 const RECOVERY_CONCURRENCY = 4;
 
-function isStaleRunningThread(thread: OrchestrationThread): boolean {
+function isStaleRunningThread(thread: OrchestrationThreadShell): boolean {
   return (
     thread.session?.status === "running" ||
     (thread.session !== null && thread.session.activeTurnId !== null) ||
@@ -25,8 +26,9 @@ function recoveryCommandId(threadId: ThreadId) {
 
 const makeProviderSessionRecovery = Effect.gen(function* () {
   const orchestrationEngine = yield* OrchestrationEngineService;
+  const projectionSnapshotQuery = yield* ProjectionSnapshotQuery;
 
-  const markNeedsResume = (thread: OrchestrationThread, now: string) =>
+  const markNeedsResume = (thread: OrchestrationThreadShell, now: string) =>
     orchestrationEngine.dispatch({
       type: "thread.session.set",
       commandId: recoveryCommandId(thread.id),
@@ -46,7 +48,7 @@ const makeProviderSessionRecovery = Effect.gen(function* () {
       createdAt: now,
     });
 
-  const recoverThread = (thread: OrchestrationThread) =>
+  const recoverThread = (thread: OrchestrationThreadShell) =>
     Effect.gen(function* () {
       const now = new Date().toISOString();
       yield* markNeedsResume(thread, now).pipe(
@@ -61,8 +63,17 @@ const makeProviderSessionRecovery = Effect.gen(function* () {
 
   const recoverStaleRunningThreads: ProviderSessionRecoveryShape["recoverStaleRunningThreads"] =
     Effect.fn("recoverStaleRunningThreads")(function* () {
-      const readModel = yield* orchestrationEngine.getReadModel();
-      const staleThreads = readModel.threads.filter(isStaleRunningThread);
+      const shellSnapshot = yield* projectionSnapshotQuery.getShellSnapshot().pipe(
+        Effect.catchCause((cause) =>
+          Effect.logWarning("provider session recovery failed to read shell snapshot", {
+            cause: Cause.pretty(cause),
+          }).pipe(Effect.as(null)),
+        ),
+      );
+      if (shellSnapshot === null) {
+        return;
+      }
+      const staleThreads = shellSnapshot.threads.filter(isStaleRunningThread);
       if (staleThreads.length === 0) {
         return;
       }

@@ -6,6 +6,7 @@ import {
   type OrchestrationEvent,
   ProviderDriverKind,
   type OrchestrationSession,
+  type OrchestrationThreadShell,
   ThreadId,
   type ProviderSession,
   type RuntimeMode,
@@ -15,7 +16,6 @@ import { isTemporaryWorktreeBranch, WORKTREE_BRANCH_PREFIX } from "@t3tools/shar
 import { Cache, Cause, Duration, Effect, Equal, Layer, Option, Schema, Stream } from "effect";
 import { makeDrainableWorker } from "@t3tools/shared/DrainableWorker";
 
-import { resolveThreadWorkspaceCwd } from "../../checkpointing/Utils.ts";
 import { GitCore } from "../../git/Services/GitCore.ts";
 import { GitStatusBroadcaster } from "../../git/Services/GitStatusBroadcaster.ts";
 import { increment, orchestrationEventsProcessedTotal } from "../../observability/Metrics.ts";
@@ -272,8 +272,16 @@ const make = Effect.gen(function* () {
   });
 
   const resolveThread = Effect.fnUntraced(function* (threadId: ThreadId) {
-    const readModel = yield* orchestrationEngine.getReadModel();
-    return readModel.threads.find((entry) => entry.id === threadId);
+    const thread = yield* projectionSnapshotQuery.getThreadShellById(threadId);
+    return Option.isSome(thread) ? thread.value : null;
+  });
+
+  const resolveThreadWorkspaceCwd = Effect.fnUntraced(function* (thread: OrchestrationThreadShell) {
+    if (thread.worktreePath !== null) {
+      return thread.worktreePath;
+    }
+    const project = yield* projectionSnapshotQuery.getProjectShellById(thread.projectId);
+    return Option.isSome(project) ? project.value.workspaceRoot : null;
   });
 
   const ensureSessionForThread = Effect.fn("ensureSessionForThread")(function* (
@@ -283,10 +291,11 @@ const make = Effect.gen(function* () {
       readonly modelSelection?: ModelSelection;
     },
   ) {
-    const readModel = yield* orchestrationEngine.getReadModel();
-    const thread = readModel.threads.find((entry) => entry.id === threadId);
+    const thread = yield* resolveThread(threadId);
     if (!thread) {
-      return yield* Effect.die(new Error(`Thread '${threadId}' was not found in read model.`));
+      return yield* Effect.die(
+        new Error(`Thread '${threadId}' was not found in projection shell.`),
+      );
     }
 
     const desiredRuntimeMode = thread.runtimeMode;
@@ -379,10 +388,7 @@ const make = Effect.gen(function* () {
         });
       }
     }
-    const effectiveCwd = resolveThreadWorkspaceCwd({
-      thread,
-      projects: readModel.projects,
-    });
+    const effectiveCwd = yield* resolveThreadWorkspaceCwd(thread);
 
     const startProviderSession = (input?: {
       readonly resumeCursor?: unknown;
@@ -507,7 +513,7 @@ const make = Effect.gen(function* () {
     const thread = yield* resolveThread(input.threadId);
     if (!thread) {
       return yield* Effect.die(
-        new Error(`Thread '${input.threadId}' was not found in read model.`),
+        new Error(`Thread '${input.threadId}' was not found in projection shell.`),
       );
     }
     yield* ensureSessionForThread(
@@ -689,11 +695,7 @@ const make = Effect.gen(function* () {
 
     const isFirstUserMessageTurn = turnStartContext.userMessageCount === 1;
     if (isFirstUserMessageTurn) {
-      const generationCwd =
-        resolveThreadWorkspaceCwd({
-          thread,
-          projects: (yield* orchestrationEngine.getReadModel()).projects,
-        }) ?? process.cwd();
+      const generationCwd = (yield* resolveThreadWorkspaceCwd(thread)) ?? process.cwd();
       const generationInput = {
         messageText: message.text,
         ...(message.attachments !== undefined ? { attachments: message.attachments } : {}),

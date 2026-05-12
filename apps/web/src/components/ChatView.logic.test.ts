@@ -6,6 +6,7 @@ import {
   ProviderInstanceId,
   ThreadId,
   TurnId,
+  type OrchestrationThreadActivity,
 } from "@t3tools/contracts";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { type EnvironmentState, useStore } from "../store";
@@ -17,6 +18,7 @@ import {
   buildExpiredTerminalContextToastCopy,
   createLocalDispatchSnapshot,
   deleteQueuedComposerMessage,
+  deriveThreadDetailBackfillRequest,
   deriveComposerSendState,
   hasServerAcknowledgedLocalDispatch,
   reconcileMountedTerminalThreadIds,
@@ -91,6 +93,137 @@ describe("buildExpiredTerminalContextToastCopy", () => {
     });
   });
 });
+
+describe("deriveThreadDetailBackfillRequest", () => {
+  it("requests older activities when loaded activities do not cover the oldest loaded message", () => {
+    const request = deriveThreadDetailBackfillRequest({
+      thread: threadDetailBackfillFixture({
+        oldestMessageAt: "2026-05-10T10:00:00.000Z",
+        oldestActivityAt: "2026-05-10T11:00:00.000Z",
+        activityHasMoreBefore: true,
+      }),
+    });
+
+    expect(request).toEqual({
+      resource: "activities",
+      requestKey: "thread-backfill:activities:activity-oldest:2026-05-10T10:00:00.000Z",
+      nextResourceOffset: 1,
+    });
+  });
+
+  it("does not request non-chat detail that already reaches the loaded message window", () => {
+    const request = deriveThreadDetailBackfillRequest({
+      thread: threadDetailBackfillFixture({
+        oldestMessageAt: "2026-05-10T10:00:00.000Z",
+        oldestActivityAt: "2026-05-10T09:59:59.000Z",
+        activityHasMoreBefore: true,
+      }),
+    });
+
+    expect(request).toBeNull();
+  });
+
+  it("rotates between non-chat resources that need backfill", () => {
+    const thread = threadDetailBackfillFixture({
+      oldestMessageAt: "2026-05-10T10:00:00.000Z",
+      oldestActivityAt: "2026-05-10T11:00:00.000Z",
+      oldestProposedPlanAt: "2026-05-10T11:30:00.000Z",
+      activityHasMoreBefore: true,
+      proposedPlanHasMoreBefore: true,
+    });
+
+    expect(
+      deriveThreadDetailBackfillRequest({
+        thread,
+        resourceOffset: 1,
+      })?.resource,
+    ).toBe("proposedPlans");
+  });
+});
+
+function threadDetailBackfillFixture(input: {
+  oldestMessageAt: string;
+  oldestActivityAt?: string;
+  oldestProposedPlanAt?: string;
+  oldestCheckpointAt?: string;
+  activityHasMoreBefore?: boolean;
+  proposedPlanHasMoreBefore?: boolean;
+  checkpointHasMoreBefore?: boolean;
+}): Pick<
+  Thread,
+  | "id"
+  | "messages"
+  | "activities"
+  | "proposedPlans"
+  | "turnDiffSummaries"
+  | "activityPageInfo"
+  | "proposedPlanPageInfo"
+  | "checkpointPageInfo"
+> {
+  return {
+    id: ThreadId.make("thread-backfill"),
+    messages: [
+      {
+        id: "message-oldest" as Thread["messages"][number]["id"],
+        role: "user",
+        text: "oldest loaded message",
+        createdAt: input.oldestMessageAt,
+        streaming: false,
+      },
+    ],
+    activities: input.oldestActivityAt
+      ? [
+          {
+            id: "activity-oldest" as OrchestrationThreadActivity["id"],
+            kind: "reasoning.status",
+            tone: "info",
+            summary: "Thinking",
+            payload: {},
+            turnId: null,
+            createdAt: input.oldestActivityAt,
+          },
+        ]
+      : [],
+    proposedPlans: input.oldestProposedPlanAt
+      ? [
+          {
+            id: "plan-oldest" as Thread["proposedPlans"][number]["id"],
+            turnId: null,
+            planMarkdown: "Plan",
+            implementedAt: null,
+            implementationThreadId: null,
+            createdAt: input.oldestProposedPlanAt,
+            updatedAt: input.oldestProposedPlanAt,
+          },
+        ]
+      : [],
+    turnDiffSummaries: input.oldestCheckpointAt
+      ? [
+          {
+            turnId: TurnId.make("turn-checkpoint"),
+            completedAt: input.oldestCheckpointAt,
+            files: [],
+            checkpointTurnCount: 12,
+          },
+        ]
+      : [],
+    activityPageInfo: {
+      limit: 500,
+      included: input.oldestActivityAt ? 1 : 0,
+      hasMoreBefore: input.activityHasMoreBefore === true,
+    },
+    proposedPlanPageInfo: {
+      limit: 500,
+      included: input.oldestProposedPlanAt ? 1 : 0,
+      hasMoreBefore: input.proposedPlanHasMoreBefore === true,
+    },
+    checkpointPageInfo: {
+      limit: 500,
+      included: input.oldestCheckpointAt ? 1 : 0,
+      hasMoreBefore: input.checkpointHasMoreBefore === true,
+    },
+  };
+}
 
 describe("buildQueuedComposerFlush", () => {
   it("combines queued messages in order", () => {

@@ -240,6 +240,10 @@ Progress notes:
 - Checkpoint diff finalization now uses `ProjectionSnapshotQuery.getLatestAssistantMessageIdForTurn()` for the assistant-message fallback instead of scanning `thread.messages`.
 - Checkpoint capture and baseline paths now use the bounded checkpoint-progress projection query for real/placeholder checkpoint detection and max turn count instead of scanning `thread.checkpoints`.
 - Checkpoint revert now uses `ProjectionSnapshotQuery.getThreadCheckpointRevertContext()` to read only the current turn count, target checkpoint ref, and stale checkpoint refs needed for restore/delete/rollback decisions.
+- Project setup scripts, shell-stream project metadata enrichment, stale session recovery, and idle provider session reaping now use projection shell queries instead of full `OrchestrationEngine.getReadModel()` snapshots.
+- Provider runtime ingestion no longer calls `OrchestrationEngine.getReadModel()`; runtime event processing uses per-thread shell lookups, proposed-plan lookups, snapshot sequence reads, and workspace cwd shell/project resolution.
+- Provider command handling and checkpoint handling no longer call `OrchestrationEngine.getReadModel()`; they use thread/project shell queries plus existing targeted message/checkpoint/proposed-plan queries.
+- No non-test server runtime caller of `OrchestrationEngine.getReadModel()` remains outside the service interface documentation. The next Stage 4 boundary is the engine's internal full read-model state and command-decision path.
 
 ### Stage 5: Incremental Shell Summary Projection
 

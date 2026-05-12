@@ -2,6 +2,7 @@ import { CommandId, EventId } from "@t3tools/contracts";
 import { Duration, Effect, Layer, Schedule } from "effect";
 
 import { OrchestrationEngineService } from "../../orchestration/Services/OrchestrationEngine.ts";
+import { ProjectionSnapshotQuery } from "../../orchestration/Services/ProjectionSnapshotQuery.ts";
 import { ProviderSessionDirectory } from "../Services/ProviderSessionDirectory.ts";
 import {
   ProviderSessionReaper,
@@ -24,6 +25,7 @@ const makeProviderSessionReaper = (options?: ProviderSessionReaperLiveOptions) =
     const providerService = yield* ProviderService;
     const directory = yield* ProviderSessionDirectory;
     const orchestrationEngine = yield* OrchestrationEngineService;
+    const projectionSnapshotQuery = yield* ProjectionSnapshotQuery;
 
     const inactivityThresholdMs = Math.max(
       1,
@@ -32,8 +34,10 @@ const makeProviderSessionReaper = (options?: ProviderSessionReaperLiveOptions) =
     const sweepIntervalMs = Math.max(1, options?.sweepIntervalMs ?? DEFAULT_SWEEP_INTERVAL_MS);
 
     const sweep = Effect.gen(function* () {
-      const readModel = yield* orchestrationEngine.getReadModel();
-      const threadsById = new Map(readModel.threads.map((thread) => [thread.id, thread] as const));
+      const shellSnapshot = yield* projectionSnapshotQuery.getShellSnapshot();
+      const threadsById = new Map(
+        shellSnapshot.threads.map((thread) => [thread.id, thread] as const),
+      );
       const bindings = yield* directory.listBindings();
       const now = Date.now();
       let reapedCount = 0;

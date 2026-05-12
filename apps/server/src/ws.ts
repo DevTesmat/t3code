@@ -258,8 +258,18 @@ const makeWsRpcLayer = (currentSessionId: AuthSessionId) =>
             return Effect.gen(function* () {
               const workspaceRoot =
                 event.payload.workspaceRoot ??
-                (yield* orchestrationEngine.getReadModel()).projects.find(
-                  (project) => project.id === event.payload.projectId,
+                Option.getOrNull(
+                  yield* projectionSnapshotQuery.getProjectShellById(event.payload.projectId).pipe(
+                    Effect.catchCause((cause) =>
+                      Effect.logWarning(
+                        "project metadata enrichment failed to read project shell",
+                        {
+                          projectId: event.payload.projectId,
+                          cause: Cause.pretty(cause),
+                        },
+                      ).pipe(Effect.as(Option.none())),
+                    ),
+                  ),
                 )?.workspaceRoot ??
                 null;
               if (workspaceRoot === null) {

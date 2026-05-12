@@ -6,6 +6,7 @@ import {
   TurnId,
   type OrchestrationCommand,
   type OrchestrationReadModel,
+  type OrchestrationShellSnapshot,
 } from "@t3tools/contracts";
 import { Effect, Layer, Stream } from "effect";
 import { describe, expect, it } from "vitest";
@@ -14,6 +15,7 @@ import {
   OrchestrationEngineService,
   type OrchestrationEngineShape,
 } from "../../orchestration/Services/OrchestrationEngine.ts";
+import { ProjectionSnapshotQuery } from "../../orchestration/Services/ProjectionSnapshotQuery.ts";
 import { ProviderSessionRecovery } from "../Services/ProviderSessionRecovery.ts";
 import { ProviderService, type ProviderServiceShape } from "../Services/ProviderService.ts";
 import { ProviderSessionRecoveryLive } from "./ProviderSessionRecovery.ts";
@@ -93,6 +95,45 @@ function makeReadModel(input: {
   };
 }
 
+function makeShellSnapshot(readModel: OrchestrationReadModel): OrchestrationShellSnapshot {
+  return {
+    snapshotSequence: readModel.snapshotSequence,
+    updatedAt: readModel.updatedAt,
+    projects: readModel.projects.map((project) => ({
+      id: project.id,
+      title: project.title,
+      workspaceRoot: project.workspaceRoot,
+      repositoryIdentity: project.repositoryIdentity ?? null,
+      defaultModelSelection: project.defaultModelSelection,
+      scripts: project.scripts,
+      createdAt: project.createdAt,
+      updatedAt: project.updatedAt,
+    })),
+    threads: readModel.threads.map((thread) => ({
+      id: thread.id,
+      projectId: thread.projectId,
+      title: thread.title,
+      modelSelection: thread.modelSelection,
+      runtimeMode: thread.runtimeMode,
+      interactionMode: thread.interactionMode,
+      branch: thread.branch,
+      worktreePath: thread.worktreePath,
+      latestTurn: thread.latestTurn,
+      totalWorkDurationMs: thread.totalWorkDurationMs ?? 0,
+      createdAt: thread.createdAt,
+      updatedAt: thread.updatedAt,
+      pinnedAt: thread.pinnedAt,
+      archivedAt: thread.archivedAt,
+      session: thread.session,
+      latestUserMessageAt: null,
+      hasPendingApprovals: false,
+      hasPendingUserInput: false,
+      latestPendingUserInputAt: null,
+      hasActionableProposedPlan: false,
+    })),
+  };
+}
+
 function makeHarness(input: { readonly readModel: OrchestrationReadModel }) {
   const dispatched: OrchestrationCommand[] = [];
   const providerService: ProviderServiceShape = {
@@ -120,7 +161,7 @@ function makeHarness(input: { readonly readModel: OrchestrationReadModel }) {
     streamEvents: Stream.empty,
   };
   const orchestrationEngine: OrchestrationEngineShape = {
-    getReadModel: () => Effect.succeed(input.readModel),
+    getReadModel: () => Effect.die("unused"),
     reloadFromStorage: () => Effect.succeed(input.readModel),
     readEvents: () => Stream.empty,
     dispatch: (command) =>
@@ -134,6 +175,11 @@ function makeHarness(input: { readonly readModel: OrchestrationReadModel }) {
   const layer = ProviderSessionRecoveryLive.pipe(
     Layer.provide(Layer.succeed(ProviderService, providerService)),
     Layer.provide(Layer.succeed(OrchestrationEngineService, orchestrationEngine)),
+    Layer.provide(
+      Layer.mock(ProjectionSnapshotQuery)({
+        getShellSnapshot: () => Effect.succeed(makeShellSnapshot(input.readModel)),
+      }),
+    ),
   );
 
   return { layer, dispatched };

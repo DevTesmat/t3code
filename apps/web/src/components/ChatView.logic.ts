@@ -24,6 +24,20 @@ import type { DraftThreadEnvMode } from "../composerDraftStore";
 export const LAST_INVOKED_SCRIPT_BY_PROJECT_KEY = "t3code:last-invoked-script-by-project";
 export const MAX_HIDDEN_MOUNTED_TERMINAL_THREADS = 10;
 
+export type ThreadDetailBackfillResource = "activities" | "proposedPlans" | "checkpoints";
+
+export interface ThreadDetailBackfillRequest {
+  resource: ThreadDetailBackfillResource;
+  requestKey: string;
+  nextResourceOffset: number;
+}
+
+const THREAD_DETAIL_BACKFILL_RESOURCES: readonly ThreadDetailBackfillResource[] = [
+  "activities",
+  "proposedPlans",
+  "checkpoints",
+];
+
 export const LastInvokedScriptByProjectSchema = Schema.Record(ProjectId, Schema.String);
 
 export function buildLocalDraftThread(
@@ -54,6 +68,95 @@ export function buildLocalDraftThread(
     activities: [],
     proposedPlans: [],
   };
+}
+
+export function deriveThreadDetailBackfillRequest(input: {
+  thread: Pick<
+    Thread,
+    | "id"
+    | "messages"
+    | "activities"
+    | "proposedPlans"
+    | "turnDiffSummaries"
+    | "activityPageInfo"
+    | "proposedPlanPageInfo"
+    | "checkpointPageInfo"
+  >;
+  resourceOffset?: number;
+}): ThreadDetailBackfillRequest | null {
+  const oldestLoadedMessageAt = input.thread.messages[0]?.createdAt;
+  if (!oldestLoadedMessageAt) {
+    return null;
+  }
+
+  const resourceOffset =
+    Math.max(0, Math.floor(input.resourceOffset ?? 0)) % THREAD_DETAIL_BACKFILL_RESOURCES.length;
+  for (let index = 0; index < THREAD_DETAIL_BACKFILL_RESOURCES.length; index += 1) {
+    const resourceIndex = (resourceOffset + index) % THREAD_DETAIL_BACKFILL_RESOURCES.length;
+    const resource = THREAD_DETAIL_BACKFILL_RESOURCES[resourceIndex];
+    if (!resource) {
+      continue;
+    }
+    const firstLoadedAt = firstLoadedThreadDetailResourceTimestamp(input.thread, resource);
+    if (!firstLoadedAt || firstLoadedAt <= oldestLoadedMessageAt) {
+      continue;
+    }
+    if (!threadDetailResourceHasMoreBefore(input.thread, resource)) {
+      continue;
+    }
+
+    const cursor = firstLoadedThreadDetailResourceCursor(input.thread, resource);
+    if (cursor === null) {
+      continue;
+    }
+
+    return {
+      resource,
+      requestKey: `${input.thread.id}:${resource}:${cursor}:${oldestLoadedMessageAt}`,
+      nextResourceOffset: (resourceIndex + 1) % THREAD_DETAIL_BACKFILL_RESOURCES.length,
+    };
+  }
+
+  return null;
+}
+
+function firstLoadedThreadDetailResourceTimestamp(
+  thread: Pick<Thread, "activities" | "proposedPlans" | "turnDiffSummaries">,
+  resource: ThreadDetailBackfillResource,
+): string | null {
+  if (resource === "activities") {
+    return thread.activities[0]?.createdAt ?? null;
+  }
+  if (resource === "proposedPlans") {
+    return thread.proposedPlans[0]?.createdAt ?? null;
+  }
+  return thread.turnDiffSummaries[0]?.completedAt ?? null;
+}
+
+function firstLoadedThreadDetailResourceCursor(
+  thread: Pick<Thread, "activities" | "proposedPlans" | "turnDiffSummaries">,
+  resource: ThreadDetailBackfillResource,
+): string | number | null {
+  if (resource === "activities") {
+    return thread.activities[0]?.id ?? null;
+  }
+  if (resource === "proposedPlans") {
+    return thread.proposedPlans[0]?.id ?? null;
+  }
+  return thread.turnDiffSummaries[0]?.checkpointTurnCount ?? null;
+}
+
+function threadDetailResourceHasMoreBefore(
+  thread: Pick<Thread, "activityPageInfo" | "proposedPlanPageInfo" | "checkpointPageInfo">,
+  resource: ThreadDetailBackfillResource,
+): boolean {
+  if (resource === "activities") {
+    return thread.activityPageInfo?.hasMoreBefore === true;
+  }
+  if (resource === "proposedPlans") {
+    return thread.proposedPlanPageInfo?.hasMoreBefore === true;
+  }
+  return thread.checkpointPageInfo?.hasMoreBefore === true;
 }
 
 export function shouldWriteThreadErrorToCurrentServerThread(input: {

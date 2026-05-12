@@ -1,7 +1,8 @@
 import { projectScriptRuntimeEnv, setupProjectScript } from "@t3tools/shared/projectScripts";
-import { Effect, Layer } from "effect";
+import { ProjectId } from "@t3tools/contracts";
+import { Effect, Layer, Option } from "effect";
 
-import { OrchestrationEngineService } from "../../orchestration/Services/OrchestrationEngine.ts";
+import { ProjectionSnapshotQuery } from "../../orchestration/Services/ProjectionSnapshotQuery.ts";
 import { TerminalManager } from "../../terminal/Services/Manager.ts";
 import {
   type ProjectSetupScriptRunnerShape,
@@ -9,20 +10,22 @@ import {
 } from "../Services/ProjectSetupScriptRunner.ts";
 
 const makeProjectSetupScriptRunner = Effect.gen(function* () {
-  const orchestrationEngine = yield* OrchestrationEngineService;
+  const projectionSnapshotQuery = yield* ProjectionSnapshotQuery;
   const terminalManager = yield* TerminalManager;
 
   const runForThread: ProjectSetupScriptRunnerShape["runForThread"] = (input) =>
     Effect.gen(function* () {
-      const readModel = yield* orchestrationEngine.getReadModel();
+      const projectById =
+        input.projectId !== undefined
+          ? yield* projectionSnapshotQuery.getProjectShellById(ProjectId.make(input.projectId))
+          : Option.none();
       const project =
-        (input.projectId
-          ? readModel.projects.find((entry) => entry.id === input.projectId)
-          : null) ??
-        (input.projectCwd
-          ? readModel.projects.find((entry) => entry.workspaceRoot === input.projectCwd)
-          : null) ??
-        null;
+        Option.getOrNull(projectById) ??
+        (input.projectCwd !== undefined
+          ? Option.getOrNull(
+              yield* projectionSnapshotQuery.getActiveProjectByWorkspaceRoot(input.projectCwd),
+            )
+          : null);
 
       if (!project) {
         return yield* Effect.fail(new Error("Project was not found for setup script execution."));

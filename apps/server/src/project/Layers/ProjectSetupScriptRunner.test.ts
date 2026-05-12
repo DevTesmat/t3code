@@ -1,9 +1,9 @@
-import { Effect, Layer, Stream } from "effect";
+import { Effect, Layer, Option } from "effect";
 import { describe, expect, it, vi } from "vitest";
 import type { OrchestrationReadModel } from "@t3tools/contracts";
 import { emptyWorkerHealthSnapshot } from "@t3tools/shared/WorkerHealth";
 
-import { OrchestrationEngineService } from "../../orchestration/Services/OrchestrationEngine.ts";
+import { ProjectionSnapshotQuery } from "../../orchestration/Services/ProjectionSnapshotQuery.ts";
 import { TerminalManager } from "../../terminal/Services/Manager.ts";
 import { ProjectSetupScriptRunner } from "../Services/ProjectSetupScriptRunner.ts";
 import { ProjectSetupScriptRunnerLive } from "./ProjectSetupScriptRunner.ts";
@@ -33,6 +33,31 @@ const emptySnapshot = (
     latestTurnByThreadId: {},
   }) as unknown as OrchestrationReadModel;
 
+const makeProjectionSnapshotQuery = (snapshot: OrchestrationReadModel) => ({
+  getProjectShellById: (projectId: OrchestrationReadModel["projects"][number]["id"]) => {
+    const project = snapshot.projects.find((entry) => entry.id === projectId) ?? null;
+    return Effect.succeed(
+      project === null
+        ? Option.none()
+        : Option.some({
+            id: project.id,
+            title: project.title,
+            workspaceRoot: project.workspaceRoot,
+            repositoryIdentity: project.repositoryIdentity ?? null,
+            defaultModelSelection: project.defaultModelSelection,
+            scripts: project.scripts,
+            createdAt: project.createdAt,
+            updatedAt: project.updatedAt,
+          }),
+    );
+  },
+  getActiveProjectByWorkspaceRoot: (workspaceRoot: string) => {
+    const project =
+      snapshot.projects.find((entry) => entry.workspaceRoot === workspaceRoot) ?? null;
+    return Effect.succeed(project === null ? Option.none() : Option.some(project));
+  },
+});
+
 describe("ProjectSetupScriptRunner", () => {
   it("returns no-script when no setup script exists", async () => {
     const open = vi.fn();
@@ -42,12 +67,7 @@ describe("ProjectSetupScriptRunner", () => {
         Effect.provide(
           ProjectSetupScriptRunnerLive.pipe(
             Layer.provideMerge(
-              Layer.succeed(OrchestrationEngineService, {
-                getReadModel: () => Effect.succeed(emptySnapshot([])),
-                readEvents: () => Stream.empty,
-                dispatch: () => Effect.die(new Error("unused")),
-                streamDomainEvents: Stream.empty,
-              }),
+              Layer.mock(ProjectionSnapshotQuery)(makeProjectionSnapshotQuery(emptySnapshot([]))),
             ),
             Layer.provideMerge(
               Layer.succeed(TerminalManager, {
@@ -100,23 +120,19 @@ describe("ProjectSetupScriptRunner", () => {
         Effect.provide(
           ProjectSetupScriptRunnerLive.pipe(
             Layer.provideMerge(
-              Layer.succeed(OrchestrationEngineService, {
-                getReadModel: () =>
-                  Effect.succeed(
-                    emptySnapshot([
-                      {
-                        id: "setup",
-                        name: "Setup",
-                        command: "bun install",
-                        icon: "configure",
-                        runOnWorktreeCreate: true,
-                      },
-                    ]),
-                  ),
-                readEvents: () => Stream.empty,
-                dispatch: () => Effect.die(new Error("unused")),
-                streamDomainEvents: Stream.empty,
-              }),
+              Layer.mock(ProjectionSnapshotQuery)(
+                makeProjectionSnapshotQuery(
+                  emptySnapshot([
+                    {
+                      id: "setup",
+                      name: "Setup",
+                      command: "bun install",
+                      icon: "configure",
+                      runOnWorktreeCreate: true,
+                    },
+                  ]),
+                ),
+              ),
             ),
             Layer.provideMerge(
               Layer.succeed(TerminalManager, {
