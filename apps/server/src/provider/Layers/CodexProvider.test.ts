@@ -14,6 +14,10 @@ describe("CodexProvider app-server startup", () => {
       "app-server",
       "--enable",
       "apply_patch_streaming_events",
+      "-c",
+      'model_reasoning_summary="detailed"',
+      "-c",
+      "model_supports_reasoning_summaries=true",
     ]);
   });
 
@@ -26,7 +30,7 @@ describe("CodexProvider app-server startup", () => {
   it("reports the same app-server command used for process startup", () => {
     assert.equal(
       codexAppServerCommandLabel("/opt/homebrew/bin/codex"),
-      "/opt/homebrew/bin/codex app-server --enable apply_patch_streaming_events",
+      '/opt/homebrew/bin/codex app-server --enable apply_patch_streaming_events -c model_reasoning_summary="detailed" -c model_supports_reasoning_summaries=true',
     );
   });
 });

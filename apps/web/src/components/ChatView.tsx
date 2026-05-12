@@ -61,6 +61,7 @@ import {
   deriveThreadSubagents,
   deriveThreadSubagentTranscripts,
   deriveActivePlanState,
+  deriveReasoningSegments,
   findSidebarProposedPlan,
   findLatestProposedPlan,
   deriveWorkLogEntries,
@@ -1240,6 +1241,10 @@ export default function ChatView(props: ChatViewProps) {
   const threadActivities = activeThread?.activities ?? EMPTY_ACTIVITIES;
   const workLogEntries = useMemo(
     () => deriveWorkLogEntries(threadActivities, undefined),
+    [threadActivities],
+  );
+  const reasoningSegments = useMemo(
+    () => deriveReasoningSegments(threadActivities),
     [threadActivities],
   );
   const threadSubagents = useMemo(
@@ -4416,6 +4421,7 @@ export default function ChatView(props: ChatViewProps) {
               timelineEntries={
                 selectedSubagentTranscript ? selectedSubagentTimelineEntries : timelineEntries
               }
+              reasoningSegments={selectedSubagentTranscript ? [] : reasoningSegments}
               completionDividerBeforeEntryId={
                 selectedSubagentTranscript ? null : completionDividerBeforeEntryId
               }

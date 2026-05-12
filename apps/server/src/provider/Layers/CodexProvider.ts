@@ -22,7 +22,15 @@ import { scopedSafeTeardown } from "./scopedSafeTeardown.ts";
 import packageJson from "../../../package.json" with { type: "json" };
 
 const PROVIDER_PROBE_TIMEOUT_MS = 8_000;
-const CODEX_APP_SERVER_ARGS = ["app-server", "--enable", "apply_patch_streaming_events"] as const;
+const CODEX_APP_SERVER_ARGS = [
+  "app-server",
+  "--enable",
+  "apply_patch_streaming_events",
+  "-c",
+  'model_reasoning_summary="detailed"',
+  "-c",
+  "model_supports_reasoning_summaries=true",
+] as const;
 const CODEX_PRESENTATION = {
   displayName: "Codex",
   showInteractionModeToggle: true,

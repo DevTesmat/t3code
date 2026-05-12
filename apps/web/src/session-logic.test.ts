@@ -17,6 +17,7 @@ import {
   deriveActivePlanState,
   derivePendingApprovals,
   derivePendingUserInputs,
+  deriveReasoningSegments,
   deriveTimelineEntries,
   deriveWorkLogEntries,
   findLatestProposedPlan,
@@ -50,6 +51,70 @@ function makeActivity(overrides: {
     ...(overrides.sequence !== undefined ? { sequence: overrides.sequence } : {}),
   };
 }
+
+describe("deriveReasoningSegments", () => {
+  it("coalesces reasoning deltas by turn item and keeps them out of the work log", () => {
+    const activities = [
+      makeActivity({
+        id: "reasoning-1",
+        kind: "reasoning.delta",
+        summary: "Thinking",
+        tone: "info",
+        turnId: "turn-1",
+        payload: { itemId: "reasoning-item", streamKind: "reasoning_text", text: "Inspecting " },
+      }),
+      makeActivity({
+        id: "reasoning-2",
+        kind: "reasoning.delta",
+        summary: "Thinking",
+        tone: "info",
+        turnId: "turn-1",
+        payload: { itemId: "reasoning-item", streamKind: "reasoning_text", text: "the repo" },
+      }),
+    ];
+
+    expect(deriveReasoningSegments(activities)).toMatchObject([
+      {
+        id: "turn-1:reasoning-item:reasoning_text",
+        turnId: "turn-1",
+        text: "Inspecting the repo",
+        status: "running",
+      },
+    ]);
+    expect(deriveWorkLogEntries(activities, undefined)).toEqual([]);
+  });
+
+  it("creates a private reasoning segment from lifecycle events without text deltas", () => {
+    const activities = [
+      makeActivity({
+        id: "reasoning-started",
+        kind: "reasoning.status",
+        summary: "Thinking",
+        tone: "info",
+        turnId: "turn-1",
+        payload: { itemId: "reasoning-item", status: "running" },
+      }),
+      makeActivity({
+        id: "reasoning-completed",
+        kind: "reasoning.status",
+        summary: "Thinking",
+        tone: "info",
+        turnId: "turn-1",
+        payload: { itemId: "reasoning-item", status: "completed" },
+      }),
+    ];
+
+    expect(deriveReasoningSegments(activities)).toMatchObject([
+      {
+        id: "turn-1:reasoning-item:reasoning",
+        turnId: "turn-1",
+        text: "",
+        status: "completed",
+      },
+    ]);
+    expect(deriveWorkLogEntries(activities, undefined)).toEqual([]);
+  });
+});
 
 function makeRunningSession(overrides: Partial<ThreadSession> = {}): ThreadSession {
   return {

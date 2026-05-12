@@ -22,7 +22,7 @@ import {
   type PointerEvent,
 } from "react";
 import { LegendList, type LegendListRef } from "@legendapp/list/react";
-import { deriveTimelineEntries, formatElapsed } from "../../session-logic";
+import { deriveTimelineEntries, formatElapsed, type ReasoningSegment } from "../../session-logic";
 import { type TurnDiffSummary } from "../../types";
 import ChatMarkdown from "../ChatMarkdown";
 import {
@@ -130,6 +130,7 @@ interface MessagesTimelineProps {
   activeTurnId?: TurnId | null;
   listRef: RefObject<LegendListRef | null>;
   timelineEntries: ReturnType<typeof deriveTimelineEntries>;
+  reasoningSegments?: ReadonlyArray<ReasoningSegment>;
   completionDividerBeforeEntryId: string | null;
   turnDiffSummaryByAssistantMessageId: Map<MessageId, TurnDiffSummary>;
   turnDiffSummaryByTurnId: Map<TurnId, TurnDiffSummary>;
@@ -161,6 +162,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   activeTurnId,
   listRef,
   timelineEntries,
+  reasoningSegments = [],
   completionDividerBeforeEntryId,
   turnDiffSummaryByAssistantMessageId,
   turnDiffSummaryByTurnId,
@@ -185,6 +187,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
     () =>
       deriveMessagesTimelineRows({
         timelineEntries,
+        reasoningSegments,
         completionDividerBeforeEntryId,
         isWorking,
         turnDiffSummaryByAssistantMessageId,
@@ -192,6 +195,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       }),
     [
       timelineEntries,
+      reasoningSegments,
       completionDividerBeforeEntryId,
       isWorking,
       turnDiffSummaryByAssistantMessageId,
@@ -415,6 +419,7 @@ function buildTimelineAutoScrollContentKey(rows: ReadonlyArray<MessagesTimelineR
             row.id,
             row.kind,
             row.message.text.length,
+            row.reasoningSegments.map((segment) => segment.text.length).join(","),
             row.message.streaming ? "streaming" : "settled",
             row.message.completedAt ?? "",
           ].join(":");
@@ -497,74 +502,85 @@ function TimelineRowContent({ row }: { row: TimelineRow }) {
           const terminalContexts = displayedUserMessage.contexts;
           const canRevertAgentWork = typeof row.revertTurnCount === "number";
           return (
-            <div className="flex justify-end">
-              <div className="group relative max-w-[80%] rounded-2xl rounded-br-sm border border-border bg-secondary px-4 py-3">
-                {userImages.length > 0 && (
-                  <div className="mb-2 grid max-w-[420px] grid-cols-2 gap-2">
-                    {userImages.map(
-                      (image: NonNullable<TimelineMessage["attachments"]>[number]) => (
-                        <div
-                          key={image.id}
-                          className="overflow-hidden rounded-lg border border-border/80 bg-background/70"
+            <>
+              <div className="flex justify-end">
+                <div className="group relative max-w-[80%] rounded-2xl rounded-br-sm border border-border bg-secondary px-4 py-3">
+                  {userImages.length > 0 && (
+                    <div className="mb-2 grid max-w-[420px] grid-cols-2 gap-2">
+                      {userImages.map(
+                        (image: NonNullable<TimelineMessage["attachments"]>[number]) => (
+                          <div
+                            key={image.id}
+                            className="overflow-hidden rounded-lg border border-border/80 bg-background/70"
+                          >
+                            {image.previewUrl ? (
+                              <button
+                                type="button"
+                                className="h-full w-full cursor-zoom-in"
+                                aria-label={`Preview ${image.name}`}
+                                onClick={() => {
+                                  const preview = buildExpandedImagePreview(userImages, image.id);
+                                  if (!preview) return;
+                                  ctx.onImageExpand(preview);
+                                }}
+                              >
+                                <img
+                                  src={image.previewUrl}
+                                  alt={image.name}
+                                  className="block h-auto max-h-[220px] w-full object-cover"
+                                />
+                              </button>
+                            ) : (
+                              <div className="flex min-h-[72px] items-center justify-center px-2 py-3 text-center text-[11px] text-muted-foreground/70">
+                                {image.name}
+                              </div>
+                            )}
+                          </div>
+                        ),
+                      )}
+                    </div>
+                  )}
+                  {(displayedUserMessage.visibleText.trim().length > 0 ||
+                    terminalContexts.length > 0) && (
+                    <UserMessageBody
+                      text={displayedUserMessage.visibleText}
+                      terminalContexts={terminalContexts}
+                    />
+                  )}
+                  <div className="mt-1.5 flex items-center justify-end gap-2">
+                    <div className="flex items-center gap-1.5 opacity-0 transition-opacity duration-200 focus-within:opacity-100 group-hover:opacity-100">
+                      {displayedUserMessage.copyText && (
+                        <MessageCopyButton text={displayedUserMessage.copyText} />
+                      )}
+                      {canRevertAgentWork && (
+                        <Button
+                          type="button"
+                          size="xs"
+                          variant="outline"
+                          disabled={ctx.isRevertingCheckpoint || ctx.isWorking}
+                          onClick={() => ctx.onRevertUserMessage(row.message.id)}
+                          title="Revert to this message"
                         >
-                          {image.previewUrl ? (
-                            <button
-                              type="button"
-                              className="h-full w-full cursor-zoom-in"
-                              aria-label={`Preview ${image.name}`}
-                              onClick={() => {
-                                const preview = buildExpandedImagePreview(userImages, image.id);
-                                if (!preview) return;
-                                ctx.onImageExpand(preview);
-                              }}
-                            >
-                              <img
-                                src={image.previewUrl}
-                                alt={image.name}
-                                className="block h-auto max-h-[220px] w-full object-cover"
-                              />
-                            </button>
-                          ) : (
-                            <div className="flex min-h-[72px] items-center justify-center px-2 py-3 text-center text-[11px] text-muted-foreground/70">
-                              {image.name}
-                            </div>
-                          )}
-                        </div>
-                      ),
-                    )}
+                          <Undo2Icon className="size-3" />
+                        </Button>
+                      )}
+                    </div>
+                    <p className="text-right text-xs text-muted-foreground/50">
+                      {formatTimestamp(row.message.createdAt, ctx.timestampFormat)}
+                    </p>
                   </div>
-                )}
-                {(displayedUserMessage.visibleText.trim().length > 0 ||
-                  terminalContexts.length > 0) && (
-                  <UserMessageBody
-                    text={displayedUserMessage.visibleText}
-                    terminalContexts={terminalContexts}
-                  />
-                )}
-                <div className="mt-1.5 flex items-center justify-end gap-2">
-                  <div className="flex items-center gap-1.5 opacity-0 transition-opacity duration-200 focus-within:opacity-100 group-hover:opacity-100">
-                    {displayedUserMessage.copyText && (
-                      <MessageCopyButton text={displayedUserMessage.copyText} />
-                    )}
-                    {canRevertAgentWork && (
-                      <Button
-                        type="button"
-                        size="xs"
-                        variant="outline"
-                        disabled={ctx.isRevertingCheckpoint || ctx.isWorking}
-                        onClick={() => ctx.onRevertUserMessage(row.message.id)}
-                        title="Revert to this message"
-                      >
-                        <Undo2Icon className="size-3" />
-                      </Button>
-                    )}
-                  </div>
-                  <p className="text-right text-xs text-muted-foreground/50">
-                    {formatTimestamp(row.message.createdAt, ctx.timestampFormat)}
-                  </p>
                 </div>
               </div>
-            </div>
+              <ReasoningSegmentsBlock
+                segments={row.reasoningSegments}
+                isLive={
+                  ctx.activeTurnInProgress &&
+                  ctx.activeTurnId !== null &&
+                  ctx.activeTurnId !== undefined &&
+                  row.message.turnId === ctx.activeTurnId
+                }
+              />
+            </>
           );
         })()}
 
@@ -598,6 +614,10 @@ function TimelineRowContent({ row }: { row: TimelineRow }) {
                   text={messageText}
                   cwd={ctx.markdownCwd}
                   isStreaming={Boolean(row.message.streaming)}
+                />
+                <ReasoningSegmentsBlock
+                  segments={row.reasoningSegments}
+                  isLive={assistantTurnStillInProgress && row.message.text.trim().length === 0}
                 />
                 <div className="mt-1.5 flex items-center gap-2">
                   <p className="text-[10px] text-muted-foreground/30">
@@ -652,6 +672,105 @@ function TimelineRowContent({ row }: { row: TimelineRow }) {
 // Each owns a `nowMs` state value consumed in the render output so the
 // React Compiler cannot elide the re-render as a no-op.
 // ---------------------------------------------------------------------------
+
+function ReasoningSegmentsBlock({
+  segments,
+  isLive,
+}: {
+  segments: ReadonlyArray<ReasoningSegment>;
+  isLive: boolean;
+}) {
+  const ctx = use(TimelineRowCtx);
+  const rootRef = useRef<HTMLDivElement | null>(null);
+  const wasLiveRef = useRef(isLive);
+  const [isExpanded, setIsExpanded] = useState(isLive);
+  const text = useMemo(
+    () =>
+      segments
+        .map((segment) => segment.text)
+        .join("\n\n")
+        .trim(),
+    [segments],
+  );
+  const hasVisibleText = text.length > 0;
+  const allCompleted = segments.every((segment) => segment.status === "completed");
+  const displayText = hasVisibleText
+    ? text
+    : allCompleted
+      ? "Reasoned privately."
+      : "Reasoning privately...";
+  const preview = useMemo(() => compactReasoningPreview(displayText), [displayText]);
+
+  useEffect(() => {
+    if (isLive) {
+      wasLiveRef.current = true;
+      setIsExpanded(true);
+      return;
+    }
+    if (wasLiveRef.current) {
+      wasLiveRef.current = false;
+      setIsExpanded(false);
+    }
+  }, [isLive]);
+
+  const toggleExpanded = useCallback(() => {
+    const anchor = rootRef.current;
+    const mutate = () => setIsExpanded((current) => !current);
+    if (anchor && ctx.onPreserveViewportRequest) {
+      ctx.onPreserveViewportRequest(anchor, mutate);
+      return;
+    }
+    mutate();
+  }, [ctx]);
+
+  if (segments.length === 0) {
+    return null;
+  }
+
+  return (
+    <div ref={rootRef} className="mt-2 max-w-full">
+      <div
+        className={cn(
+          "min-w-0 rounded-md border border-border/45 bg-muted/25 text-muted-foreground",
+          isExpanded ? "px-3 py-2" : "px-2.5 py-1.5",
+        )}
+      >
+        <button
+          type="button"
+          className="flex w-full min-w-0 items-center gap-1.5 text-left text-[11px] leading-5 hover:text-foreground"
+          onClick={toggleExpanded}
+          aria-expanded={isExpanded}
+        >
+          <ChevronRightIcon
+            className={cn("size-3 shrink-0 transition-transform", isExpanded ? "rotate-90" : null)}
+          />
+          <span className="shrink-0 font-medium">
+            {isLive || !allCompleted ? "Thinking" : "Thought"}
+          </span>
+          {!isExpanded ? (
+            <>
+              <span className="text-muted-foreground/45">·</span>
+              <span className="min-w-0 flex-1 truncate text-muted-foreground/70">{preview}</span>
+            </>
+          ) : null}
+        </button>
+        {isExpanded ? (
+          <div className="mt-1.5 max-h-[7.5rem] overflow-y-auto whitespace-pre-wrap pr-1 text-xs leading-5">
+            {displayText}
+          </div>
+        ) : null}
+      </div>
+    </div>
+  );
+}
+
+function compactReasoningPreview(text: string): string {
+  const normalized = text.replace(/\s+/g, " ").trim();
+  if (normalized.length <= 120) {
+    return normalized;
+  }
+  return `${normalized.slice(0, 117).trimEnd()}...`;
+}
 
 /** Live timestamp + elapsed duration for a streaming assistant message. */
 function LiveMessageMeta({

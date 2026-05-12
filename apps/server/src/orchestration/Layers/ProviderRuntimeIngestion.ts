@@ -1080,6 +1080,23 @@ function runtimeEventToActivities(
     }
 
     case "item.completed": {
+      if (event.payload.itemType === "reasoning") {
+        return [
+          {
+            id: event.eventId,
+            createdAt: event.createdAt,
+            tone: "info",
+            kind: "reasoning.status",
+            summary: "Thinking",
+            payload: {
+              status: "completed",
+              ...(event.itemId ? { itemId: event.itemId } : {}),
+            },
+            turnId: toTurnId(event.turnId) ?? null,
+            ...maybeSequence,
+          },
+        ];
+      }
       if (!isToolLifecycleItemType(event.payload.itemType)) {
         return [];
       }
@@ -1107,6 +1124,23 @@ function runtimeEventToActivities(
     }
 
     case "item.started": {
+      if (event.payload.itemType === "reasoning") {
+        return [
+          {
+            id: event.eventId,
+            createdAt: event.createdAt,
+            tone: "info",
+            kind: "reasoning.status",
+            summary: "Thinking",
+            payload: {
+              status: "running",
+              ...(event.itemId ? { itemId: event.itemId } : {}),
+            },
+            turnId: toTurnId(event.turnId) ?? null,
+            ...maybeSequence,
+          },
+        ];
+      }
       if (!isToolLifecycleItemType(event.payload.itemType)) {
         return [];
       }
@@ -1354,6 +1388,13 @@ const make = Effect.gen(function* () {
   const liveFileChangeSnapshotCache = new Map<string, WorkspaceFileSnapshot>();
   const liveFileChangeStreamByItemKey = new Map<string, LiveFileChangeStreamState>();
   const persistedFileChangeTextByItemKey = new Map<string, string>();
+  const reasoningTextByItemKey = new Map<
+    string,
+    {
+      readonly createdAt: string;
+      readonly text: string;
+    }
+  >();
   let lastFileDiffCleanupAt = 0;
 
   const hasSeenLiveFileChangeActivity = (key: string) =>
@@ -2332,6 +2373,18 @@ const make = Effect.gen(function* () {
         event.type === "content.delta" && event.payload.streamKind === "assistant_text"
           ? event.payload.delta
           : undefined;
+      const reasoningDelta =
+        event.type === "content.delta" &&
+        (event.payload.streamKind === "reasoning_text" ||
+          event.payload.streamKind === "reasoning_summary_text")
+          ? event.payload.delta
+          : undefined;
+      const reasoningStreamKind =
+        event.type === "content.delta" &&
+        (event.payload.streamKind === "reasoning_text" ||
+          event.payload.streamKind === "reasoning_summary_text")
+          ? event.payload.streamKind
+          : undefined;
       const commandOutputDelta =
         event.type === "content.delta" && event.payload.streamKind === "command_output"
           ? event.payload.delta
@@ -2382,6 +2435,49 @@ const make = Effect.gen(function* () {
             createdAt: now,
           });
         }
+      }
+
+      if (shouldProjectToParentThread && reasoningDelta && reasoningDelta.length > 0) {
+        const turnId = toTurnId(event.turnId);
+        const reasoningItemKey = [
+          thread.id,
+          turnId ?? "no-turn",
+          event.itemId ?? "turn",
+          reasoningStreamKind ?? "reasoning",
+        ].join(":");
+        const existingReasoningText = reasoningTextByItemKey.get(reasoningItemKey);
+        const reasoningText = {
+          createdAt: existingReasoningText?.createdAt ?? event.createdAt,
+          text: `${existingReasoningText?.text ?? ""}${reasoningDelta}`,
+        };
+        reasoningTextByItemKey.set(reasoningItemKey, reasoningText);
+        yield* orchestrationEngine.dispatch({
+          type: "thread.activity.append",
+          commandId: providerCommandId(event, "reasoning-delta"),
+          threadId: thread.id,
+          activity: {
+            id: EventId.make(`reasoning:${reasoningItemKey}`),
+            createdAt: reasoningText.createdAt,
+            tone: "info",
+            kind: "reasoning.delta",
+            summary: "Thinking",
+            payload: {
+              text: reasoningText.text,
+              ...(reasoningStreamKind ? { streamKind: reasoningStreamKind } : {}),
+              ...(event.itemId ? { itemId: event.itemId } : {}),
+            },
+            turnId: turnId ?? null,
+            ...(() => {
+              const eventWithSequence = event as ProviderRuntimeEvent & {
+                sessionSequence?: number;
+              };
+              return typeof eventWithSequence.sessionSequence === "number"
+                ? { sequence: eventWithSequence.sessionSequence }
+                : {};
+            })(),
+          },
+          createdAt: now,
+        });
       }
 
       if (
@@ -2593,6 +2689,12 @@ const make = Effect.gen(function* () {
 
         if (turnId) {
           yield* clearAssistantSegmentStateForTurn(thread.id, turnId);
+          const reasoningKeyPrefix = `${thread.id}:${turnId}:`;
+          for (const key of reasoningTextByItemKey.keys()) {
+            if (key.startsWith(reasoningKeyPrefix)) {
+              reasoningTextByItemKey.delete(key);
+            }
+          }
         }
       }
 

@@ -1,4 +1,4 @@
-import { type TimelineEntry, type WorkLogEntry } from "../../session-logic";
+import { type ReasoningSegment, type TimelineEntry, type WorkLogEntry } from "../../session-logic";
 import { type ChatMessage, type ProposedPlan, type TurnDiffSummary } from "../../types";
 import { type MessageId } from "@t3tools/contracts";
 import {
@@ -33,6 +33,7 @@ export type MessagesTimelineRow =
       showAssistantCopyButton: boolean;
       assistantTurnDiffSummary?: TurnDiffSummary | undefined;
       revertTurnCount?: number | undefined;
+      reasoningSegments: ReasoningSegment[];
     }
   | {
       kind: "proposed-plan";
@@ -119,6 +120,7 @@ function deriveTerminalAssistantMessageIds(timelineEntries: ReadonlyArray<Timeli
 
 export function deriveMessagesTimelineRows(input: {
   timelineEntries: ReadonlyArray<TimelineEntry>;
+  reasoningSegments?: ReadonlyArray<ReasoningSegment>;
   completionDividerBeforeEntryId: string | null;
   isWorking: boolean;
   turnDiffSummaryByAssistantMessageId: ReadonlyMap<MessageId, TurnDiffSummary>;
@@ -131,6 +133,7 @@ export function deriveMessagesTimelineRows(input: {
   const terminalAssistantMessageIds = deriveTerminalAssistantMessageIds(input.timelineEntries);
   const workGroupIdOccurrences = new Map<string, number>();
   let pendingWorkEntries: Array<Extract<TimelineEntry, { kind: "work" }>> = [];
+  const messageRowIndices: number[] = [];
 
   for (let index = 0; index < input.timelineEntries.length; index += 1) {
     const timelineEntry = input.timelineEntries[index];
@@ -166,7 +169,7 @@ export function deriveMessagesTimelineRows(input: {
       continue;
     }
 
-    nextRows.push({
+    const row: Extract<MessagesTimelineRow, { kind: "message" }> = {
       kind: "message",
       id: timelineEntry.id,
       createdAt: timelineEntry.createdAt,
@@ -187,12 +190,66 @@ export function deriveMessagesTimelineRows(input: {
         timelineEntry.message.role === "user"
           ? input.revertTurnCountByUserMessageId.get(timelineEntry.message.id)
           : undefined,
-    });
+      reasoningSegments: [],
+    };
+    nextRows.push(row);
+    messageRowIndices.push(nextRows.length - 1);
   }
 
   appendWorkTimelineRows(pendingWorkEntries, nextRows, workGroupIdOccurrences);
 
+  const reasoningSegmentsByRowIndex = new Map<number, ReasoningSegment[]>();
+  for (const segment of input.reasoningSegments ?? []) {
+    const rowIndex = findReasoningAnchorMessageRowIndex(nextRows, messageRowIndices, segment);
+    if (rowIndex === undefined) {
+      continue;
+    }
+    const existing = reasoningSegmentsByRowIndex.get(rowIndex) ?? [];
+    existing.push(segment);
+    reasoningSegmentsByRowIndex.set(rowIndex, existing);
+  }
+  for (const [rowIndex, segments] of reasoningSegmentsByRowIndex) {
+    const row = nextRows[rowIndex];
+    if (row?.kind === "message") {
+      nextRows[rowIndex] = { ...row, reasoningSegments: segments };
+    }
+  }
+
   return nextRows;
+}
+
+function findReasoningAnchorMessageRowIndex(
+  rows: ReadonlyArray<MessagesTimelineRow>,
+  messageRowIndices: ReadonlyArray<number>,
+  segment: ReasoningSegment,
+): number | undefined {
+  let fallbackPriorMessageRowIndex: number | undefined;
+  let fallbackPriorTurnMessageRowIndex: number | undefined;
+  let fallbackTurnMessageRowIndex: number | undefined;
+
+  for (const rowIndex of messageRowIndices) {
+    const row = rows[rowIndex];
+    if (row?.kind !== "message") {
+      continue;
+    }
+
+    const isPriorMessage = row.createdAt <= segment.createdAt;
+    if (isPriorMessage) {
+      fallbackPriorMessageRowIndex = rowIndex;
+    }
+
+    if (row.message.turnId === segment.turnId) {
+      if (isPriorMessage) {
+        fallbackPriorTurnMessageRowIndex = rowIndex;
+        continue;
+      }
+      fallbackTurnMessageRowIndex ??= rowIndex;
+    }
+  }
+
+  return (
+    fallbackPriorTurnMessageRowIndex ?? fallbackPriorMessageRowIndex ?? fallbackTurnMessageRowIndex
+  );
 }
 
 function appendWorkTimelineRows(
@@ -327,10 +384,28 @@ function isRowUnchanged(a: MessagesTimelineRow, b: MessagesTimelineRow): boolean
         a.showCompletionDivider === bm.showCompletionDivider &&
         a.showAssistantCopyButton === bm.showAssistantCopyButton &&
         a.assistantTurnDiffSummary === bm.assistantTurnDiffSummary &&
-        a.revertTurnCount === bm.revertTurnCount
+        a.revertTurnCount === bm.revertTurnCount &&
+        areReasoningSegmentsUnchanged(a.reasoningSegments, bm.reasoningSegments)
       );
     }
   }
+}
+
+function areReasoningSegmentsUnchanged(
+  a: ReadonlyArray<ReasoningSegment>,
+  b: ReadonlyArray<ReasoningSegment>,
+): boolean {
+  if (a === b) return true;
+  if (a.length !== b.length) return false;
+  return a.every((segment, index) => {
+    const other = b[index];
+    return (
+      other !== undefined &&
+      segment.id === other.id &&
+      segment.text === other.text &&
+      segment.updatedAt === other.updatedAt
+    );
+  });
 }
 
 function areWorkEntryGroupsUnchanged(

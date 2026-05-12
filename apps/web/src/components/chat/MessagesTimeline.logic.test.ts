@@ -209,6 +209,58 @@ describe("resolveAssistantMessageCopyState", () => {
 });
 
 describe("deriveMessagesTimelineRows", () => {
+  it("attaches reasoning segments to the most recent prior message for the turn", () => {
+    const rows = deriveMessagesTimelineRows({
+      timelineEntries: [
+        {
+          id: "user-entry",
+          kind: "message",
+          createdAt: "2026-01-01T00:00:00Z",
+          message: {
+            id: "user-1" as never,
+            role: "user",
+            text: "Investigate",
+            turnId: "turn-1" as never,
+            createdAt: "2026-01-01T00:00:00Z",
+            streaming: false,
+          },
+        },
+        {
+          id: "assistant-entry",
+          kind: "message",
+          createdAt: "2026-01-01T00:00:05Z",
+          message: {
+            id: "assistant-1" as never,
+            role: "assistant",
+            text: "Done",
+            turnId: "turn-1" as never,
+            createdAt: "2026-01-01T00:00:05Z",
+            streaming: false,
+          },
+        },
+      ],
+      reasoningSegments: [
+        {
+          id: "turn-1:reasoning-item:reasoning_text",
+          turnId: "turn-1" as never,
+          createdAt: "2026-01-01T00:00:01Z",
+          updatedAt: "2026-01-01T00:00:02Z",
+          text: "Inspecting the repo",
+          status: "completed",
+        },
+      ],
+      completionDividerBeforeEntryId: null,
+      isWorking: false,
+      turnDiffSummaryByAssistantMessageId: new Map(),
+      revertTurnCountByUserMessageId: new Map(),
+    });
+
+    expect(rows[0]?.kind).toBe("message");
+    expect(rows[0]?.kind === "message" ? rows[0].reasoningSegments : []).toHaveLength(1);
+    expect(rows[1]?.kind).toBe("message");
+    expect(rows[1]?.kind === "message" ? rows[1].reasoningSegments : []).toEqual([]);
+  });
+
   it("does not add a scrollable working row for active status", () => {
     const rows = deriveMessagesTimelineRows({
       timelineEntries: [],

@@ -981,11 +981,33 @@ function subagentDeltaCoalesceKey(activity: OrchestrationThreadActivity): string
   return `${providerThreadId}:${itemId}`;
 }
 
+function reasoningDeltaCoalesceKey(activity: OrchestrationThreadActivity): string | null {
+  if (activity.kind !== "reasoning.delta") {
+    return null;
+  }
+  const payload = activityPayloadRecord(activity);
+  const turnId = activity.turnId;
+  const itemId = payload?.itemId;
+  const streamKind = payload?.streamKind;
+  if (typeof turnId !== "string" || turnId.length === 0) {
+    return null;
+  }
+  return [
+    turnId,
+    typeof itemId === "string" && itemId.length > 0 ? itemId : "turn",
+    typeof streamKind === "string" && streamKind.length > 0 ? streamKind : "reasoning",
+  ].join(":");
+}
+
+function activityTextDeltaCoalesceKey(activity: OrchestrationThreadActivity): string | null {
+  return subagentDeltaCoalesceKey(activity) ?? reasoningDeltaCoalesceKey(activity);
+}
+
 function appendOrCoalesceThreadActivity(
   activities: ReadonlyArray<OrchestrationThreadActivity>,
   incomingActivity: OrchestrationThreadActivity,
 ): OrchestrationThreadActivity[] {
-  const incomingDeltaKey = subagentDeltaCoalesceKey(incomingActivity);
+  const incomingDeltaKey = activityTextDeltaCoalesceKey(incomingActivity);
   if (!incomingDeltaKey) {
     return [
       ...activities.filter((activity) => activity.id !== incomingActivity.id),
@@ -1005,7 +1027,7 @@ function appendOrCoalesceThreadActivity(
     if (activity.id === incomingActivity.id) {
       continue;
     }
-    if (subagentDeltaCoalesceKey(activity) !== incomingDeltaKey) {
+    if (activityTextDeltaCoalesceKey(activity) !== incomingDeltaKey) {
       nextActivities.push(activity);
       continue;
     }

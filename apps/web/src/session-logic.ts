@@ -100,6 +100,15 @@ export interface WorkLogEntry {
   };
 }
 
+export interface ReasoningSegment {
+  id: string;
+  turnId: TurnId;
+  createdAt: string;
+  updatedAt: string;
+  text: string;
+  status: "running" | "completed";
+}
+
 export type ThreadSubagentStatus = "running" | "completed" | "failed" | "closed" | "unknown";
 
 export interface ThreadSubagent {
@@ -652,6 +661,7 @@ export function deriveWorkLogEntries(
   const ordered = [...activities].toSorted(compareActivitiesByOrder);
   const entries = ordered
     .filter((activity) => (latestTurnId ? activity.turnId === latestTurnId : true))
+    .filter((activity) => !activity.kind.startsWith("reasoning."))
     .filter((activity) => activity.kind !== "task.started")
     .filter((activity) => activity.kind !== "context-window.updated")
     .filter((activity) => !activity.kind.startsWith("subagent."))
@@ -660,6 +670,54 @@ export function deriveWorkLogEntries(
     .map(toDerivedWorkLogEntry);
   return collapseDerivedWorkLogEntries(entries).map(
     ({ activityKind: _activityKind, collapseKey: _collapseKey, ...entry }) => entry,
+  );
+}
+
+export function deriveReasoningSegments(
+  activities: ReadonlyArray<OrchestrationThreadActivity>,
+): ReasoningSegment[] {
+  const segmentsByKey = new Map<string, ReasoningSegment>();
+  const ordered = [...activities].toSorted(compareActivitiesByOrder);
+
+  for (const activity of ordered) {
+    if (
+      (activity.kind !== "reasoning.delta" && activity.kind !== "reasoning.status") ||
+      !activity.turnId
+    ) {
+      continue;
+    }
+    const payload =
+      activity.payload && typeof activity.payload === "object"
+        ? (activity.payload as Record<string, unknown>)
+        : null;
+    const text = typeof payload?.text === "string" ? payload.text : "";
+    const itemId = typeof payload?.itemId === "string" && payload.itemId ? payload.itemId : "turn";
+    const streamKind =
+      typeof payload?.streamKind === "string" && payload.streamKind
+        ? payload.streamKind
+        : "reasoning";
+    const status = payload?.status === "completed" ? "completed" : "running";
+    const key = `${activity.turnId}:${itemId}:${streamKind}`;
+    const existing = segmentsByKey.get(key);
+    segmentsByKey.set(key, {
+      id: existing?.id ?? key,
+      turnId: activity.turnId,
+      createdAt:
+        existing && existing.createdAt <= activity.createdAt
+          ? existing.createdAt
+          : activity.createdAt,
+      updatedAt:
+        existing && existing.updatedAt >= activity.createdAt
+          ? existing.updatedAt
+          : activity.createdAt,
+      text: existing ? `${existing.text}${text}` : text,
+      status: status === "completed" ? "completed" : (existing?.status ?? "running"),
+    });
+  }
+
+  return [...segmentsByKey.values()].toSorted(
+    (left, right) =>
+      left.createdAt.localeCompare(right.createdAt) || left.id.localeCompare(right.id),
   );
 }
 
