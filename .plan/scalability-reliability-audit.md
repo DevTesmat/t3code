@@ -4,7 +4,7 @@
 
 This file is the source of truth for the scalability work from the May 2026 audit. Keep it updated whenever scope, ordering, implementation details, or completion status changes.
 
-Current state: Stages 1, 2, 3, 4, and 5 are complete. Replay RPC pagination and shell-stream gap recovery are implemented, including retry coverage for interrupted live paged replay. Provider ingestion now exposes enqueue/backpressure accounting through worker health and operational health, and rejected must-deliver runtime events now best-effort fail the affected session instead of leaving projection continuity ambiguous. Thread subscription snapshots now bound initial message, activity, proposed-plan, checkpoint, and persisted file-diff hydration and expose page metadata for paged resources; older messages, activities, proposed plans, and checkpoints can be loaded through explicit bounded page APIs, with the active-thread UI loading them together when older history is requested. Older persisted file diffs are fetched on demand for visible file-change rows by tool-call id instead of unconditionally hydrating all diffs on thread open. Thread shell summary refresh now uses targeted SQL aggregates instead of hydrating all thread messages, proposed plans, activities, and approvals; latest user-message timestamps, pending approval/user-input counts, latest pending user-input timestamp, and actionable proposed-plan state are now maintained incrementally on normal projection events. The orchestration engine now retains compact command-decision state instead of the full historical thread read model; full read models remain available as on-demand projection snapshots for compatibility.
+Current state: Stages 1, 2, 3, 4, 5, and 6 are complete. Replay RPC pagination and shell-stream gap recovery are implemented, including retry coverage for interrupted live paged replay. Provider ingestion now exposes enqueue/backpressure accounting through worker health and operational health, and rejected must-deliver runtime events now best-effort fail the affected session instead of leaving projection continuity ambiguous. Thread subscription snapshots now bound initial message, activity, proposed-plan, checkpoint, and persisted file-diff hydration and expose page metadata for paged resources; older messages, activities, proposed plans, and checkpoints can be loaded through explicit bounded page APIs, with the active-thread UI loading them together when older history is requested. Older persisted file diffs are fetched on demand for visible file-change rows by tool-call id instead of unconditionally hydrating all diffs on thread open. Thread shell summary refresh now uses targeted SQL aggregates instead of hydrating all thread messages, proposed plans, activities, and approvals; latest user-message timestamps, pending approval/user-input counts, latest pending user-input timestamp, and actionable proposed-plan state are now maintained incrementally on normal projection events. The orchestration engine now retains compact command-decision state instead of the full historical thread read model; full read models remain available as on-demand projection snapshots for compatibility. History sync no longer materializes full local history on the common autosave/startup push paths, uses indexed remote project/thread reads for mapping and latest-first imports, and compacts pushed receipts behind the synced cursor.
 
 ## Goal
 
@@ -274,13 +274,13 @@ Progress notes:
 
 Use `.plan/history-sync-latest-first-mysql.md` as the detailed sync architecture. This stage tracks the audit-driven cleanup that must align with that plan.
 
-- [ ] Remove normal-path all-local-event materialization.
-- [ ] Remove normal-path all-remote-event materialization.
+- [x] Remove normal-path all-local-event materialization.
+- [x] Remove normal-path all-remote-event materialization.
 - [x] Fix latest-first bootstrap so it does not reread full local history per remote page.
-- [ ] Replace remote fallback/index backfill paths that load all remote events.
-- [ ] Make project mapping use indexed/project-level remote reads instead of full remote history.
-- [ ] Revisit per-event pushed receipt growth and add retention or compact cursor strategy.
-- [ ] Add tests with large synthetic histories for latest-first, priority-thread, append, and mapping flows.
+- [x] Replace remote fallback/index backfill paths that load all remote events on indexed normal paths.
+- [x] Make project mapping use indexed/project-level remote reads instead of full remote history.
+- [x] Revisit per-event pushed receipt growth and add retention or compact cursor strategy.
+- [x] Add tests with large synthetic histories for latest-first, priority-thread, append, and mapping flows.
 
 Expected outcome: sync startup and backfill scale by page/thread, not total history.
 
@@ -294,6 +294,9 @@ Progress notes:
 - The right-side Tasks/Plan visualization and its composer toggle are temporarily disabled because the sidebar lifecycle is not reliable enough under sync refreshes and thread changes. Plan creation, refinement, import, and implementation remain enabled; the sidebar needs a separate redesign before it is reintroduced.
 - Autosave no longer reads the full local event log on the common completed-sync path where remote history has not advanced. Pushability and push planning use unpushed local events plus projection thread state, avoiding multi-GB transient server allocations when autosave starts after sending a message.
 - Completed full-sync startup now uses the same bounded push planner when remote history is current but local receipt state has a few pending events. This avoids reading the full local event log just to push a small startup tail.
+- Autosave now reuses the pre-visible-sync remote max sequence read for the visible push path and reads only the local tail after `lastSyncedRemoteSequence` when validating remote deltas. This removes one duplicate MySQL round trip and avoids full local-history materialization when another device has only already-known remote events.
+- `lastSyncedRemoteSequence` is now the compact cursor for contiguous pushed/imported history. `readUnpushedLocalEvents` ignores events at or below that cursor even when their individual receipt rows have been pruned, and successful state commits delete obsolete `history_sync_pushed_events` rows at or below the cursor. Receipt rows are retained only for non-contiguous future acknowledgements that still matter for advancing the cursor.
+- Stage 6 is considered complete for normal autosave/startup, latest-first, priority-thread, append, and mapping flows. Explicit full initial sync, destructive recovery, and no-index remote fallback still intentionally have broader materialization behavior because those paths need a separate architecture/recovery design rather than local hot-path optimization.
 
 ### Stage 7: Frontend Active Thread Derivation
 

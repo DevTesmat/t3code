@@ -11,7 +11,9 @@ import {
   ensureClientId,
   readPushedEventReceiptCount,
   readState,
+  readUnpushedLocalEvents,
   setInitialSyncPhase,
+  writePushedEventReceipts,
 } from "./localRepository.ts";
 
 const layer = it.layer(Layer.mergeAll(NodeSqliteClient.layerMemory()));
@@ -53,6 +55,28 @@ function readReceiptRows(sql: SqlClient.SqlClient) {
   `;
 }
 
+function insertEvents(sql: SqlClient.SqlClient, events: readonly HistorySyncEventRow[]) {
+  return sql`
+    INSERT INTO orchestration_events ${sql.insert(
+      events.map((row) => ({
+        sequence: row.sequence,
+        event_id: row.eventId,
+        aggregate_kind: row.aggregateKind,
+        stream_id: row.streamId,
+        stream_version: row.sequence,
+        event_type: row.eventType,
+        occurred_at: row.occurredAt,
+        command_id: row.commandId,
+        causation_event_id: row.causationEventId,
+        correlation_id: row.correlationId,
+        actor_kind: row.actorKind,
+        payload_json: row.payloadJson,
+        metadata_json: row.metadataJson,
+      })),
+    )}
+  `;
+}
+
 layer("history sync local repository commits", (it) => {
   it.effect("commits pushed receipts and sync state together", () =>
     Effect.gen(function* () {
@@ -71,10 +95,64 @@ layer("history sync local repository commits", (it) => {
         },
       });
 
-      assert.strictEqual(yield* readPushedEventReceiptCount(sql), 1);
+      assert.strictEqual(yield* readPushedEventReceiptCount(sql), 0);
       const state = yield* readState(sql);
       assert.strictEqual(state?.hasCompletedInitialSync, 1);
       assert.strictEqual(state?.lastSyncedRemoteSequence, 1);
+    }),
+  );
+
+  it.effect("compacts receipt rows covered by the synced cursor", () =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      yield* runMigrations({ toMigrationInclusive: 37 });
+      yield* sql`DELETE FROM history_sync_pushed_events`;
+      yield* sql`DELETE FROM history_sync_state`;
+
+      yield* writePushedEventReceipts(
+        sql,
+        [event(1), event(2), event(5)],
+        "2026-05-01T00:00:00.000Z",
+      );
+
+      yield* commitPushedEventReceiptsAndState(sql, {
+        events: [event(3)],
+        pushedAt: "2026-05-01T00:00:01.000Z",
+        state: {
+          hasCompletedInitialSync: true,
+          lastSyncedRemoteSequence: 3,
+          lastSuccessfulSyncAt: "2026-05-01T00:00:01.000Z",
+        },
+      });
+
+      assert.deepStrictEqual(yield* readReceiptRows(sql), [
+        {
+          sequence: 5,
+          eventId: "event-5",
+          pushedAt: "2026-05-01T00:00:00.000Z",
+        },
+      ]);
+    }),
+  );
+
+  it.effect("treats events at or below the synced cursor as already pushed without receipts", () =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      yield* runMigrations({ toMigrationInclusive: 37 });
+      yield* sql`DELETE FROM history_sync_pushed_events`;
+      yield* sql`DELETE FROM history_sync_state`;
+      yield* insertEvents(sql, [event(1), event(2), event(3), event(4)]);
+
+      yield* commitHistorySyncState(sql, {
+        hasCompletedInitialSync: true,
+        lastSyncedRemoteSequence: 3,
+        lastSuccessfulSyncAt: "2026-05-01T00:00:01.000Z",
+      });
+
+      assert.deepStrictEqual(
+        (yield* readUnpushedLocalEvents(sql)).map((row) => row.sequence),
+        [4],
+      );
     }),
   );
 
@@ -115,15 +193,16 @@ layer("history sync local repository commits", (it) => {
     Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient;
       yield* runMigrations({ toMigrationInclusive: 37 });
-      yield* commitPushedEventReceiptsAndState(sql, {
-        events: [event(1, "old-event-1"), event(3, "old-event-3")],
-        pushedAt: "2026-05-01T00:00:00.000Z",
-        state: {
-          hasCompletedInitialSync: true,
-          lastSyncedRemoteSequence: 3,
-          lastSuccessfulSyncAt: "2026-05-01T00:00:00.000Z",
-        },
+      yield* commitHistorySyncState(sql, {
+        hasCompletedInitialSync: true,
+        lastSyncedRemoteSequence: 0,
+        lastSuccessfulSyncAt: "2026-05-01T00:00:00.000Z",
       });
+      yield* writePushedEventReceipts(
+        sql,
+        [event(1, "old-event-1"), event(3, "old-event-3")],
+        "2026-05-01T00:00:00.000Z",
+      );
       yield* sql`
         CREATE TRIGGER fail_history_sync_state_update
         BEFORE UPDATE ON history_sync_state

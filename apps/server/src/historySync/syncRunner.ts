@@ -617,8 +617,10 @@ export function createHistorySyncRunner(input: HistorySyncRunnerDependencies) {
       const syncStartedAt = new Date().toISOString();
       const syncContext = { startedAt: syncStartedAt, lastSyncedAt };
       const lastSyncedRemoteSequence = state?.lastSyncedRemoteSequence ?? 0;
+      let autosaveRemoteMaxSequence: number | null = null;
       if (hasCompletedInitialSync && isAutosave) {
         const remoteMaxSequence = yield* input.readRemoteMaxSequence(connectionString);
+        autosaveRemoteMaxSequence = remoteMaxSequence;
         if (remoteMaxSequence <= lastSyncedRemoteSequence) {
           const unpushedLocalEvents = yield* input.readUnpushedLocalEvents;
           if (unpushedLocalEvents.length === 0) {
@@ -735,8 +737,11 @@ export function createHistorySyncRunner(input: HistorySyncRunnerDependencies) {
       }
 
       if (isAutosave) {
-        console.info("[history-sync] reading remote max sequence for autosave");
-        const remoteMaxSequence = yield* input.readRemoteMaxSequence(connectionString);
+        const remoteMaxSequence =
+          autosaveRemoteMaxSequence ??
+          (yield* Effect.sync(() =>
+            console.info("[history-sync] reading remote max sequence for autosave"),
+          ).pipe(Effect.andThen(input.readRemoteMaxSequence(connectionString))));
         console.info("[history-sync] remote max sequence loaded for autosave", {
           remoteMaxSequence,
           lastSyncedRemoteSequence,
@@ -751,7 +756,7 @@ export function createHistorySyncRunner(input: HistorySyncRunnerDependencies) {
             connectionString,
             lastSyncedRemoteSequence,
           );
-          localEventsForAutosave = yield* input.readLocalEvents();
+          localEventsForAutosave = yield* input.readLocalEvents(lastSyncedRemoteSequence);
           const remoteDeltaPlan = planAutosaveRemoteDelta({
             remoteDeltaEvents,
             localEvents: localEventsForAutosave,

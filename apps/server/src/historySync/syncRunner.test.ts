@@ -310,6 +310,7 @@ describe("history sync runner", () => {
   test("autosave pauses on unknown remote events without pushing local history", async () => {
     const calls: string[] = [];
     const markStoppedCalls: string[] = [];
+    const localReadSequences: Array<number | undefined> = [];
     const { runner, statuses } = await Effect.runPromise(
       makeRunner(
         {
@@ -318,7 +319,11 @@ describe("history sync runner", () => {
             lastSyncedRemoteSequence: 1,
             lastSuccessfulSyncAt: "2026-05-01T00:00:00.000Z",
           }),
-          readLocalEvents: () => Effect.succeed([remoteEvent]),
+          readLocalEvents: (sequenceExclusive) =>
+            Effect.sync(() => {
+              localReadSequences.push(sequenceExclusive);
+              return [remoteEvent];
+            }),
           readRemoteMaxSequence: () => Effect.succeed(2),
           readRemoteEvents: () =>
             Effect.succeed([
@@ -342,6 +347,7 @@ describe("history sync runner", () => {
     );
 
     expect(markStoppedCalls).toEqual(["stopped"]);
+    expect(localReadSequences).toEqual([1]);
     expect(calls).not.toContain("push");
     expect(statuses.at(-1)).toEqual({
       state: "error",
@@ -349,6 +355,50 @@ describe("history sync runner", () => {
       message: HISTORY_SYNC_AUTOSAVE_REMOTE_CONFLICT_MESSAGE,
       lastSyncedAt: null,
     });
+  });
+
+  test("autosave accepts known remote deltas from the local tail without reading full local history", async () => {
+    const calls: string[] = [];
+    const localReadSequences: Array<number | undefined> = [];
+    let remoteMaxReads = 0;
+    const localTailEvent = projectEvent({ sequence: 8, projectId: "project-local" });
+    const remoteDeltaEvent = {
+      ...localTailEvent,
+      sequence: 8,
+      streamVersion: 8,
+    };
+    const { runner, statuses } = await Effect.runPromise(
+      makeRunner(
+        {
+          readState: Effect.succeed({
+            hasCompletedInitialSync: 1,
+            lastSyncedRemoteSequence: 7,
+            lastSuccessfulSyncAt: "2026-05-01T00:00:00.000Z",
+          }),
+          readRemoteMaxSequence: () =>
+            Effect.sync(() => {
+              remoteMaxReads += 1;
+              return 8;
+            }),
+          readRemoteEvents: () => Effect.succeed([remoteDeltaEvent]),
+          readLocalEvents: (sequenceExclusive) =>
+            Effect.sync(() => {
+              localReadSequences.push(sequenceExclusive);
+              return [localTailEvent];
+            }),
+          readUnpushedLocalEvents: Effect.succeed([localTailEvent]),
+        },
+        calls,
+      ),
+    );
+
+    await Effect.runPromise(runner.performSync({ mode: "autosave", markStopped: Effect.void }));
+
+    expect(remoteMaxReads).toBe(1);
+    expect(localReadSequences).toEqual([7]);
+    expect(calls).not.toContain("push");
+    expect(calls).toContain("commitReceiptsState");
+    expect(statuses.map((status) => status.state)).toEqual(["syncing", "idle"]);
   });
 
   test("autosave skips visible syncing status when nothing is pushable", async () => {
@@ -416,6 +466,7 @@ describe("history sync runner", () => {
 
   test("autosave pushes local events without reading full local history when remote is current", async () => {
     const calls: string[] = [];
+    let remoteMaxReads = 0;
     const local = [projectEvent({ sequence: 8, projectId: "project-local" })];
     const { runner, statuses } = await Effect.runPromise(
       makeRunner(
@@ -425,7 +476,11 @@ describe("history sync runner", () => {
             lastSyncedRemoteSequence: 7,
             lastSuccessfulSyncAt: "2026-05-01T00:00:00.000Z",
           }),
-          readRemoteMaxSequence: () => Effect.succeed(7),
+          readRemoteMaxSequence: () =>
+            Effect.sync(() => {
+              remoteMaxReads += 1;
+              return 7;
+            }),
           readUnpushedLocalEvents: Effect.sync(() => {
             calls.push("readUnpushed");
             return local;
@@ -442,6 +497,7 @@ describe("history sync runner", () => {
 
     await Effect.runPromise(runner.performSync({ mode: "autosave", markStopped: Effect.void }));
 
+    expect(remoteMaxReads).toBe(1);
     expect(calls).toContain("readUnpushed");
     expect(calls).not.toContain("readLocalEvents");
     expect(calls).toContain("push");

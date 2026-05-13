@@ -154,7 +154,10 @@ export function readUnpushedLocalEvents(sql: SqlClient.SqlClient) {
     FROM orchestration_events AS event
     LEFT JOIN history_sync_pushed_events AS receipt
       ON receipt.sequence = event.sequence
+    LEFT JOIN history_sync_state AS state
+      ON state.id = 1
     WHERE receipt.sequence IS NULL
+      AND event.sequence > COALESCE(state.last_synced_remote_sequence, 0)
     ORDER BY event.sequence ASC
   `;
 }
@@ -215,6 +218,17 @@ export function readPushedEventReceiptCount(sql: SqlClient.SqlClient) {
     `;
     return Number(rows[0]?.count ?? 0);
   });
+}
+
+export function prunePushedEventReceiptsThrough(
+  sql: SqlClient.SqlClient,
+  syncedRemoteSequence: number,
+) {
+  if (syncedRemoteSequence <= 0) return Effect.void;
+  return sql`
+    DELETE FROM history_sync_pushed_events
+    WHERE sequence <= ${syncedRemoteSequence}
+  `;
 }
 
 export function seedPushedEventReceiptsForCompletedSync(
@@ -550,7 +564,12 @@ export function commitHistorySyncState(
   sql: SqlClient.SqlClient,
   input: WriteHistorySyncStateInput,
 ) {
-  return writeState(sql, input);
+  return sql.withTransaction(
+    Effect.gen(function* () {
+      yield* writeState(sql, input);
+      yield* prunePushedEventReceiptsThrough(sql, input.lastSyncedRemoteSequence);
+    }),
+  );
 }
 
 export function commitPushedEventReceiptsAndState(
@@ -565,6 +584,7 @@ export function commitPushedEventReceiptsAndState(
     Effect.gen(function* () {
       yield* writePushedEventReceipts(sql, input.events, input.pushedAt);
       yield* writeState(sql, input.state);
+      yield* prunePushedEventReceiptsThrough(sql, input.state.lastSyncedRemoteSequence);
     }),
   );
 }
