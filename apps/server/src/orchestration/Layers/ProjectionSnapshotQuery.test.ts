@@ -21,6 +21,7 @@ import {
   THREAD_DETAIL_INITIAL_CHECKPOINT_LIMIT,
   THREAD_DETAIL_INITIAL_MESSAGE_LIMIT,
   THREAD_DETAIL_INITIAL_PROPOSED_PLAN_LIMIT,
+  THREAD_DETAIL_INITIAL_RESOURCE_WINDOW_LIMIT,
 } from "./ProjectionSnapshotQuery.ts";
 import { ProjectionSnapshotQuery } from "../Services/ProjectionSnapshotQuery.ts";
 
@@ -1407,48 +1408,48 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
         });
         assert.equal(
           subscriptionSnapshot.value.thread.activities.length,
-          THREAD_DETAIL_INITIAL_ACTIVITY_LIMIT,
+          THREAD_DETAIL_INITIAL_ACTIVITY_LIMIT + 10,
         );
         assert.equal(
           subscriptionSnapshot.value.thread.activities[0]?.id,
-          asEventId("activity-0010"),
+          asEventId("activity-0000"),
         );
         assert.equal(
           subscriptionSnapshot.value.thread.activities.at(-1)?.id,
           asEventId("activity-0509"),
         );
         assert.deepEqual(subscriptionSnapshot.value.pageInfo.activities, {
-          limit: THREAD_DETAIL_INITIAL_ACTIVITY_LIMIT,
-          included: THREAD_DETAIL_INITIAL_ACTIVITY_LIMIT,
-          hasMoreBefore: true,
+          limit: THREAD_DETAIL_INITIAL_RESOURCE_WINDOW_LIMIT,
+          included: THREAD_DETAIL_INITIAL_ACTIVITY_LIMIT + 10,
+          hasMoreBefore: false,
         });
         assert.equal(
           subscriptionSnapshot.value.thread.proposedPlans.length,
-          THREAD_DETAIL_INITIAL_PROPOSED_PLAN_LIMIT,
+          THREAD_DETAIL_INITIAL_PROPOSED_PLAN_LIMIT + 10,
         );
-        assert.equal(subscriptionSnapshot.value.thread.proposedPlans[0]?.id, "plan-0010");
+        assert.equal(subscriptionSnapshot.value.thread.proposedPlans[0]?.id, "plan-0000");
         assert.equal(subscriptionSnapshot.value.thread.proposedPlans.at(-1)?.id, "plan-0509");
         assert.deepEqual(subscriptionSnapshot.value.pageInfo.proposedPlans, {
-          limit: THREAD_DETAIL_INITIAL_PROPOSED_PLAN_LIMIT,
-          included: THREAD_DETAIL_INITIAL_PROPOSED_PLAN_LIMIT,
-          hasMoreBefore: true,
+          limit: THREAD_DETAIL_INITIAL_RESOURCE_WINDOW_LIMIT,
+          included: THREAD_DETAIL_INITIAL_PROPOSED_PLAN_LIMIT + 10,
+          hasMoreBefore: false,
         });
         assert.equal(
           subscriptionSnapshot.value.thread.checkpoints.length,
-          THREAD_DETAIL_INITIAL_CHECKPOINT_LIMIT,
+          THREAD_DETAIL_INITIAL_CHECKPOINT_LIMIT + 10,
         );
         assert.equal(
           subscriptionSnapshot.value.thread.checkpoints[0]?.checkpointRef,
-          asCheckpointRef("checkpoint-0010"),
+          asCheckpointRef("checkpoint-0000"),
         );
         assert.equal(
           subscriptionSnapshot.value.thread.checkpoints.at(-1)?.checkpointRef,
           asCheckpointRef("checkpoint-0509"),
         );
         assert.deepEqual(subscriptionSnapshot.value.pageInfo.checkpoints, {
-          limit: THREAD_DETAIL_INITIAL_CHECKPOINT_LIMIT,
-          included: THREAD_DETAIL_INITIAL_CHECKPOINT_LIMIT,
-          hasMoreBefore: true,
+          limit: THREAD_DETAIL_INITIAL_RESOURCE_WINDOW_LIMIT,
+          included: THREAD_DETAIL_INITIAL_CHECKPOINT_LIMIT + 10,
+          hasMoreBefore: false,
         });
 
         const olderPage = yield* snapshotQuery.getThreadMessagesPageBefore({
@@ -1478,69 +1479,46 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
 
         const olderActivitiesPage = yield* snapshotQuery.getThreadActivitiesPageBefore({
           threadId: ThreadId.make("thread-1"),
-          beforeActivityId: asEventId("activity-0010"),
+          beforeActivityId: asEventId("activity-0000"),
           limit: 6,
         });
         assert.equal(olderActivitiesPage._tag, "Some");
         if (olderActivitiesPage._tag === "Some") {
-          assert.deepEqual(
-            olderActivitiesPage.value.activities.map((activity) => activity.id),
-            [
-              asEventId("activity-0004"),
-              asEventId("activity-0005"),
-              asEventId("activity-0006"),
-              asEventId("activity-0007"),
-              asEventId("activity-0008"),
-              asEventId("activity-0009"),
-            ],
-          );
+          assert.deepEqual(olderActivitiesPage.value.activities, []);
           assert.deepEqual(olderActivitiesPage.value.pageInfo, {
             limit: 6,
-            included: 6,
-            hasMoreBefore: true,
+            included: 0,
+            hasMoreBefore: false,
           });
         }
 
         const olderProposedPlansPage = yield* snapshotQuery.getThreadProposedPlansPageBefore({
           threadId: ThreadId.make("thread-1"),
-          beforeProposedPlanId: "plan-0010",
+          beforeProposedPlanId: "plan-0000",
           limit: 6,
         });
         assert.equal(olderProposedPlansPage._tag, "Some");
         if (olderProposedPlansPage._tag === "Some") {
-          assert.deepEqual(
-            olderProposedPlansPage.value.proposedPlans.map((plan) => plan.id),
-            ["plan-0004", "plan-0005", "plan-0006", "plan-0007", "plan-0008", "plan-0009"],
-          );
+          assert.deepEqual(olderProposedPlansPage.value.proposedPlans, []);
           assert.deepEqual(olderProposedPlansPage.value.pageInfo, {
             limit: 6,
-            included: 6,
-            hasMoreBefore: true,
+            included: 0,
+            hasMoreBefore: false,
           });
         }
 
         const olderCheckpointsPage = yield* snapshotQuery.getThreadCheckpointsPageBefore({
           threadId: ThreadId.make("thread-1"),
-          beforeCheckpointTurnCount: 10,
+          beforeCheckpointTurnCount: 0,
           limit: 6,
         });
         assert.equal(olderCheckpointsPage._tag, "Some");
         if (olderCheckpointsPage._tag === "Some") {
-          assert.deepEqual(
-            olderCheckpointsPage.value.checkpoints.map((checkpoint) => checkpoint.checkpointRef),
-            [
-              asCheckpointRef("checkpoint-0004"),
-              asCheckpointRef("checkpoint-0005"),
-              asCheckpointRef("checkpoint-0006"),
-              asCheckpointRef("checkpoint-0007"),
-              asCheckpointRef("checkpoint-0008"),
-              asCheckpointRef("checkpoint-0009"),
-            ],
-          );
+          assert.deepEqual(olderCheckpointsPage.value.checkpoints, []);
           assert.deepEqual(olderCheckpointsPage.value.pageInfo, {
             limit: 6,
-            included: 6,
-            hasMoreBefore: true,
+            included: 0,
+            hasMoreBefore: false,
           });
         }
       }
@@ -1696,7 +1674,7 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
           [asEventId("visible-activity-1"), asEventId("visible-activity-2")],
         );
         assert.deepEqual(subscriptionSnapshot.value.pageInfo.activities, {
-          limit: THREAD_DETAIL_INITIAL_ACTIVITY_LIMIT,
+          limit: THREAD_DETAIL_INITIAL_RESOURCE_WINDOW_LIMIT,
           included: 2,
           hasMoreBefore: false,
         });

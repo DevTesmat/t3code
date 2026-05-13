@@ -384,6 +384,71 @@ describe("history sync runner", () => {
     expect(statuses).toEqual([]);
   });
 
+  test("autosave still asks for initial sync before reading local history", async () => {
+    const calls: string[] = [];
+    const { runner, statuses } = await Effect.runPromise(
+      makeRunner(
+        {
+          readState: Effect.succeed({
+            hasCompletedInitialSync: 0,
+            lastSyncedRemoteSequence: 0,
+            lastSuccessfulSyncAt: null,
+          }),
+          readLocalEvents: () =>
+            Effect.sync(() => {
+              calls.push("readLocalEvents");
+              return [remoteEvent];
+            }),
+        },
+        calls,
+      ),
+    );
+
+    await Effect.runPromise(runner.performSync({ mode: "autosave", markStopped: Effect.void }));
+
+    expect(calls).not.toContain("readLocalEvents");
+    expect(statuses.at(-1)).toEqual({
+      state: "needs-initial-sync",
+      configured: true,
+      lastSyncedAt: null,
+    });
+  });
+
+  test("autosave pushes local events without reading full local history when remote is current", async () => {
+    const calls: string[] = [];
+    const local = [projectEvent({ sequence: 8, projectId: "project-local" })];
+    const { runner, statuses } = await Effect.runPromise(
+      makeRunner(
+        {
+          readState: Effect.succeed({
+            hasCompletedInitialSync: 1,
+            lastSyncedRemoteSequence: 7,
+            lastSuccessfulSyncAt: "2026-05-01T00:00:00.000Z",
+          }),
+          readRemoteMaxSequence: () => Effect.succeed(7),
+          readUnpushedLocalEvents: Effect.sync(() => {
+            calls.push("readUnpushed");
+            return local;
+          }),
+          readLocalEvents: () =>
+            Effect.sync(() => {
+              calls.push("readLocalEvents");
+              return [remoteEvent, ...local];
+            }),
+        },
+        calls,
+      ),
+    );
+
+    await Effect.runPromise(runner.performSync({ mode: "autosave", markStopped: Effect.void }));
+
+    expect(calls).toContain("readUnpushed");
+    expect(calls).not.toContain("readLocalEvents");
+    expect(calls).toContain("push");
+    expect(calls).toContain("commitReceiptsState");
+    expect(statuses.map((status) => status.state)).toEqual(["syncing", "idle"]);
+  });
+
   test("full sync skips latest-first bootstrap for small remote deltas", async () => {
     const calls: string[] = [];
     const { runner, statuses } = await Effect.runPromise(
@@ -443,6 +508,41 @@ describe("history sync runner", () => {
     expect(calls).not.toContain("readLocalEvents");
     expect(calls).toContain("commitState");
     expect(statuses.at(-1)).toMatchObject({ state: "idle", configured: true });
+  });
+
+  test("completed full sync pushes local pending events without reading full local history", async () => {
+    const calls: string[] = [];
+    const local = [projectEvent({ sequence: 8, projectId: "project-local" })];
+    const { runner, statuses } = await Effect.runPromise(
+      makeRunner(
+        {
+          readState: Effect.succeed({
+            hasCompletedInitialSync: 1,
+            lastSyncedRemoteSequence: 7,
+            lastSuccessfulSyncAt: "2026-05-01T00:00:00.000Z",
+          }),
+          readRemoteMaxSequence: () => Effect.succeed(7),
+          readUnpushedLocalEvents: Effect.sync(() => {
+            calls.push("readUnpushed");
+            return local;
+          }),
+          readLocalEvents: () =>
+            Effect.sync(() => {
+              calls.push("readLocalEvents");
+              return [remoteEvent, ...local];
+            }),
+        },
+        calls,
+      ),
+    );
+
+    await Effect.runPromise(runner.performSync({ mode: "full", markStopped: Effect.void }));
+
+    expect(calls).toContain("readUnpushed");
+    expect(calls).not.toContain("readLocalEvents");
+    expect(calls).toContain("push");
+    expect(calls).toContain("commitReceiptsState");
+    expect(statuses.map((status) => status.state)).toEqual(["syncing", "idle"]);
   });
 
   test("latest-first bootstrap dedupes page imports with bounded local refs", async () => {

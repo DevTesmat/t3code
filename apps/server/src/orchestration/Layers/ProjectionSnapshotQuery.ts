@@ -227,6 +227,21 @@ export const THREAD_DETAIL_INITIAL_MESSAGE_LIMIT = 500;
 export const THREAD_DETAIL_INITIAL_ACTIVITY_LIMIT = 500;
 export const THREAD_DETAIL_INITIAL_PROPOSED_PLAN_LIMIT = 500;
 export const THREAD_DETAIL_INITIAL_CHECKPOINT_LIMIT = 500;
+// Extra cap for resources needed to render the initial message window without a repair repaint.
+export const THREAD_DETAIL_INITIAL_RESOURCE_WINDOW_LIMIT = 10_000;
+
+function threadDetailResourceNeedsWindowBackfill(
+  oldestResourceAt: string | null,
+  targetStartAt: string | null,
+  hasMoreBefore: boolean,
+): boolean {
+  return (
+    hasMoreBefore &&
+    oldestResourceAt !== null &&
+    targetStartAt !== null &&
+    oldestResourceAt > targetStartAt
+  );
+}
 
 function maxIso(left: string | null, right: string): string {
   if (left === null) {
@@ -1514,6 +1529,195 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
       `,
   });
 
+  const extendActivityRowsToMessageWindow = (input: {
+    readonly threadId: ThreadId;
+    readonly rows: readonly Schema.Schema.Type<typeof ProjectionThreadActivityDbRowSchema>[];
+    readonly targetStartAt: string | null;
+    readonly hasMoreBefore: boolean;
+  }) =>
+    Effect.gen(function* () {
+      const olderChunks: Array<Schema.Schema.Type<typeof ProjectionThreadActivityDbRowSchema>[]> =
+        [];
+      let rowCount = input.rows.length;
+      let firstRow = input.rows[0] ?? null;
+      let hasMoreBefore = input.hasMoreBefore;
+      while (
+        rowCount < THREAD_DETAIL_INITIAL_RESOURCE_WINDOW_LIMIT &&
+        threadDetailResourceNeedsWindowBackfill(
+          firstRow?.createdAt ?? null,
+          input.targetStartAt,
+          hasMoreBefore,
+        )
+      ) {
+        const beforeActivityId = firstRow?.activityId;
+        if (!beforeActivityId) break;
+        const remaining = THREAD_DETAIL_INITIAL_RESOURCE_WINDOW_LIMIT - rowCount;
+        const fetchLimit = Math.min(THREAD_DETAIL_INITIAL_ACTIVITY_LIMIT, remaining) + 1;
+        const pageRows = yield* listThreadActivityRowsBeforeActivity({
+          threadId: input.threadId,
+          beforeActivityId,
+          limit: fetchLimit,
+        }).pipe(
+          Effect.mapError(
+            toPersistenceSqlOrDecodeError(
+              "ProjectionSnapshotQuery.getThreadDetailSnapshotById:listOlderActivities:query",
+              "ProjectionSnapshotQuery.getThreadDetailSnapshotById:listOlderActivities:decodeRows",
+            ),
+          ),
+        );
+        hasMoreBefore = pageRows.length > fetchLimit - 1;
+        const visibleRows = hasMoreBefore ? pageRows.slice(1) : pageRows;
+        if (visibleRows.length === 0) break;
+        olderChunks.push(visibleRows);
+        rowCount += visibleRows.length;
+        firstRow = visibleRows[0] ?? firstRow;
+      }
+
+      const rows =
+        olderChunks.length === 0
+          ? [...input.rows]
+          : olderChunks
+              .toReversed()
+              .flatMap((chunk) => chunk)
+              .concat(input.rows);
+      return {
+        rows,
+        hasMoreBefore:
+          hasMoreBefore ||
+          threadDetailResourceNeedsWindowBackfill(
+            rows[0]?.createdAt ?? null,
+            input.targetStartAt,
+            rows.length >= THREAD_DETAIL_INITIAL_RESOURCE_WINDOW_LIMIT,
+          ),
+      };
+    });
+
+  const extendProposedPlanRowsToMessageWindow = (input: {
+    readonly threadId: ThreadId;
+    readonly rows: readonly Schema.Schema.Type<typeof ProjectionThreadProposedPlanDbRowSchema>[];
+    readonly targetStartAt: string | null;
+    readonly hasMoreBefore: boolean;
+  }) =>
+    Effect.gen(function* () {
+      const olderChunks: Array<
+        Schema.Schema.Type<typeof ProjectionThreadProposedPlanDbRowSchema>[]
+      > = [];
+      let rowCount = input.rows.length;
+      let firstRow = input.rows[0] ?? null;
+      let hasMoreBefore = input.hasMoreBefore;
+      while (
+        rowCount < THREAD_DETAIL_INITIAL_RESOURCE_WINDOW_LIMIT &&
+        threadDetailResourceNeedsWindowBackfill(
+          firstRow?.createdAt ?? null,
+          input.targetStartAt,
+          hasMoreBefore,
+        )
+      ) {
+        const beforeProposedPlanId = firstRow?.planId;
+        if (!beforeProposedPlanId) break;
+        const remaining = THREAD_DETAIL_INITIAL_RESOURCE_WINDOW_LIMIT - rowCount;
+        const fetchLimit = Math.min(THREAD_DETAIL_INITIAL_PROPOSED_PLAN_LIMIT, remaining) + 1;
+        const pageRows = yield* listThreadProposedPlanRowsBeforePlan({
+          threadId: input.threadId,
+          beforeProposedPlanId,
+          limit: fetchLimit,
+        }).pipe(
+          Effect.mapError(
+            toPersistenceSqlOrDecodeError(
+              "ProjectionSnapshotQuery.getThreadDetailSnapshotById:listOlderPlans:query",
+              "ProjectionSnapshotQuery.getThreadDetailSnapshotById:listOlderPlans:decodeRows",
+            ),
+          ),
+        );
+        hasMoreBefore = pageRows.length > fetchLimit - 1;
+        const visibleRows = hasMoreBefore ? pageRows.slice(1) : pageRows;
+        if (visibleRows.length === 0) break;
+        olderChunks.push(visibleRows);
+        rowCount += visibleRows.length;
+        firstRow = visibleRows[0] ?? firstRow;
+      }
+
+      const rows =
+        olderChunks.length === 0
+          ? [...input.rows]
+          : olderChunks
+              .toReversed()
+              .flatMap((chunk) => chunk)
+              .concat(input.rows);
+      return {
+        rows,
+        hasMoreBefore:
+          hasMoreBefore ||
+          threadDetailResourceNeedsWindowBackfill(
+            rows[0]?.createdAt ?? null,
+            input.targetStartAt,
+            rows.length >= THREAD_DETAIL_INITIAL_RESOURCE_WINDOW_LIMIT,
+          ),
+      };
+    });
+
+  const extendCheckpointRowsToMessageWindow = (input: {
+    readonly threadId: ThreadId;
+    readonly rows: readonly Schema.Schema.Type<typeof ProjectionCheckpointDbRowSchema>[];
+    readonly targetStartAt: string | null;
+    readonly hasMoreBefore: boolean;
+  }) =>
+    Effect.gen(function* () {
+      const olderChunks: Array<Schema.Schema.Type<typeof ProjectionCheckpointDbRowSchema>[]> = [];
+      let rowCount = input.rows.length;
+      let firstRow = input.rows[0] ?? null;
+      let hasMoreBefore = input.hasMoreBefore;
+      while (
+        rowCount < THREAD_DETAIL_INITIAL_RESOURCE_WINDOW_LIMIT &&
+        threadDetailResourceNeedsWindowBackfill(
+          firstRow?.completedAt ?? null,
+          input.targetStartAt,
+          hasMoreBefore,
+        )
+      ) {
+        const beforeCheckpointTurnCount = firstRow?.checkpointTurnCount;
+        if (beforeCheckpointTurnCount === undefined) break;
+        const remaining = THREAD_DETAIL_INITIAL_RESOURCE_WINDOW_LIMIT - rowCount;
+        const fetchLimit = Math.min(THREAD_DETAIL_INITIAL_CHECKPOINT_LIMIT, remaining) + 1;
+        const pageRows = yield* listCheckpointRowsBeforeTurnCount({
+          threadId: input.threadId,
+          beforeCheckpointTurnCount,
+          limit: fetchLimit,
+        }).pipe(
+          Effect.mapError(
+            toPersistenceSqlOrDecodeError(
+              "ProjectionSnapshotQuery.getThreadDetailSnapshotById:listOlderCheckpoints:query",
+              "ProjectionSnapshotQuery.getThreadDetailSnapshotById:listOlderCheckpoints:decodeRows",
+            ),
+          ),
+        );
+        hasMoreBefore = pageRows.length > fetchLimit - 1;
+        const visibleRows = hasMoreBefore ? pageRows.slice(1) : pageRows;
+        if (visibleRows.length === 0) break;
+        olderChunks.push(visibleRows);
+        rowCount += visibleRows.length;
+        firstRow = visibleRows[0] ?? firstRow;
+      }
+
+      const rows =
+        olderChunks.length === 0
+          ? [...input.rows]
+          : olderChunks
+              .toReversed()
+              .flatMap((chunk) => chunk)
+              .concat(input.rows);
+      return {
+        rows,
+        hasMoreBefore:
+          hasMoreBefore ||
+          threadDetailResourceNeedsWindowBackfill(
+            rows[0]?.completedAt ?? null,
+            input.targetStartAt,
+            rows.length >= THREAD_DETAIL_INITIAL_RESOURCE_WINDOW_LIMIT,
+          ),
+      };
+    });
+
   const getSnapshot: ProjectionSnapshotQueryShape["getSnapshot"] = () =>
     sql
       .withTransaction(
@@ -2635,6 +2839,28 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
       const visibleCheckpointRows = hasMoreCheckpointsBefore
         ? checkpointRows.slice(1)
         : checkpointRows;
+      const oldestVisibleMessageAt = visibleMessageRows[0]?.createdAt ?? null;
+      const [coherentActivityWindow, coherentProposedPlanWindow, coherentCheckpointWindow] =
+        yield* Effect.all([
+          extendActivityRowsToMessageWindow({
+            threadId,
+            rows: visibleActivityRows,
+            targetStartAt: oldestVisibleMessageAt,
+            hasMoreBefore: hasMoreActivitiesBefore,
+          }),
+          extendProposedPlanRowsToMessageWindow({
+            threadId,
+            rows: visibleProposedPlanRows,
+            targetStartAt: oldestVisibleMessageAt,
+            hasMoreBefore: hasMoreProposedPlansBefore,
+          }),
+          extendCheckpointRowsToMessageWindow({
+            threadId,
+            rows: visibleCheckpointRows,
+            targetStartAt: oldestVisibleMessageAt,
+            hasMoreBefore: hasMoreCheckpointsBefore,
+          }),
+        ]);
       const thread = {
         id: threadRow.value.threadId,
         projectId: threadRow.value.projectId,
@@ -2654,7 +2880,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
         archivedAt: threadRow.value.archivedAt,
         deletedAt: null,
         messages: mapThreadMessageRows(visibleMessageRows),
-        proposedPlans: visibleProposedPlanRows.map((row) => ({
+        proposedPlans: coherentProposedPlanWindow.rows.map((row) => ({
           id: row.planId,
           turnId: row.turnId,
           planMarkdown: row.planMarkdown,
@@ -2663,7 +2889,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           createdAt: row.createdAt,
           updatedAt: row.updatedAt,
         })),
-        activities: visibleActivityRows.map((row) => {
+        activities: coherentActivityWindow.rows.map((row) => {
           const activity = {
             id: row.activityId,
             tone: row.tone,
@@ -2678,7 +2904,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           }
           return activity;
         }),
-        checkpoints: visibleCheckpointRows.map((row) => ({
+        checkpoints: coherentCheckpointWindow.rows.map((row) => ({
           turnId: row.turnId,
           checkpointTurnCount: row.checkpointTurnCount,
           checkpointRef: row.checkpointRef,
@@ -2707,19 +2933,19 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
             hasMoreBefore: hasMoreMessagesBefore,
           },
           activities: {
-            limit: activityLimit,
-            included: visibleActivityRows.length,
-            hasMoreBefore: hasMoreActivitiesBefore,
+            limit: THREAD_DETAIL_INITIAL_RESOURCE_WINDOW_LIMIT,
+            included: coherentActivityWindow.rows.length,
+            hasMoreBefore: coherentActivityWindow.hasMoreBefore,
           },
           proposedPlans: {
-            limit: proposedPlanLimit,
-            included: visibleProposedPlanRows.length,
-            hasMoreBefore: hasMoreProposedPlansBefore,
+            limit: THREAD_DETAIL_INITIAL_RESOURCE_WINDOW_LIMIT,
+            included: coherentProposedPlanWindow.rows.length,
+            hasMoreBefore: coherentProposedPlanWindow.hasMoreBefore,
           },
           checkpoints: {
-            limit: checkpointLimit,
-            included: visibleCheckpointRows.length,
-            hasMoreBefore: hasMoreCheckpointsBefore,
+            limit: THREAD_DETAIL_INITIAL_RESOURCE_WINDOW_LIMIT,
+            included: coherentCheckpointWindow.rows.length,
+            hasMoreBefore: coherentCheckpointWindow.hasMoreBefore,
           },
         },
       });

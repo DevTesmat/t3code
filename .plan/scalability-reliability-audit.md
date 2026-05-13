@@ -292,6 +292,8 @@ Progress notes:
 - The project mapping wizard now reads remote project candidates from the remote project/thread indexes instead of requiring full remote event history. The older event-based planner remains available for sync paths that already have event pages loaded or for fallback compatibility.
 - Autosave pushability now treats a thread as settled when a provider session transitions from an observed active turn to a settled session with `activeTurnId: null`, even if the provider produced no `thread.turn-diff-completed` event. This keeps text-only/no-diff turns from remaining permanently deferred while still keeping active turns unpushable.
 - The right-side Tasks/Plan visualization and its composer toggle are temporarily disabled because the sidebar lifecycle is not reliable enough under sync refreshes and thread changes. Plan creation, refinement, import, and implementation remain enabled; the sidebar needs a separate redesign before it is reintroduced.
+- Autosave no longer reads the full local event log on the common completed-sync path where remote history has not advanced. Pushability and push planning use unpushed local events plus projection thread state, avoiding multi-GB transient server allocations when autosave starts after sending a message.
+- Completed full-sync startup now uses the same bounded push planner when remote history is current but local receipt state has a few pending events. This avoids reading the full local event log just to push a small startup tail.
 
 ### Stage 7: Frontend Active Thread Derivation
 
@@ -307,6 +309,7 @@ Progress notes:
 - Fixed a streaming flicker regression in the active timeline: message/reasoning content length changes no longer schedule an imperative `scrollToEnd` on every streamed chunk. LegendList remains the scroll owner through `maintainScrollAtEnd`, avoiding scroll anchoring fights while the agent is working.
 - Thread history pagination now loads a coherent detail window instead of repainting one resource at a time: older message pages are paired with any older activities, proposed plans, and checkpoints needed to cover the same oldest message timestamp, then committed in one store update with viewport anchoring. The previous 1-second backfill polling loop has been replaced by deterministic window backfill.
 - Timeline work-group row ids now anchor to the following timeline boundary when available, so prepending older work events no longer renames/remounts an already visible work group.
+- Initial thread-detail snapshots now use the latest message page as the visual anchor and extend activities, proposed plans, and checkpoints back to the same oldest message timestamp before publishing the snapshot. This avoids refresh/sync first-paint flicker on event-dense threads where 500 activities covers far less time than 500 chat messages.
 
 ### Stage 8: Frontend Global List Scaling
 
