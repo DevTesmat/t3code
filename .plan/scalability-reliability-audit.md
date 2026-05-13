@@ -296,19 +296,23 @@ Progress notes:
 - Completed full-sync startup now uses the same bounded push planner when remote history is current but local receipt state has a few pending events. This avoids reading the full local event log just to push a small startup tail.
 - Autosave now reuses the pre-visible-sync remote max sequence read for the visible push path and reads only the local tail after `lastSyncedRemoteSequence` when validating remote deltas. This removes one duplicate MySQL round trip and avoids full local-history materialization when another device has only already-known remote events.
 - `lastSyncedRemoteSequence` is now the compact cursor for contiguous pushed/imported history. `readUnpushedLocalEvents` ignores events at or below that cursor even when their individual receipt rows have been pruned, and successful state commits delete obsolete `history_sync_pushed_events` rows at or below the cursor. Receipt rows are retained only for non-contiguous future acknowledgements that still matter for advancing the cursor.
+- Autosave push planning now reads a one-event overlap at the remote/local cursor so a completed turn followed by a trailing `checkpoint.captured` activity remains pushable after the `thread.turn-diff-completed` event has already been synced. This keeps the bounded planner from losing the completion boundary and blocking later completed turns behind the checkpoint activity.
 - Stage 6 is considered complete for normal autosave/startup, latest-first, priority-thread, append, and mapping flows. Explicit full initial sync, destructive recovery, and no-index remote fallback still intentionally have broader materialization behavior because those paths need a separate architecture/recovery design rather than local hot-path optimization.
 
 ### Stage 7: Frontend Active Thread Derivation
 
-- [ ] Build a shared per-thread activity projection so ChatView does not sort/scan activities multiple times per event.
-- [ ] Make message updates append-friendly in store and avoid rebuilding full `ids` and `byId` records for each streaming delta.
-- [ ] Review timeline auto-scroll content key generation for work rows so it avoids large string construction on every update.
-- [ ] Add performance-oriented tests or benchmarks for streaming assistant deltas and activity bursts.
+- [x] Build a shared per-thread activity projection so ChatView does not sort/scan activities multiple times per event.
+- [x] Make message updates append-friendly in store and avoid rebuilding full `ids` and `byId` records for each streaming delta.
+- [x] Review timeline auto-scroll content key generation for work rows so it avoids large string construction on every update.
+- [x] Add performance-oriented tests or benchmarks for streaming assistant deltas and activity bursts.
 
 Expected outcome: active chat CPU cost is bounded by changed/visible data where practical.
 
 Progress notes:
 
+- `ChatView` now uses a single `deriveThreadActivityProjection` memo for active-thread activity-derived state: work log entries, reasoning segments, subagents, subagent transcripts, pending approvals, pending user inputs, active plan state, and latest-turn tool presence. The underlying derivations share one ordered activity pass instead of independently sorting/scanning the activity list on each render.
+- Streaming message updates now replace only the changed message slot and incrementally update the normalized message slice. Existing message id arrays are reused when an existing message streams more text, and unaffected message objects keep their references.
+- Timeline work-row key generation was reviewed against the existing regression coverage: row ids already use stable tool keys or following message-boundary ids instead of serializing row content, and tests cover lifecycle id changes plus prepending older work before visible rows. Stage 7 adds projection equivalence coverage and store reference-retention coverage for streaming message deltas.
 - Fixed a streaming flicker regression in the active timeline: message/reasoning content length changes no longer schedule an imperative `scrollToEnd` on every streamed chunk. LegendList remains the scroll owner through `maintainScrollAtEnd`, avoiding scroll anchoring fights while the agent is working.
 - Thread history pagination now loads a coherent detail window instead of repainting one resource at a time: older message pages are paired with any older activities, proposed plans, and checkpoints needed to cover the same oldest message timestamp, then committed in one store update with viewport anchoring. The previous 1-second backfill polling loop has been replaced by deterministic window backfill.
 - Timeline work-group row ids now anchor to the following timeline boundary when available, so prepending older work events no longer renames/remounts an already visible work group.

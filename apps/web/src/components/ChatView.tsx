@@ -56,20 +56,14 @@ import {
 } from "../composer-logic";
 import {
   deriveCompletionDividerBeforeEntryId,
-  derivePendingApprovals,
-  derivePendingUserInputs,
   derivePhase,
   deriveTimelineEntries,
   deriveActiveTurnActivityState,
   deriveThreadWorkDurationMs,
-  deriveThreadSubagents,
-  deriveThreadSubagentTranscripts,
-  deriveActivePlanState,
-  deriveReasoningSegments,
   findSidebarProposedPlan,
   findLatestProposedPlan,
+  deriveThreadActivityProjection,
   deriveWorkLogEntries,
-  hasToolActivityForTurn,
   isLatestTurnSettled,
   shouldShowPlanFollowUpPrompt,
   formatElapsed,
@@ -1272,22 +1266,14 @@ export default function ChatView(props: ChatViewProps) {
   const activeThreadNeedsResume = activeThread?.session?.orchestrationStatus === "needs_resume";
   const composerPhase: SessionPhase = activeTurnRunning ? "running" : phase;
   const threadActivities = activeThread?.activities ?? EMPTY_ACTIVITIES;
-  const workLogEntries = useMemo(
-    () => deriveWorkLogEntries(threadActivities, undefined),
-    [threadActivities],
+  const threadActivityProjection = useMemo(
+    () => deriveThreadActivityProjection(threadActivities, activeLatestTurn?.turnId ?? undefined),
+    [activeLatestTurn?.turnId, threadActivities],
   );
-  const reasoningSegments = useMemo(
-    () => deriveReasoningSegments(threadActivities),
-    [threadActivities],
-  );
-  const threadSubagents = useMemo(
-    () => deriveThreadSubagents(threadActivities),
-    [threadActivities],
-  );
-  const threadSubagentTranscripts = useMemo(
-    () => deriveThreadSubagentTranscripts(threadActivities),
-    [threadActivities],
-  );
+  const workLogEntries = threadActivityProjection.workLogEntries;
+  const reasoningSegments = threadActivityProjection.reasoningSegments;
+  const threadSubagents = threadActivityProjection.threadSubagents;
+  const threadSubagentTranscripts = threadActivityProjection.threadSubagentTranscripts;
   const selectedSubagentThreadId = rawSearch.subagent ?? null;
   const selectedSubagentTranscript = useMemo(
     () =>
@@ -1329,18 +1315,9 @@ export default function ChatView(props: ChatViewProps) {
       }),
     });
   }, [environmentId, isServerThread, navigate, threadId]);
-  const latestTurnHasToolActivity = useMemo(
-    () => hasToolActivityForTurn(threadActivities, activeLatestTurn?.turnId),
-    [activeLatestTurn?.turnId, threadActivities],
-  );
-  const pendingApprovals = useMemo(
-    () => derivePendingApprovals(threadActivities),
-    [threadActivities],
-  );
-  const pendingUserInputs = useMemo(
-    () => derivePendingUserInputs(threadActivities),
-    [threadActivities],
-  );
+  const latestTurnHasToolActivity = threadActivityProjection.latestTurnHasToolActivity;
+  const pendingApprovals = threadActivityProjection.pendingApprovals;
+  const pendingUserInputs = threadActivityProjection.pendingUserInputs;
   const activePendingUserInput = pendingUserInputs[0] ?? null;
   const activePendingDraftAnswers = useMemo(
     () =>
@@ -1393,10 +1370,7 @@ export default function ChatView(props: ChatViewProps) {
       }),
     [activeLatestTurn, activeThread?.id, latestTurnSettled, threadPlanCatalog],
   );
-  const activePlan = useMemo(
-    () => deriveActivePlanState(threadActivities, activeLatestTurn?.turnId ?? undefined),
-    [activeLatestTurn?.turnId, threadActivities],
-  );
+  const activePlan = threadActivityProjection.activePlan;
   const planSidebarLabel = sidebarProposedPlan || interactionMode === "plan" ? "Plan" : "Tasks";
   const showPlanFollowUpPrompt = shouldShowPlanFollowUpPrompt({
     pendingApprovalCount: pendingApprovals.length,

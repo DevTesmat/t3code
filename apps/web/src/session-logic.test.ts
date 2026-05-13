@@ -14,6 +14,7 @@ import {
   deriveThreadWorkDurationMs,
   deriveThreadSubagents,
   deriveThreadSubagentTranscripts,
+  deriveThreadActivityProjection,
   deriveActivePlanState,
   derivePendingApprovals,
   derivePendingUserInputs,
@@ -632,6 +633,95 @@ describe("deriveThreadSubagentTranscripts", () => {
         streaming: true,
       },
     ]);
+  });
+});
+
+describe("deriveThreadActivityProjection", () => {
+  it("matches individual active-thread activity derivations from one shared projection", () => {
+    const activities: OrchestrationThreadActivity[] = [
+      makeActivity({
+        id: "approval-resolved",
+        createdAt: "2026-02-23T00:00:06.000Z",
+        kind: "approval.resolved",
+        payload: { requestId: "approval-1" },
+      }),
+      makeActivity({
+        id: "approval-requested",
+        createdAt: "2026-02-23T00:00:05.000Z",
+        kind: "approval.requested",
+        payload: { requestId: "approval-1", requestKind: "command", detail: "Run test" },
+      }),
+      makeActivity({
+        id: "user-input-requested",
+        createdAt: "2026-02-23T00:00:07.000Z",
+        kind: "user-input.requested",
+        payload: {
+          requestId: "input-1",
+          questions: [
+            {
+              id: "choice",
+              header: "Choice",
+              question: "Pick one",
+              options: [{ label: "A", description: "Use A" }],
+            },
+          ],
+        },
+      }),
+      makeActivity({
+        id: "reasoning-delta",
+        createdAt: "2026-02-23T00:00:02.000Z",
+        kind: "reasoning.delta",
+        tone: "info",
+        turnId: "turn-1",
+        payload: { itemId: "reasoning-item", text: "Thinking" },
+      }),
+      makeActivity({
+        id: "tool-started",
+        createdAt: "2026-02-23T00:00:03.000Z",
+        kind: "tool.started",
+        tone: "tool",
+        turnId: "turn-1",
+        payload: { itemType: "command_execution", data: { command: "bun test" } },
+      }),
+      makeActivity({
+        id: "plan-updated",
+        createdAt: "2026-02-23T00:00:04.000Z",
+        kind: "turn.plan.updated",
+        turnId: "turn-1",
+        payload: { plan: [{ step: "Run checks", status: "inProgress" }] },
+      }),
+      makeActivity({
+        id: "spawn-started",
+        createdAt: "2026-02-23T00:00:01.000Z",
+        kind: "tool.started",
+        summary: "Subagent task started",
+        payload: {
+          itemType: "collab_agent_tool_call",
+          data: {
+            toolCallId: "collab-1",
+            collabTool: "spawnAgent",
+            receiverThreadIds: ["child-1"],
+            promptPreview: "Inspect this area.",
+          },
+        },
+      }),
+    ];
+    const latestTurnId = TurnId.make("turn-1");
+
+    const projection = deriveThreadActivityProjection(activities, latestTurnId);
+
+    expect(projection.workLogEntries).toEqual(deriveWorkLogEntries(activities, undefined));
+    expect(projection.reasoningSegments).toEqual(deriveReasoningSegments(activities));
+    expect(projection.threadSubagents).toEqual(deriveThreadSubagents(activities));
+    expect(projection.threadSubagentTranscripts).toEqual(
+      deriveThreadSubagentTranscripts(activities),
+    );
+    expect(projection.pendingApprovals).toEqual(derivePendingApprovals(activities));
+    expect(projection.pendingUserInputs).toEqual(derivePendingUserInputs(activities));
+    expect(projection.activePlan).toEqual(deriveActivePlanState(activities, latestTurnId));
+    expect(projection.latestTurnHasToolActivity).toBe(
+      hasToolActivityForTurn(activities, latestTurnId),
+    );
   });
 });
 

@@ -1417,6 +1417,15 @@ describe("incremental orchestration updates", () => {
       id: ThreadId.make("thread-1"),
       messages: [
         {
+          id: MessageId.make("user-1"),
+          role: "user",
+          text: "prompt",
+          turnId: TurnId.make("turn-1"),
+          createdAt: "2026-02-27T00:00:00.000Z",
+          completedAt: "2026-02-27T00:00:00.000Z",
+          streaming: false,
+        },
+        {
           id: MessageId.make("message-1"),
           role: "assistant",
           text: "hello",
@@ -1516,10 +1525,19 @@ describe("incremental orchestration updates", () => {
       localEnvironmentId,
     );
 
-    expect(threadsOf(next)[0]?.messages[0]?.text).toBe("hello world");
+    expect(threadsOf(next)[0]?.messages[1]?.text).toBe("hello world");
     expect(threadsOf(next)[0]?.latestTurn?.state).toBe("running");
     const nextEnvironmentState = next.environmentStateById[localEnvironmentId];
     const previousEnvironmentState = state.environmentStateById[localEnvironmentId];
+    expect(nextEnvironmentState?.messageIdsByThreadId[thread1.id]).toBe(
+      previousEnvironmentState?.messageIdsByThreadId[thread1.id],
+    );
+    expect(nextEnvironmentState?.messageByThreadId[thread1.id]).not.toBe(
+      previousEnvironmentState?.messageByThreadId[thread1.id],
+    );
+    expect(nextEnvironmentState?.messageByThreadId[thread1.id]?.[MessageId.make("user-1")]).toBe(
+      previousEnvironmentState?.messageByThreadId[thread1.id]?.[MessageId.make("user-1")],
+    );
     expect(nextEnvironmentState?.threadShellById[thread2.id]).toBe(
       previousEnvironmentState?.threadShellById[thread2.id],
     );

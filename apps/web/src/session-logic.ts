@@ -160,6 +160,17 @@ export interface ActivePlanState {
   }>;
 }
 
+export interface ThreadActivityProjection {
+  readonly workLogEntries: WorkLogEntry[];
+  readonly reasoningSegments: ReasoningSegment[];
+  readonly threadSubagents: ThreadSubagent[];
+  readonly threadSubagentTranscripts: ThreadSubagentTranscript[];
+  readonly pendingApprovals: PendingApproval[];
+  readonly pendingUserInputs: PendingUserInput[];
+  readonly activePlan: ActivePlanState | null;
+  readonly latestTurnHasToolActivity: boolean;
+}
+
 export type ActiveTurnActivityKind =
   | "awaitingApproval"
   | "awaitingUserInput"
@@ -374,8 +385,13 @@ function isStalePendingRequestFailureDetail(detail: string | undefined): boolean
 export function derivePendingApprovals(
   activities: ReadonlyArray<OrchestrationThreadActivity>,
 ): PendingApproval[] {
+  return derivePendingApprovalsFromOrdered([...activities].toSorted(compareActivitiesByOrder));
+}
+
+function derivePendingApprovalsFromOrdered(
+  ordered: ReadonlyArray<OrchestrationThreadActivity>,
+): PendingApproval[] {
   const openByRequestId = new Map<ApprovalRequestId, PendingApproval>();
-  const ordered = [...activities].toSorted(compareActivitiesByOrder);
 
   for (const activity of ordered) {
     const payload =
@@ -480,8 +496,13 @@ function parseUserInputQuestions(
 export function derivePendingUserInputs(
   activities: ReadonlyArray<OrchestrationThreadActivity>,
 ): PendingUserInput[] {
+  return derivePendingUserInputsFromOrdered([...activities].toSorted(compareActivitiesByOrder));
+}
+
+function derivePendingUserInputsFromOrdered(
+  ordered: ReadonlyArray<OrchestrationThreadActivity>,
+): PendingUserInput[] {
   const openByRequestId = new Map<ApprovalRequestId, PendingUserInput>();
-  const ordered = [...activities].toSorted(compareActivitiesByOrder);
 
   for (const activity of ordered) {
     const payload =
@@ -530,7 +551,16 @@ export function deriveActivePlanState(
   activities: ReadonlyArray<OrchestrationThreadActivity>,
   latestTurnId: TurnId | undefined,
 ): ActivePlanState | null {
-  const ordered = [...activities].toSorted(compareActivitiesByOrder);
+  return deriveActivePlanStateFromOrdered(
+    [...activities].toSorted(compareActivitiesByOrder),
+    latestTurnId,
+  );
+}
+
+function deriveActivePlanStateFromOrdered(
+  ordered: ReadonlyArray<OrchestrationThreadActivity>,
+  latestTurnId: TurnId | undefined,
+): ActivePlanState | null {
   const allPlanActivities = ordered.filter((activity) => activity.kind === "turn.plan.updated");
   // Prefer plan from the current turn; fall back to the most recent plan from any turn
   // so that TodoWrite tasks persist across follow-up messages.
@@ -664,7 +694,16 @@ export function deriveWorkLogEntries(
   activities: ReadonlyArray<OrchestrationThreadActivity>,
   latestTurnId: TurnId | undefined,
 ): WorkLogEntry[] {
-  const ordered = [...activities].toSorted(compareActivitiesByOrder);
+  return deriveWorkLogEntriesFromOrdered(
+    [...activities].toSorted(compareActivitiesByOrder),
+    latestTurnId,
+  );
+}
+
+function deriveWorkLogEntriesFromOrdered(
+  ordered: ReadonlyArray<OrchestrationThreadActivity>,
+  latestTurnId: TurnId | undefined,
+): WorkLogEntry[] {
   const entries = ordered
     .filter((activity) => (latestTurnId ? activity.turnId === latestTurnId : true))
     .filter((activity) => !activity.kind.startsWith("reasoning."))
@@ -682,8 +721,13 @@ export function deriveWorkLogEntries(
 export function deriveReasoningSegments(
   activities: ReadonlyArray<OrchestrationThreadActivity>,
 ): ReasoningSegment[] {
+  return deriveReasoningSegmentsFromOrdered([...activities].toSorted(compareActivitiesByOrder));
+}
+
+function deriveReasoningSegmentsFromOrdered(
+  ordered: ReadonlyArray<OrchestrationThreadActivity>,
+): ReasoningSegment[] {
   const segmentsByKey = new Map<string, ReasoningSegment>();
-  const ordered = [...activities].toSorted(compareActivitiesByOrder);
 
   for (const activity of ordered) {
     if (
@@ -857,9 +901,14 @@ function toDerivedWorkLogEntry(activity: OrchestrationThreadActivity): DerivedWo
 export function deriveThreadSubagents(
   activities: ReadonlyArray<OrchestrationThreadActivity>,
 ): ThreadSubagent[] {
+  return deriveThreadSubagentsFromOrdered([...activities].toSorted(compareActivitiesByOrder));
+}
+
+function deriveThreadSubagentsFromOrdered(
+  ordered: ReadonlyArray<OrchestrationThreadActivity>,
+): ThreadSubagent[] {
   const subagentsByThreadId = new Map<string, ThreadSubagent>();
   const receiverThreadIdsByToolCallId = new Map<string, string[]>();
-  const ordered = [...activities].toSorted(compareActivitiesByOrder);
 
   for (const activity of ordered) {
     const payload = asRecord(activity.payload);
@@ -1014,7 +1063,17 @@ function normalizeSubagentTranscriptActivityForTimeline(
 export function deriveThreadSubagentTranscripts(
   activities: ReadonlyArray<OrchestrationThreadActivity>,
 ): ThreadSubagentTranscript[] {
-  const subagents = deriveThreadSubagents(activities);
+  const ordered = [...activities].toSorted(compareActivitiesByOrder);
+  return deriveThreadSubagentTranscriptsFromOrdered(
+    ordered,
+    deriveThreadSubagentsFromOrdered(ordered),
+  );
+}
+
+function deriveThreadSubagentTranscriptsFromOrdered(
+  ordered: ReadonlyArray<OrchestrationThreadActivity>,
+  subagents: ReadonlyArray<ThreadSubagent>,
+): ThreadSubagentTranscript[] {
   const knownSubagentIds = new Set(subagents.map((subagent) => subagent.threadId));
   const messagesByThreadId = new Map<string, Map<string, ChatMessage>>();
   const activitiesByThreadId = new Map<string, OrchestrationThreadActivity[]>();
@@ -1033,7 +1092,6 @@ export function deriveThreadSubagentTranscripts(
     }
   }
 
-  const ordered = [...activities].toSorted(compareActivitiesByOrder);
   const fallbackMessageKeys = new Set<string>();
   const transcriptTextKeys = new Set<string>();
 
@@ -2227,7 +2285,32 @@ function compareActivityLifecycleRank(kind: string): number {
   return 1;
 }
 
+export function deriveThreadActivityProjection(
+  activities: ReadonlyArray<OrchestrationThreadActivity>,
+  latestTurnId: TurnId | undefined,
+): ThreadActivityProjection {
+  const ordered = [...activities].toSorted(compareActivitiesByOrder);
+  const threadSubagents = deriveThreadSubagentsFromOrdered(ordered);
+  return {
+    workLogEntries: deriveWorkLogEntriesFromOrdered(ordered, undefined),
+    reasoningSegments: deriveReasoningSegmentsFromOrdered(ordered),
+    threadSubagents,
+    threadSubagentTranscripts: deriveThreadSubagentTranscriptsFromOrdered(ordered, threadSubagents),
+    pendingApprovals: derivePendingApprovalsFromOrdered(ordered),
+    pendingUserInputs: derivePendingUserInputsFromOrdered(ordered),
+    activePlan: deriveActivePlanStateFromOrdered(ordered, latestTurnId),
+    latestTurnHasToolActivity: hasToolActivityForTurnInOrdered(ordered, latestTurnId),
+  };
+}
+
 export function hasToolActivityForTurn(
+  activities: ReadonlyArray<OrchestrationThreadActivity>,
+  turnId: TurnId | null | undefined,
+): boolean {
+  return hasToolActivityForTurnInOrdered(activities, turnId);
+}
+
+function hasToolActivityForTurnInOrdered(
   activities: ReadonlyArray<OrchestrationThreadActivity>,
   turnId: TurnId | null | undefined,
 ): boolean {

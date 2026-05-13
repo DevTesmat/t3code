@@ -106,6 +106,24 @@ function turnDiffCompleted(sequence: number, threadId: string, turnId: string) {
   });
 }
 
+function checkpointCaptured(sequence: number, threadId: string, turnId: string) {
+  return event(sequence, threadId, "thread.activity-appended", {
+    threadId,
+    activity: {
+      id: `${threadId}-checkpoint-${sequence}`,
+      tone: "info",
+      kind: "checkpoint.captured",
+      summary: "Checkpoint captured",
+      payload: {
+        turnCount: 1,
+        status: "ready",
+      },
+      turnId,
+      createdAt: baseEvent.occurredAt,
+    },
+  });
+}
+
 function sessionSet(
   sequence: number,
   threadId: string,
@@ -550,6 +568,33 @@ describe("history sync planner", () => {
       pushableEvents: local,
     });
     expect(filterPushableLocalEvents(local, local)).toEqual(local);
+  });
+
+  test("autosave can push checkpoint activity immediately after a remotely synced turn completion", () => {
+    const previousCompletion = turnDiffCompleted(1, "thread-done", "turn-done");
+    const pendingCheckpoint = checkpointCaptured(2, "thread-done", "turn-done");
+
+    expect(
+      planAutosaveLocalPush({
+        localEvents: [previousCompletion, pendingCheckpoint],
+        unpushedLocalEvents: [pendingCheckpoint],
+        remoteMaxSequence: 1,
+        projectionThreadRows: [
+          {
+            threadId: "thread-done",
+            pendingUserInputCount: 0,
+            hasActionableProposedPlan: 0,
+            latestTurnId: "turn-done",
+            sessionStatus: "ready",
+            sessionActiveTurnId: null,
+          },
+        ],
+      }),
+    ).toMatchObject({
+      action: "push-local",
+      candidateEvents: [pendingCheckpoint],
+      pushableEvents: [pendingCheckpoint],
+    });
   });
 
   test("autosave keeps a no-diff text turn deferred while the session is still active", () => {

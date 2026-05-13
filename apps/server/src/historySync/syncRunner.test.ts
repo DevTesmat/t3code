@@ -111,6 +111,7 @@ function makeRunner(overrides: Partial<HistorySyncRunnerDependencies> = {}, call
       reloadProjections: () => Effect.sync(() => calls.push("reload")).pipe(Effect.asVoid),
       readLocalEvents: () => Effect.succeed([]),
       readLocalEventRefsForSequences: () => Effect.succeed([]),
+      readLocalEventsForSequences: () => Effect.succeed([]),
       readUnpushedLocalEvents: Effect.succeed([]),
       readProjectionThreadAutosyncRows: Effect.succeed([]),
       readLocalProjectionCounts: Effect.succeed({ projectCount: 0, threadCount: 0 }),

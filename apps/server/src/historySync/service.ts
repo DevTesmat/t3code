@@ -180,6 +180,9 @@ export const HistorySyncServiceLive = Layer.effect(
     const readLocalEventRefsForSequences = (sequences: readonly number[]) =>
       LocalHistoryRepository.readLocalEventRefsForSequences(sql, sequences);
 
+    const readLocalEventsForSequences = (sequences: readonly number[]) =>
+      LocalHistoryRepository.readLocalEventsForSequences(sql, sequences);
+
     const readUnpushedLocalEvents = LocalHistoryRepository.readUnpushedLocalEvents(sql);
 
     const readProjectionThreadAutosyncRows =
@@ -286,6 +289,7 @@ export const HistorySyncServiceLive = Layer.effect(
         }),
       readLocalEvents,
       readLocalEventRefsForSequences,
+      readLocalEventsForSequences,
       readUnpushedLocalEvents,
       readProjectionThreadAutosyncRows,
       readLocalProjectionCounts,

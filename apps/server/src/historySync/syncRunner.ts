@@ -99,6 +99,9 @@ export interface HistorySyncRunnerDependencies {
   readonly readLocalEventRefsForSequences: (
     sequences: readonly number[],
   ) => Effect.Effect<readonly { readonly sequence: number; readonly eventId: string }[], object>;
+  readonly readLocalEventsForSequences: (
+    sequences: readonly number[],
+  ) => Effect.Effect<readonly HistorySyncEventRow[], object>;
   readonly readUnpushedLocalEvents: Effect.Effect<readonly HistorySyncEventRow[], object>;
   readonly readProjectionThreadAutosyncRows: Effect.Effect<
     readonly HistorySyncAutosyncProjectionThreadRow[],
@@ -617,6 +620,8 @@ export function createHistorySyncRunner(input: HistorySyncRunnerDependencies) {
       const syncStartedAt = new Date().toISOString();
       const syncContext = { startedAt: syncStartedAt, lastSyncedAt };
       const lastSyncedRemoteSequence = state?.lastSyncedRemoteSequence ?? 0;
+      const readLocalAutosaveContext = (remoteMaxSequence: number) =>
+        input.readLocalEventsForSequences([Math.max(lastSyncedRemoteSequence, remoteMaxSequence)]);
       let autosaveRemoteMaxSequence: number | null = null;
       if (hasCompletedInitialSync && isAutosave) {
         const remoteMaxSequence = yield* input.readRemoteMaxSequence(connectionString);
@@ -632,8 +637,9 @@ export function createHistorySyncRunner(input: HistorySyncRunnerDependencies) {
             return;
           }
           const projectionThreadRows = yield* input.readProjectionThreadAutosyncRows;
+          const localBoundaryEvents = yield* readLocalAutosaveContext(remoteMaxSequence);
           const localPushPlan = planAutosaveLocalPush({
-            localEvents: unpushedLocalEvents,
+            localEvents: [...localBoundaryEvents, ...unpushedLocalEvents],
             unpushedLocalEvents,
             remoteMaxSequence,
             projectionThreadRows,
@@ -686,8 +692,11 @@ export function createHistorySyncRunner(input: HistorySyncRunnerDependencies) {
           });
           const projectMappings = yield* input.readProjectMappings;
           const projectionThreadRows = yield* input.readProjectionThreadAutosyncRows;
+          const localBoundaryEvents = yield* input.readLocalEventsForSequences([
+            lastSyncedRemoteSequence,
+          ]);
           const localPushPlan = planAutosaveLocalPush({
-            localEvents: unpushedLocalEvents,
+            localEvents: [...localBoundaryEvents, ...unpushedLocalEvents],
             unpushedLocalEvents,
             remoteMaxSequence,
             projectionThreadRows,
@@ -804,7 +813,10 @@ export function createHistorySyncRunner(input: HistorySyncRunnerDependencies) {
         const projectMappings = yield* input.readProjectMappings;
         const unpushedLocalEvents = yield* input.readUnpushedLocalEvents;
         const projectionThreadRows = yield* input.readProjectionThreadAutosyncRows;
-        const localEventsForLocalPush = localEventsForAutosave ?? unpushedLocalEvents;
+        const localEventsForLocalPush = localEventsForAutosave ?? [
+          ...(yield* readLocalAutosaveContext(remoteMaxSequence)),
+          ...unpushedLocalEvents,
+        ];
         const remoteCoveredReceiptEvents = planAutosaveRemoteCoveredReceipts({
           unpushedLocalEvents,
           remoteMaxSequence,

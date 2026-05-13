@@ -485,6 +485,85 @@ function buildMessageSlice(thread: Thread): {
   };
 }
 
+function buildIncrementalMessageSlice(
+  state: EnvironmentState,
+  previousThread: Thread | undefined,
+  nextThread: Thread,
+): {
+  ids: MessageId[];
+  byId: Record<MessageId, ChatMessage>;
+} {
+  if (!previousThread) {
+    return buildMessageSlice(nextThread);
+  }
+
+  const previousMessages = previousThread.messages;
+  const nextMessages = nextThread.messages;
+  const previousIds = state.messageIdsByThreadId[nextThread.id] ?? [];
+  const previousById = state.messageByThreadId[nextThread.id] ?? {};
+
+  if (
+    previousMessages.length === nextMessages.length &&
+    previousIds.length === nextMessages.length
+  ) {
+    let changedIndex = -1;
+    for (let index = 0; index < nextMessages.length; index += 1) {
+      if (previousMessages[index] === nextMessages[index]) {
+        continue;
+      }
+      if (changedIndex !== -1) {
+        return buildMessageSlice(nextThread);
+      }
+      changedIndex = index;
+    }
+
+    if (changedIndex === -1) {
+      return {
+        ids: previousIds,
+        byId: previousById,
+      };
+    }
+
+    const previousMessage = previousMessages[changedIndex];
+    const nextMessage = nextMessages[changedIndex];
+    if (!previousMessage || !nextMessage || previousMessage.id !== nextMessage.id) {
+      return buildMessageSlice(nextThread);
+    }
+
+    return {
+      ids: previousIds,
+      byId: {
+        ...previousById,
+        [nextMessage.id]: nextMessage,
+      },
+    };
+  }
+
+  if (
+    nextMessages.length === previousMessages.length + 1 &&
+    previousIds.length === previousMessages.length
+  ) {
+    for (let index = 0; index < previousMessages.length; index += 1) {
+      if (previousMessages[index] !== nextMessages[index]) {
+        return buildMessageSlice(nextThread);
+      }
+    }
+    const appendedMessage = nextMessages.at(-1);
+    if (!appendedMessage) {
+      return buildMessageSlice(nextThread);
+    }
+    return {
+      ids: [...previousIds, appendedMessage.id],
+      byId: {
+        ...previousById,
+        [appendedMessage.id]: appendedMessage,
+      },
+    };
+  }
+
+  return buildMessageSlice(nextThread);
+}
+
 function mergeBoundedSnapshotMessages(
   previousMessages: ReadonlyArray<ChatMessage>,
   snapshotMessages: ReadonlyArray<ChatMessage>,
@@ -721,7 +800,7 @@ function writeThreadState(
   }
 
   if (previousThread?.messages !== nextThread.messages) {
-    const nextMessageSlice = buildMessageSlice(nextThread);
+    const nextMessageSlice = buildIncrementalMessageSlice(state, previousThread, nextThread);
     nextState = {
       ...nextState,
       messageIdsByThreadId: {
@@ -1097,6 +1176,42 @@ function rebindTurnDiffSummariesForAssistantMessage(
     };
   });
   return changed ? nextSummaries : [...turnDiffSummaries];
+}
+
+function mergeThreadMessage(
+  messages: ReadonlyArray<ChatMessage>,
+  message: ChatMessage,
+): ChatMessage[] {
+  const existingIndex = messages.findIndex((entry) => entry.id === message.id);
+  if (existingIndex === -1) {
+    return [...messages, message];
+  }
+
+  const existing = messages[existingIndex];
+  if (!existing) {
+    return [...messages];
+  }
+  const nextMessage: ChatMessage = {
+    ...existing,
+    text: message.streaming
+      ? `${existing.text}${message.text}`
+      : message.text.length > 0
+        ? message.text
+        : existing.text,
+    streaming: message.streaming,
+    ...(message.turnId !== undefined ? { turnId: message.turnId } : {}),
+    ...(message.streaming
+      ? existing.completedAt !== undefined
+        ? { completedAt: existing.completedAt }
+        : {}
+      : message.completedAt !== undefined
+        ? { completedAt: message.completedAt }
+        : {}),
+    ...(message.attachments !== undefined ? { attachments: message.attachments } : {}),
+  };
+  const nextMessages = [...messages];
+  nextMessages[existingIndex] = nextMessage;
+  return nextMessages;
 }
 
 function retainThreadMessagesAfterRevert(
@@ -1986,33 +2101,7 @@ function applyEnvironmentOrchestrationEvent(
           createdAt: event.payload.createdAt,
           updatedAt: event.payload.updatedAt,
         });
-        const existingMessage = thread.messages.find((entry) => entry.id === message.id);
-        const messages = existingMessage
-          ? thread.messages.map((entry) =>
-              entry.id !== message.id
-                ? entry
-                : {
-                    ...entry,
-                    text: message.streaming
-                      ? `${entry.text}${message.text}`
-                      : message.text.length > 0
-                        ? message.text
-                        : entry.text,
-                    streaming: message.streaming,
-                    ...(message.turnId !== undefined ? { turnId: message.turnId } : {}),
-                    ...(message.streaming
-                      ? entry.completedAt !== undefined
-                        ? { completedAt: entry.completedAt }
-                        : {}
-                      : message.completedAt !== undefined
-                        ? { completedAt: message.completedAt }
-                        : {}),
-                    ...(message.attachments !== undefined
-                      ? { attachments: message.attachments }
-                      : {}),
-                  },
-            )
-          : [...thread.messages, message];
+        const messages = mergeThreadMessage(thread.messages, message);
         const cappedMessages = messages.slice(-MAX_THREAD_MESSAGES);
         const turnDiffSummaries =
           event.payload.role === "assistant" && event.payload.turnId !== null

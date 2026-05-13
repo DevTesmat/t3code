@@ -135,6 +135,50 @@ export function readLocalEventRefsForSequences(
   });
 }
 
+export function readLocalEventsForSequences(
+  sql: SqlClient.SqlClient,
+  sequences: readonly number[],
+) {
+  return Effect.gen(function* () {
+    const uniqueSequences = [...new Set(sequences)]
+      .filter((sequence) => Number.isInteger(sequence) && sequence > 0)
+      .toSorted((left, right) => left - right);
+    if (uniqueSequences.length === 0) {
+      return [] satisfies HistorySyncEventRow[];
+    }
+
+    const batches: number[][] = [];
+    for (let index = 0; index < uniqueSequences.length; index += HISTORY_SYNC_SQLITE_BATCH_SIZE) {
+      batches.push(uniqueSequences.slice(index, index + HISTORY_SYNC_SQLITE_BATCH_SIZE));
+    }
+    const rows = yield* Effect.forEach(
+      batches,
+      (batch) =>
+        sql<HistorySyncEventRow>`
+          SELECT
+            sequence,
+            event_id AS "eventId",
+            aggregate_kind AS "aggregateKind",
+            stream_id AS "streamId",
+            stream_version AS "streamVersion",
+            event_type AS "eventType",
+            occurred_at AS "occurredAt",
+            command_id AS "commandId",
+            causation_event_id AS "causationEventId",
+            correlation_id AS "correlationId",
+            actor_kind AS "actorKind",
+            payload_json AS "payloadJson",
+            metadata_json AS "metadataJson"
+          FROM orchestration_events
+          WHERE sequence IN ${sql.in(batch)}
+          ORDER BY sequence ASC
+        `,
+      { concurrency: 1 },
+    );
+    return rows.flat();
+  });
+}
+
 export function readUnpushedLocalEvents(sql: SqlClient.SqlClient) {
   return sql<HistorySyncEventRow>`
     SELECT
