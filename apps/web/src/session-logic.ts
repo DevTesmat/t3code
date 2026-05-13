@@ -177,6 +177,7 @@ export type ActiveTurnActivityKind =
   | "dispatching"
   | "connecting"
   | "runningTool"
+  | "compactingContext"
   | "streamingAssistant"
   | "thinking"
   | "waitingForModel"
@@ -2436,6 +2437,40 @@ function deriveActiveToolActivity(
   return entry;
 }
 
+export function hasActiveContextCompaction(
+  activities: ReadonlyArray<OrchestrationThreadActivity>,
+): boolean {
+  const activeByKey = new Map<string, OrchestrationThreadActivity>();
+  const ordered = [...activities]
+    .filter(
+      (activity) =>
+        activity.kind === "context-compaction.started" || activity.kind === "context-compaction",
+    )
+    .toSorted(compareActivitiesByOrder);
+
+  for (const activity of ordered) {
+    const payload =
+      activity.payload && typeof activity.payload === "object"
+        ? (activity.payload as Record<string, unknown>)
+        : null;
+    const key =
+      typeof payload?.itemId === "string" && payload.itemId.length > 0
+        ? payload.itemId
+        : activity.turnId
+          ? `turn:${activity.turnId}`
+          : "thread";
+
+    if (activity.kind === "context-compaction") {
+      activeByKey.delete(key);
+      continue;
+    }
+
+    activeByKey.set(key, activity);
+  }
+
+  return activeByKey.size > 0;
+}
+
 function hasStreamingAssistantMessageForTurn(
   messages: ReadonlyArray<ChatMessage>,
   turnId: TurnId | null | undefined,
@@ -2510,6 +2545,10 @@ export function deriveActiveTurnActivityState(input: {
       label: labelForToolActivity(activeTool),
       detail: detailForToolActivity(activeTool),
     };
+  }
+
+  if (hasActiveContextCompaction(input.activities)) {
+    return { kind: "compactingContext", label: "Compacting context" };
   }
 
   if (hasStreamingAssistantMessageForTurn(input.messages, activeTurnId)) {

@@ -16,6 +16,7 @@ import type {
   ProviderSendTurnInput,
   ProviderSession,
   ProviderSessionStartInput,
+  ProviderSteerTurnInput,
   ThreadId,
   ProviderTurnStartResult,
   TurnId,
@@ -67,6 +68,11 @@ export interface ProviderAdapterShape<TError> {
    * Interrupt an active turn.
    */
   readonly interruptTurn: (threadId: ThreadId, turnId?: TurnId) => Effect.Effect<void, TError>;
+
+  /**
+   * Append user guidance to an active turn without starting a new turn.
+   */
+  readonly steerTurn: (input: ProviderSteerTurnInput) => Effect.Effect<void, TError>;
 
   /**
    * Respond to an interactive approval request.

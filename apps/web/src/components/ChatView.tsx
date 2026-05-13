@@ -64,6 +64,7 @@ import {
   findLatestProposedPlan,
   deriveThreadActivityProjection,
   deriveWorkLogEntries,
+  hasActiveContextCompaction,
   isLatestTurnSettled,
   shouldShowPlanFollowUpPrompt,
   formatElapsed,
@@ -3287,6 +3288,16 @@ export default function ChatView(props: ChatViewProps) {
         return;
       }
 
+      if (hasActiveContextCompaction(threadActivities) && activeTurnRunning) {
+        await api.orchestration.dispatchCommand({
+          type: "thread.session.stop",
+          commandId: newCommandId(),
+          threadId: activeThread.id,
+          createdAt: new Date().toISOString(),
+        });
+        return;
+      }
+
       const threadIdForSend = activeThread.id;
       const messageIdForSend = newMessageId();
       const messageCreatedAt = new Date().toISOString();
@@ -3305,6 +3316,49 @@ export default function ChatView(props: ChatViewProps) {
         sizeBytes: image.sizeBytes,
         previewUrl: image.previewUrl,
       }));
+
+      if (activeTurnRunning && String(activeThread.session?.provider ?? "") === "codex") {
+        if (flush.attachments.length > 0) {
+          setThreadError(
+            threadIdForSend,
+            "Queued image attachments cannot be sent into a running turn. Stop the current turn or wait for it to finish.",
+          );
+          return;
+        }
+        const turnId = activeThread.session?.activeTurnId ?? activeLatestTurn?.turnId ?? null;
+        if (!turnId) {
+          setThreadError(
+            threadIdForSend,
+            "Cannot steer the running turn without an active turn id.",
+          );
+          return;
+        }
+
+        queuedFlushInFlightRef.current = true;
+        sendInFlightRef.current = true;
+        setThreadError(threadIdForSend, null);
+        try {
+          await api.orchestration.dispatchCommand({
+            type: "thread.turn.steer",
+            commandId: newCommandId(),
+            threadId: threadIdForSend,
+            turnId,
+            text: outgoingMessageText,
+            createdAt: messageCreatedAt,
+          });
+          setQueuedComposerMessages([]);
+          queuedComposerMessagesRef.current = [];
+        } catch (err) {
+          setThreadError(
+            threadIdForSend,
+            err instanceof Error ? err.message : "Failed to send queued messages.",
+          );
+        } finally {
+          sendInFlightRef.current = false;
+          queuedFlushInFlightRef.current = false;
+        }
+        return;
+      }
 
       queuedFlushInFlightRef.current = true;
       sendInFlightRef.current = true;
@@ -3384,7 +3438,9 @@ export default function ChatView(props: ChatViewProps) {
       }
     },
     [
+      activeLatestTurn?.turnId,
       activeThread,
+      activeTurnRunning,
       beginLocalDispatch,
       environmentId,
       interactionMode,
@@ -3395,6 +3451,7 @@ export default function ChatView(props: ChatViewProps) {
       runtimeMode,
       scrollToEndAfterLayout,
       setThreadError,
+      threadActivities,
     ],
   );
 
@@ -3745,6 +3802,15 @@ export default function ChatView(props: ChatViewProps) {
   const onInterrupt = async () => {
     const api = readEnvironmentApi(environmentId);
     if (!api || !activeThread) return;
+    if (hasActiveContextCompaction(threadActivities)) {
+      await api.orchestration.dispatchCommand({
+        type: "thread.session.stop",
+        commandId: newCommandId(),
+        threadId: activeThread.id,
+        createdAt: new Date().toISOString(),
+      });
+      return;
+    }
     await api.orchestration.dispatchCommand({
       type: "thread.turn.interrupt",
       commandId: newCommandId(),

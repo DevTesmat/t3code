@@ -25,6 +25,7 @@ import {
   ThreadId,
   TurnId,
   ProviderSendTurnInput,
+  ProviderSteerTurnInput,
 } from "@t3tools/contracts";
 import { createHash, randomUUID } from "node:crypto";
 import fs from "node:fs";
@@ -2214,6 +2215,16 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
       ),
     );
 
+  const steerTurn: CodexAdapterShape["steerTurn"] = (input: ProviderSteerTurnInput) =>
+    requireSession(input.threadId).pipe(
+      Effect.flatMap((session) => session.runtime.steerTurn(input.turnId, input.input)),
+      Effect.mapError((cause) =>
+        cause._tag === "ProviderAdapterSessionNotFoundError"
+          ? cause
+          : mapCodexRuntimeError(input.threadId, "turn/steer", cause),
+      ),
+    );
+
   const readThread: CodexAdapterShape["readThread"] = (threadId) =>
     requireSession(threadId).pipe(
       Effect.flatMap((session) => session.runtime.readThread),
@@ -2341,6 +2352,7 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
     startSession,
     sendTurn,
     interruptTurn,
+    steerTurn,
     readThread,
     rollbackThread,
     respondToRequest,

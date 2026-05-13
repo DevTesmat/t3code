@@ -129,6 +129,8 @@ function makeFakeCodexAdapter(provider: ProviderDriverKind = CODEX_DRIVER) {
       Effect.void,
   );
 
+  const steerTurn = vi.fn((): Effect.Effect<void, ProviderAdapterError> => Effect.void);
+
   const respondToRequest = vi.fn(
     (
       _threadId: ThreadId,
@@ -200,6 +202,7 @@ function makeFakeCodexAdapter(provider: ProviderDriverKind = CODEX_DRIVER) {
     startSession,
     sendTurn,
     interruptTurn,
+    steerTurn,
     respondToRequest,
     respondToUserInput,
     stopSession,

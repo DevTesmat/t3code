@@ -1276,6 +1276,16 @@ export function makeOpenCodeAdapter(
       },
     );
 
+    const steerTurn: OpenCodeAdapterShape["steerTurn"] = (input) =>
+      Effect.fail(
+        new ProviderAdapterRequestError({
+          provider: PROVIDER,
+          method: "turn/steer",
+          detail: `Provider '${PROVIDER}' does not support turn steering.`,
+          cause: input,
+        }),
+      );
+
     const respondToRequest: OpenCodeAdapterShape["respondToRequest"] = Effect.fn(
       "respondToRequest",
     )(function* (threadId, requestId, decision) {
@@ -1420,6 +1430,7 @@ export function makeOpenCodeAdapter(
       startSession,
       sendTurn,
       interruptTurn,
+      steerTurn,
       respondToRequest,
       respondToUserInput,
       stopSession,

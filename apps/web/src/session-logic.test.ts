@@ -23,6 +23,7 @@ import {
   deriveWorkLogEntries,
   findLatestProposedPlan,
   findSidebarProposedPlan,
+  hasActiveContextCompaction,
   hasActionableProposedPlan,
   hasToolActivityForTurn,
   isLatestTurnSettled,
@@ -3002,6 +3003,56 @@ describe("deriveActiveTurnActivityState", () => {
             },
           }),
         ],
+      }),
+    ).toMatchObject({
+      kind: "waitingForModel",
+      label: "Waiting for model stream",
+    });
+  });
+
+  it("shows active context compaction above generic running state", () => {
+    expect(
+      deriveActiveTurnActivityState({
+        ...baseInput,
+        activities: [
+          makeActivity({
+            id: "compaction-started",
+            turnId: "turn-1",
+            kind: "context-compaction.started",
+            summary: "Compacting context",
+            payload: { itemId: "compaction-1", status: "running" },
+          }),
+        ],
+      }),
+    ).toMatchObject({
+      kind: "compactingContext",
+      label: "Compacting context",
+    });
+  });
+
+  it("clears active context compaction after completion", () => {
+    const activities = [
+      makeActivity({
+        id: "compaction-started",
+        turnId: "turn-1",
+        kind: "context-compaction.started",
+        summary: "Compacting context",
+        payload: { itemId: "compaction-1", status: "running" },
+      }),
+      makeActivity({
+        id: "compaction-completed",
+        turnId: "turn-1",
+        kind: "context-compaction",
+        summary: "Context compacted",
+        payload: { itemId: "compaction-1", status: "completed" },
+      }),
+    ];
+
+    expect(hasActiveContextCompaction(activities)).toBe(false);
+    expect(
+      deriveActiveTurnActivityState({
+        ...baseInput,
+        activities,
       }),
     ).toMatchObject({
       kind: "waitingForModel",
