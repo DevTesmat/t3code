@@ -2216,6 +2216,124 @@ describe("deriveWorkLogEntries", () => {
     });
   });
 
+  it("uses Codex web-search item queries as timeline detail", () => {
+    const activities: OrchestrationThreadActivity[] = [
+      makeActivity({
+        id: "web-search-started",
+        createdAt: "2026-02-23T00:00:01.000Z",
+        kind: "tool.started",
+        summary: "Web search started",
+        payload: {
+          itemType: "web_search",
+          title: "Web search",
+          data: {
+            item: {
+              id: "web-search-1",
+              type: "webSearch",
+              query: "latest Codex app-server docs",
+            },
+          },
+        },
+      }),
+    ];
+
+    const [entry] = deriveWorkLogEntries(activities, undefined);
+    expect(entry).toMatchObject({
+      id: "web-search-started",
+      toolTitle: "Web search",
+      detail: "latest Codex app-server docs",
+      itemType: "web_search",
+    });
+  });
+
+  it("uses completed web-search action queries as timeline detail", () => {
+    const activities: OrchestrationThreadActivity[] = [
+      makeActivity({
+        id: "web-search-completed",
+        createdAt: "2026-02-23T00:00:01.000Z",
+        kind: "tool.completed",
+        summary: "Web search",
+        payload: {
+          itemType: "web_search",
+          status: "completed",
+          title: "Web search",
+          data: {
+            item: {
+              id: "web-search-1",
+              type: "webSearch",
+              action: {
+                type: "search",
+                query: "T3 Code release preflight",
+              },
+            },
+          },
+        },
+      }),
+    ];
+
+    const [entry] = deriveWorkLogEntries(activities, undefined);
+    expect(entry).toMatchObject({
+      id: "web-search-completed",
+      toolTitle: "Web search",
+      detail: "T3 Code release preflight",
+      itemType: "web_search",
+    });
+  });
+
+  it("uses direct web-search query fields and normalizes whitespace", () => {
+    const activities: OrchestrationThreadActivity[] = [
+      makeActivity({
+        id: "web-search-direct-query",
+        createdAt: "2026-02-23T00:00:01.000Z",
+        kind: "tool.completed",
+        summary: "Web search",
+        payload: {
+          itemType: "web_search",
+          title: "Web search",
+          data: {
+            query: "  OpenAI\nCodex   SDK  ",
+          },
+        },
+      }),
+    ];
+
+    const [entry] = deriveWorkLogEntries(activities, undefined);
+    expect(entry).toMatchObject({
+      id: "web-search-direct-query",
+      detail: "OpenAI Codex SDK",
+      itemType: "web_search",
+    });
+  });
+
+  it("keeps web-search entries label-only when no query is available", () => {
+    const activities: OrchestrationThreadActivity[] = [
+      makeActivity({
+        id: "web-search-no-query",
+        createdAt: "2026-02-23T00:00:01.000Z",
+        kind: "tool.completed",
+        summary: "Web search",
+        payload: {
+          itemType: "web_search",
+          title: "Web search",
+          data: {
+            item: {
+              id: "web-search-1",
+              type: "webSearch",
+            },
+          },
+        },
+      }),
+    ];
+
+    const [entry] = deriveWorkLogEntries(activities, undefined);
+    expect(entry).toMatchObject({
+      id: "web-search-no-query",
+      toolTitle: "Web search",
+      itemType: "web_search",
+    });
+    expect(entry?.detail).toBeUndefined();
+  });
+
   it("uses completed read-file output previews and still collapses the same tool call", () => {
     const activities: OrchestrationThreadActivity[] = [
       makeActivity({

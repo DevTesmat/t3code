@@ -999,7 +999,12 @@ export function classifyAutosyncThreadStates(
         {
           threadId,
           hasOpenTurn: openTurnByThread.has(threadId),
-          hasCompletedTurn: completedTurnThreads.has(threadId),
+          hasCompletedTurn:
+            completedTurnThreads.has(threadId) ||
+            (projection?.latestTurnId !== null &&
+              projection?.latestTurnId !== undefined &&
+              projection.sessionStatus === "ready" &&
+              projection.sessionActiveTurnId === null),
           pendingUserInputCount: projection?.pendingUserInputCount ?? 0,
           hasActionableProposedPlan: projection?.hasActionableProposedPlan === 1,
           sessionStatus: projection?.sessionStatus ?? null,

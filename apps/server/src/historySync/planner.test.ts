@@ -145,6 +145,12 @@ function sessionSet(
   });
 }
 
+function threadUnpinned(sequence: number, threadId: string) {
+  return event(sequence, threadId, "thread.unpinned", {
+    threadId,
+  });
+}
+
 describe("history sync planner", () => {
   test("selects remote deltas and filters rows already imported at the same sequence", () => {
     const alreadyImported = messageSent(3, "thread-a", "remote");
@@ -594,6 +600,33 @@ describe("history sync planner", () => {
       action: "push-local",
       candidateEvents: [pendingCheckpoint],
       pushableEvents: [pendingCheckpoint],
+    });
+  });
+
+  test("autosave can push a UI event immediately after a synced ready session boundary", () => {
+    const syncedBoundary = sessionSet(1, "thread-done", "ready", null);
+    const pendingUnpinned = threadUnpinned(2, "thread-done");
+
+    expect(
+      planAutosaveLocalPush({
+        localEvents: [syncedBoundary, pendingUnpinned],
+        unpushedLocalEvents: [pendingUnpinned],
+        remoteMaxSequence: 1,
+        projectionThreadRows: [
+          {
+            threadId: "thread-done",
+            pendingUserInputCount: 0,
+            hasActionableProposedPlan: 0,
+            latestTurnId: "turn-done",
+            sessionStatus: "ready",
+            sessionActiveTurnId: null,
+          },
+        ],
+      }),
+    ).toMatchObject({
+      action: "push-local",
+      candidateEvents: [pendingUnpinned],
+      pushableEvents: [pendingUnpinned],
     });
   });
 

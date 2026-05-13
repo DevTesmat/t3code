@@ -2098,6 +2098,31 @@ function summarizeToolRawOutput(payload: Record<string, unknown> | null): string
   return null;
 }
 
+function extractWebSearchQuery(payload: Record<string, unknown> | null): string | null {
+  const data = asRecord(payload?.data);
+  const item = asRecord(data?.item);
+  const itemAction = asRecord(item?.action);
+  const dataAction = asRecord(data?.action);
+  const payloadAction = asRecord(payload?.action);
+  const candidates = [
+    item?.query,
+    data?.query,
+    payload?.query,
+    itemAction?.query,
+    dataAction?.query,
+    payloadAction?.query,
+  ];
+
+  for (const candidate of candidates) {
+    const query = asTrimmedString(candidate);
+    if (query) {
+      return normalizeInlinePreview(query);
+    }
+  }
+
+  return null;
+}
+
 function isCommandToolDetail(payload: Record<string, unknown> | null, heading: string): boolean {
   const data = asRecord(payload?.data);
   const kind = asTrimmedString(data?.kind)?.toLowerCase();
@@ -2114,6 +2139,13 @@ function extractToolDetail(
   payload: Record<string, unknown> | null,
   heading: string,
 ): string | null {
+  if (extractWorkLogItemType(payload) === "web_search") {
+    const query = extractWebSearchQuery(payload);
+    if (query) {
+      return query;
+    }
+  }
+
   const rawDetail = asTrimmedString(payload?.detail);
   const detail = rawDetail ? stripTrailingExitCode(rawDetail).output : null;
   const normalizedHeading = normalizePreviewForComparison(heading);
