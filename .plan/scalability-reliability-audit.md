@@ -317,16 +317,29 @@ Progress notes:
 - Thread history pagination now loads a coherent detail window instead of repainting one resource at a time: older message pages are paired with any older activities, proposed plans, and checkpoints needed to cover the same oldest message timestamp, then committed in one store update with viewport anchoring. The previous 1-second backfill polling loop has been replaced by deterministic window backfill.
 - Timeline work-group row ids now anchor to the following timeline boundary when available, so prepending older work events no longer renames/remounts an already visible work group.
 - Initial thread-detail snapshots now use the latest message page as the visual anchor and extend activities, proposed plans, and checkpoints back to the same oldest message timestamp before publishing the snapshot. This avoids refresh/sync first-paint flicker on event-dense threads where 500 activities covers far less time than 500 chat messages.
+- Historical detail-window backfill and automatic older-message loading now pause while the active turn is running, and top-of-list autoload no longer fires while the viewport is also at the bottom. This prevents very large streaming threads from repeatedly prepending older history in response to streaming layout changes.
+- Sending, queued-message flushes, and plan follow-ups now use a post-layout bottom snap instead of a single pre-insert `scrollToEnd` call. This keeps the optimistic user message flush with the bottom after React, LegendList, and composer-height layout settle, without reintroducing continuous scroll commands during streaming.
+- Thread-detail snapshots pushed after MySQL history sync now have a strict freshness boundary: equal-sequence snapshots are ignored once the same live event sequence has already been applied. Sync completion can still hydrate missing or genuinely newer detail, but it no longer repaints the active timeline with a confirmation snapshot for data the UI already rendered.
 
 ### Stage 8: Frontend Global List Scaling
 
+- [x] Remove repeated project/thread timestamp scans from sidebar project sorting.
+- [x] Remove repeated thread timestamp scans from shared thread sorting.
+- [x] Make per-project visible-thread pagination single-pass instead of repeated filters.
+- [x] Cap command palette thread results before render.
 - [ ] Virtualize project rows or add a project search/collapse strategy that avoids rendering all projects.
-- [ ] Cap command palette thread results before render.
 - [ ] Consider server/client paged thread search for command palette.
 - [ ] Reduce sidebar regroup/sort work on single-thread shell updates.
 - [ ] Add regression tests for large sidebar datasets and command palette filtering.
 
 Expected outcome: many projects/threads do not make routine navigation or palette usage janky.
+
+Progress notes:
+
+- Sidebar project sorting now precomputes one sort timestamp per project before sorting, so projects with many threads do not repeatedly reduce their thread list during comparator calls.
+- Shared thread sorting now precomputes each thread's sort timestamp once before sorting, which reduces repeated message/timestamp scans in the sidebar, command palette, and latest-thread helpers.
+- Sidebar per-project thread preview pagination now uses one pass over the sorted project thread list to keep pinned threads, the active thread, and the visible unpinned page while collecting hidden threads.
+- Top-level command palette thread search now caps rendered thread matches to a fixed result window, keeping broad queries from mounting thousands of thread rows at once.
 
 ### Stage 9: Logger Writer Lifecycle
 

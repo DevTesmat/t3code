@@ -32,6 +32,15 @@ export interface ThreadDetailBackfillRequest {
   nextResourceOffset: number;
 }
 
+export function shouldAutoloadOlderMessages(input: {
+  scrollTop: number;
+  isAtBottom: boolean;
+  isThreadRunning: boolean;
+  thresholdPx: number;
+}): boolean {
+  return !input.isThreadRunning && !input.isAtBottom && input.scrollTop <= input.thresholdPx;
+}
+
 const THREAD_DETAIL_BACKFILL_RESOURCES: readonly ThreadDetailBackfillResource[] = [
   "activities",
   "proposedPlans",

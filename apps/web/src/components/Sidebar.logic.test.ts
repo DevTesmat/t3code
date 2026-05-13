@@ -1193,6 +1193,43 @@ describe("sortProjectsForSidebar", () => {
     ]);
   });
 
+  it("computes each project sort timestamp once before sorting", () => {
+    let messageReads = 0;
+    const projects = Array.from({ length: 20 }, (_, index) =>
+      makeProject({
+        id: ProjectId.make(`project-${index + 1}`),
+        name: `Project ${index + 1}`,
+      }),
+    );
+    const threads = projects.map((project, index) => {
+      const thread = makeThread({
+        id: ThreadId.make(`thread-${index + 1}`),
+        projectId: project.id,
+        updatedAt: `2026-03-09T10:${String(index).padStart(2, "0")}:00.000Z`,
+      });
+      return Object.defineProperty(thread, "messages", {
+        get() {
+          messageReads += 1;
+          return [
+            {
+              id: `message-${index + 1}` as never,
+              role: "user" as const,
+              text: "hello",
+              createdAt: `2026-03-09T10:${String(index).padStart(2, "0")}:00.000Z`,
+              streaming: false,
+              completedAt: `2026-03-09T10:${String(index).padStart(2, "0")}:00.000Z`,
+            },
+          ];
+        },
+      });
+    });
+
+    const sorted = sortProjectsForSidebar(projects, threads, "updated_at");
+
+    expect(sorted[0]?.id).toBe(ProjectId.make("project-20"));
+    expect(messageReads).toBe(threads.length);
+  });
+
   it("ignores archived threads when sorting projects", () => {
     const sorted = sortProjectsForSidebar(
       [

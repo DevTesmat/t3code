@@ -466,25 +466,25 @@ export function getVisibleThreadsForProject<T extends Pick<Thread, "id" | "pinne
   hiddenThreads: T[];
 } {
   const { activeThreadId, visibleUnpinnedLimit, threads } = input;
-  const unpinnedThreadIds = new Set(
-    threads
-      .filter((thread) => thread.pinnedAt == null)
-      .slice(0, Math.max(0, visibleUnpinnedLimit))
-      .map((thread) => thread.id),
-  );
-  const pinnedThreadIds = new Set(
-    threads.filter((thread) => thread.pinnedAt != null).map((thread) => thread.id),
-  );
-  const activeThread = activeThreadId
-    ? threads.find((thread) => thread.id === activeThreadId)
-    : undefined;
-  const visibleThreadIds = new Set([...pinnedThreadIds, ...unpinnedThreadIds]);
-  if (activeThread) {
-    visibleThreadIds.add(activeThread.id);
-  }
+  const unpinnedLimit = Math.max(0, visibleUnpinnedLimit);
+  const visibleThreads: T[] = [];
+  const hiddenThreads: T[] = [];
+  let visibleUnpinnedCount = 0;
 
-  const visibleThreads = threads.filter((thread) => visibleThreadIds.has(thread.id));
-  const hiddenThreads = threads.filter((thread) => !visibleThreadIds.has(thread.id));
+  for (const thread of threads) {
+    const isPinned = thread.pinnedAt != null;
+    const isActive = activeThreadId !== undefined && thread.id === activeThreadId;
+    const isWithinUnpinnedLimit = !isPinned && visibleUnpinnedCount < unpinnedLimit;
+    if (!isPinned) {
+      visibleUnpinnedCount += 1;
+    }
+
+    if (isPinned || isActive || isWithinUnpinnedLimit) {
+      visibleThreads.push(thread);
+    } else {
+      hiddenThreads.push(thread);
+    }
+  }
 
   return {
     hasHiddenThreads: hiddenThreads.length > 0,
@@ -555,18 +555,16 @@ export function sortProjectsForSidebar<
     existing.push(thread);
     threadsByProjectId.set(thread.projectId, existing);
   }
+  const projectTimestampById = new Map(
+    projects.map((project) => [
+      project.id,
+      getProjectSortTimestamp(project, threadsByProjectId.get(project.id) ?? [], sortOrder),
+    ]),
+  );
 
   return [...projects].toSorted((left, right) => {
-    const rightTimestamp = getProjectSortTimestamp(
-      right,
-      threadsByProjectId.get(right.id) ?? [],
-      sortOrder,
-    );
-    const leftTimestamp = getProjectSortTimestamp(
-      left,
-      threadsByProjectId.get(left.id) ?? [],
-      sortOrder,
-    );
+    const rightTimestamp = projectTimestampById.get(right.id) ?? Number.NEGATIVE_INFINITY;
+    const leftTimestamp = projectTimestampById.get(left.id) ?? Number.NEGATIVE_INFINITY;
     const byTimestamp =
       rightTimestamp === leftTimestamp ? 0 : rightTimestamp > leftTimestamp ? 1 : -1;
     if (byTimestamp !== 0) return byTimestamp;

@@ -281,7 +281,7 @@ function shouldApplyThreadDetailSnapshot(
 ): boolean {
   const version = readLastAppliedThreadDetailVersion(environmentId, snapshot.thread.id);
   if (
-    snapshot.snapshotSequence >=
+    snapshot.snapshotSequence >
     Math.max(version.latestEventSequence, version.latestSnapshotSequence)
   ) {
     return true;

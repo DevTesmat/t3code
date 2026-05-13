@@ -23,6 +23,7 @@ import {
   hasServerAcknowledgedLocalDispatch,
   reconcileMountedTerminalThreadIds,
   resolveSendEnvMode,
+  shouldAutoloadOlderMessages,
   shouldWriteThreadErrorToCurrentServerThread,
   waitForStartedServerThread,
 } from "./ChatView.logic";
@@ -138,6 +139,49 @@ describe("deriveThreadDetailBackfillRequest", () => {
         resourceOffset: 1,
       })?.resource,
     ).toBe("proposedPlans");
+  });
+});
+
+describe("shouldAutoloadOlderMessages", () => {
+  it("does not autoload older messages when the viewport is also at the bottom", () => {
+    expect(
+      shouldAutoloadOlderMessages({
+        scrollTop: 0,
+        isAtBottom: true,
+        isThreadRunning: false,
+        thresholdPx: 96,
+      }),
+    ).toBe(false);
+  });
+
+  it("autoloads older messages only near the top after the user has left the bottom", () => {
+    expect(
+      shouldAutoloadOlderMessages({
+        scrollTop: 48,
+        isAtBottom: false,
+        isThreadRunning: false,
+        thresholdPx: 96,
+      }),
+    ).toBe(true);
+    expect(
+      shouldAutoloadOlderMessages({
+        scrollTop: 160,
+        isAtBottom: false,
+        isThreadRunning: false,
+        thresholdPx: 96,
+      }),
+    ).toBe(false);
+  });
+
+  it("does not autoload older messages while the active thread is running", () => {
+    expect(
+      shouldAutoloadOlderMessages({
+        scrollTop: 0,
+        isAtBottom: false,
+        isThreadRunning: true,
+        thresholdPx: 96,
+      }),
+    ).toBe(false);
   });
 });
 

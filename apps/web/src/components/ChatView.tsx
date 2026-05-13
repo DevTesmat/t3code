@@ -181,6 +181,7 @@ import {
   resolveSendEnvMode,
   revokeBlobPreviewUrl,
   revokeUserMessagePreviewUrls,
+  shouldAutoloadOlderMessages,
   shouldWriteThreadErrorToCurrentServerThread,
   waitForStartedServerThread,
 } from "./ChatView.logic";
@@ -860,6 +861,7 @@ export default function ChatView(props: ChatViewProps) {
   const suppressComposerStickToBottomRef = useRef(false);
   const preserveViewportFrameRef = useRef<number | null>(null);
   const restoreMaintainScrollAtEndFrameRef = useRef<number | null>(null);
+  const scrollToEndAfterLayoutFrameRef = useRef<number | null>(null);
   const attachmentPreviewHandoffByMessageIdRef = useRef<Record<string, string[]>>({});
   const attachmentPreviewPromotionInFlightByMessageIdRef = useRef<Record<string, true>>({});
   const sendInFlightRef = useRef(false);
@@ -1613,6 +1615,7 @@ export default function ChatView(props: ChatViewProps) {
       !activeThread ||
       !activeThreadKey ||
       selectedSubagentTranscript ||
+      activeTurnRunning ||
       activeThread.messagePageInfo?.hasMoreBefore !== true
     ) {
       return;
@@ -1673,6 +1676,7 @@ export default function ChatView(props: ChatViewProps) {
   }, [
     activeThread,
     activeThreadKey,
+    activeTurnRunning,
     commitThreadDetailWindowPages,
     isLoadingOlderMessages,
     loadThreadDetailWindowPages,
@@ -1680,6 +1684,9 @@ export default function ChatView(props: ChatViewProps) {
   ]);
   const backfillThreadDetailWindowForLoadedMessages = useCallback(async () => {
     if (!activeThread || !activeThreadKey || selectedSubagentTranscript) {
+      return;
+    }
+    if (activeTurnRunning) {
       return;
     }
     if (threadDetailBackfillInFlightRef.current) {
@@ -1718,6 +1725,7 @@ export default function ChatView(props: ChatViewProps) {
   }, [
     activeThread,
     activeThreadKey,
+    activeTurnRunning,
     commitThreadDetailWindowPages,
     loadThreadDetailWindowPages,
     selectedSubagentTranscript,
@@ -2716,21 +2724,50 @@ export default function ChatView(props: ChatViewProps) {
 
   const syncTimelineScrollViewportStickiness = useCallback(
     (scrollViewport: HTMLElement) => {
-      if (scrollViewport.scrollTop <= OLDER_MESSAGES_AUTOLOAD_THRESHOLD_PX) {
+      const isAtBottom = isMessagesViewportAtBottom(scrollViewport);
+      if (
+        shouldAutoloadOlderMessages({
+          scrollTop: scrollViewport.scrollTop,
+          isAtBottom,
+          isThreadRunning: activeTurnRunning,
+          thresholdPx: OLDER_MESSAGES_AUTOLOAD_THRESHOLD_PX,
+        })
+      ) {
         void loadOlderMessages();
       }
-      if (!isMessagesViewportAtBottom(scrollViewport)) {
+      if (!isAtBottom) {
         return isAtEndRef.current;
       }
       return setTimelineBottomStickiness(true);
     },
-    [isMessagesViewportAtBottom, loadOlderMessages, setTimelineBottomStickiness],
+    [activeTurnRunning, isMessagesViewportAtBottom, loadOlderMessages, setTimelineBottomStickiness],
   );
 
   const scrollToEndFromPill = useCallback(() => {
     setTimelineBottomStickiness(true);
     scrollToEnd(true);
   }, [scrollToEnd, setTimelineBottomStickiness]);
+
+  const scrollToEndAfterLayout = useCallback(
+    (animated = false) => {
+      setTimelineBottomStickiness(true);
+      scrollToEnd(animated);
+
+      if (scrollToEndAfterLayoutFrameRef.current !== null) {
+        window.cancelAnimationFrame(scrollToEndAfterLayoutFrameRef.current);
+      }
+
+      scrollToEndAfterLayoutFrameRef.current = window.requestAnimationFrame(() => {
+        scrollToEnd(false);
+        scrollToEndAfterLayoutFrameRef.current = window.requestAnimationFrame(() => {
+          scrollToEndAfterLayoutFrameRef.current = null;
+          scrollToEnd(false);
+          syncScrollToBottomVisibility(true);
+        });
+      });
+    },
+    [scrollToEnd, setTimelineBottomStickiness, syncScrollToBottomVisibility],
+  );
 
   const preserveTimelineViewport = useCallback(
     (anchor: HTMLElement, mutate: () => void) => {
@@ -2801,7 +2838,7 @@ export default function ChatView(props: ChatViewProps) {
       previousHeight = nextHeight;
       const isAtEnd = syncScrollToBottomVisibility();
       if (suppressComposerStickToBottomRef.current || !isAtEnd) return;
-      scrollToEnd(false);
+      scrollToEndAfterLayout(false);
       window.requestAnimationFrame(() => syncScrollToBottomVisibility(true));
     });
 
@@ -2809,7 +2846,7 @@ export default function ChatView(props: ChatViewProps) {
     return () => {
       observer.disconnect();
     };
-  }, [scrollToEnd, syncScrollToBottomVisibility]);
+  }, [scrollToEndAfterLayout, syncScrollToBottomVisibility]);
 
   useEffect(() => {
     const handleResize = () => {
@@ -2835,6 +2872,10 @@ export default function ChatView(props: ChatViewProps) {
     if (restoreMaintainScrollAtEndFrameRef.current !== null) {
       window.cancelAnimationFrame(restoreMaintainScrollAtEndFrameRef.current);
       restoreMaintainScrollAtEndFrameRef.current = null;
+    }
+    if (scrollToEndAfterLayoutFrameRef.current !== null) {
+      window.cancelAnimationFrame(scrollToEndAfterLayoutFrameRef.current);
+      scrollToEndAfterLayoutFrameRef.current = null;
     }
     if (!PLAN_SIDEBAR_VISUALIZATION_ENABLED) {
       planSidebarOpenOnNextThreadRef.current = false;
@@ -3270,11 +3311,7 @@ export default function ChatView(props: ChatViewProps) {
       beginLocalDispatch({ preparingWorktree: false });
       setThreadError(threadIdForSend, null);
 
-      isAtEndRef.current = true;
-      showScrollDebouncer.current.cancel();
-      setShowScrollToBottom(false);
-      setSuppressTimelineMaintainScrollAtEnd(false);
-      await legendListRef.current?.scrollToEnd?.({ animated: false });
+      scrollToEndAfterLayout(false);
 
       setOptimisticUserMessages((existing) => [
         ...existing,
@@ -3356,6 +3393,7 @@ export default function ChatView(props: ChatViewProps) {
       persistThreadSettingsForNextTurn,
       resetLocalDispatch,
       runtimeMode,
+      scrollToEndAfterLayout,
       setThreadError,
     ],
   );
@@ -3536,14 +3574,9 @@ export default function ChatView(props: ChatViewProps) {
       sizeBytes: image.sizeBytes,
       previewUrl: image.previewUrl,
     }));
-    // Scroll to the current end *before* adding the optimistic message.
-    // This sets LegendList's internal isAtEnd=true so maintainScrollAtEnd
-    // automatically pins to the new item when the data changes.
-    isAtEndRef.current = true;
-    showScrollDebouncer.current.cancel();
-    setShowScrollToBottom(false);
-    setSuppressTimelineMaintainScrollAtEnd(false);
-    await legendListRef.current?.scrollToEnd?.({ animated: false });
+    // Pin before the optimistic message is inserted, then re-check after layout
+    // settles so the new row is flush with the bottom.
+    scrollToEndAfterLayout(false);
 
     setOptimisticUserMessages((existing) => [
       ...existing,
@@ -3946,12 +3979,7 @@ export default function ChatView(props: ChatViewProps) {
       beginLocalDispatch({ preparingWorktree: false });
       setThreadError(threadIdForSend, null);
 
-      // Scroll to the current end *before* adding the optimistic message.
-      isAtEndRef.current = true;
-      showScrollDebouncer.current.cancel();
-      setShowScrollToBottom(false);
-      setSuppressTimelineMaintainScrollAtEnd(false);
-      await legendListRef.current?.scrollToEnd?.({ animated: false });
+      scrollToEndAfterLayout(false);
 
       setOptimisticUserMessages((existing) => [
         ...existing,
@@ -4039,6 +4067,7 @@ export default function ChatView(props: ChatViewProps) {
       persistThreadSettingsForNextTurn,
       resetLocalDispatch,
       runtimeMode,
+      scrollToEndAfterLayout,
       setComposerDraftInteractionMode,
       setThreadError,
       autoOpenPlanSidebar,
@@ -4686,7 +4715,7 @@ export default function ChatView(props: ChatViewProps) {
                   composerImagesRef={composerImagesRef}
                   composerTerminalContextsRef={composerTerminalContextsRef}
                   shouldAutoScrollRef={isAtEndRef}
-                  scheduleStickToBottom={scrollToEnd}
+                  scheduleStickToBottom={scrollToEndAfterLayout}
                   onSend={onSend}
                   onInterrupt={onInterrupt}
                   onImplementPlanInNewThread={onImplementPlanInNewThread}

@@ -6,6 +6,7 @@ import { formatRelativeTimeLabel } from "../timestampFormat";
 import { type Project, type SidebarThreadSummary, type Thread } from "../types";
 
 export const RECENT_THREAD_LIMIT = 12;
+export const COMMAND_PALETTE_THREAD_SEARCH_RESULT_LIMIT = 50;
 export const ITEM_ICON_CLASS = "size-4 text-muted-foreground/80";
 export const ADDON_ICON_CLASS = "size-4";
 
@@ -270,12 +271,16 @@ export function filterCommandPaletteGroups(input: {
       )
       .toSorted((left, right) => right.rank - left.rank || left.index - right.index)
       .map((entry) => entry.item);
+    const visibleItems =
+      group.value === "threads-search" && !input.isInSubmenu
+        ? items.slice(0, COMMAND_PALETTE_THREAD_SEARCH_RESULT_LIMIT)
+        : items;
 
-    if (items.length === 0) {
+    if (visibleItems.length === 0) {
       return [];
     }
 
-    return [{ value: group.value, label: group.label, items }];
+    return [{ value: group.value, label: group.label, items: visibleItems }];
   });
 }
 

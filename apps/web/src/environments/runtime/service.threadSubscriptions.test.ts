@@ -527,6 +527,69 @@ describe("retainThreadDetailSubscription", () => {
     await resetEnvironmentServiceForTests();
   });
 
+  it("ignores equal-sequence sync snapshots after live thread detail events", async () => {
+    const {
+      retainThreadDetailSubscription,
+      startEnvironmentConnectionService,
+      resetEnvironmentServiceForTests,
+    } = await import("./service");
+    const { selectThreadByRef, useStore } = await import("~/store");
+
+    const stop = startEnvironmentConnectionService(new QueryClient());
+    const environmentId = EnvironmentId.make("env-1");
+    const threadId = ThreadId.make("thread-equal-snapshot");
+
+    const release = retainThreadDetailSubscription(environmentId, threadId);
+    emitThreadItem({
+      kind: "snapshot",
+      snapshot: {
+        snapshotSequence: 10,
+        thread: makeThreadDetail({ threadId }),
+      },
+    });
+    emitThreadItem({
+      kind: "event",
+      event: makeActivityEvent({
+        sequence: 11,
+        threadId,
+        activityId: "live-tool",
+      }),
+    });
+
+    const threadAfterLiveEvent = selectThreadByRef(
+      useStore.getState(),
+      scopeThreadRef(environmentId, threadId),
+    );
+    emitThreadItem({
+      kind: "snapshot",
+      snapshot: {
+        snapshotSequence: 11,
+        thread: makeThreadDetail({
+          threadId,
+          activities: [
+            {
+              id: EventId.make("sync-snapshot-tool"),
+              tone: "tool",
+              kind: "tool.completed",
+              summary: "Sync snapshot should not repaint",
+              payload: {},
+              turnId: null,
+              createdAt: "2026-04-13T00:00:11.000Z",
+            },
+          ],
+        }),
+      },
+    });
+
+    const thread = selectThreadByRef(useStore.getState(), scopeThreadRef(environmentId, threadId));
+    expect(thread).toBe(threadAfterLiveEvent);
+    expect(thread?.activities.map((activity) => activity.id)).toEqual(["live-tool"]);
+
+    release();
+    stop();
+    await resetEnvironmentServiceForTests();
+  });
+
   it("routes command output stream items into the live output envelope", async () => {
     const {
       retainThreadDetailSubscription,

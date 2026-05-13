@@ -3,6 +3,7 @@ import { EnvironmentId, ProjectId, ProviderInstanceId, ThreadId } from "@t3tools
 import type { Thread } from "../types";
 import {
   buildThreadActionItems,
+  COMMAND_PALETTE_THREAD_SEARCH_RESULT_LIMIT,
   filterCommandPaletteGroups,
   type CommandPaletteGroup,
 } from "./CommandPalette.logic";
@@ -137,6 +138,32 @@ describe("buildThreadActionItems", () => {
 
     expect(groups).toHaveLength(1);
     expect(groups[0]?.items.map((item) => item.value)).toEqual(["thread:project-context-only"]);
+  });
+
+  it("caps top-level thread search results before rendering", () => {
+    const threadSearchItems = Array.from(
+      { length: COMMAND_PALETTE_THREAD_SEARCH_RESULT_LIMIT + 25 },
+      (_, index) => ({
+        kind: "action" as const,
+        value: `thread:${index + 1}`,
+        searchTerms: [`shared thread ${index + 1}`],
+        title: `Shared thread ${index + 1}`,
+        icon: null,
+        run: async () => undefined,
+      }),
+    );
+
+    const groups = filterCommandPaletteGroups({
+      activeGroups: [],
+      query: "shared",
+      isInSubmenu: false,
+      projectSearchItems: [],
+      threadSearchItems,
+    });
+
+    expect(groups).toHaveLength(1);
+    expect(groups[0]?.value).toBe("threads-search");
+    expect(groups[0]?.items).toHaveLength(COMMAND_PALETTE_THREAD_SEARCH_RESULT_LIMIT);
   });
 
   it("filters archived threads out of thread search items", () => {

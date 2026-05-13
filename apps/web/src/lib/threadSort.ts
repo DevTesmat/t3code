@@ -52,13 +52,16 @@ export function sortThreads<T extends Pick<Thread, "id"> & ThreadSortInput>(
   threads: readonly T[],
   sortOrder: SidebarThreadSortOrder,
 ): T[] {
+  const timestampByThreadId = new Map(
+    threads.map((thread) => [thread.id, getThreadSortTimestamp(thread, sortOrder)]),
+  );
   return threads.toSorted((left, right) => {
     const byPinned =
       Number(right.pinnedAt !== null && right.pinnedAt !== undefined) -
       Number(left.pinnedAt !== null && left.pinnedAt !== undefined);
     if (byPinned !== 0) return byPinned;
-    const rightTimestamp = getThreadSortTimestamp(right, sortOrder);
-    const leftTimestamp = getThreadSortTimestamp(left, sortOrder);
+    const rightTimestamp = timestampByThreadId.get(right.id) ?? Number.NEGATIVE_INFINITY;
+    const leftTimestamp = timestampByThreadId.get(left.id) ?? Number.NEGATIVE_INFINITY;
     const byTimestamp =
       rightTimestamp === leftTimestamp ? 0 : rightTimestamp > leftTimestamp ? 1 : -1;
     if (byTimestamp !== 0) return byTimestamp;
