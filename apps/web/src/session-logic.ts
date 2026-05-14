@@ -749,27 +749,82 @@ function deriveReasoningSegmentsFromOrdered(
         : "reasoning";
     const status = payload?.status === "completed" ? "completed" : "running";
     const key = `${activity.turnId}:${itemId}:${streamKind}`;
-    const existing = segmentsByKey.get(key);
-    segmentsByKey.set(key, {
-      id: existing?.id ?? key,
-      turnId: activity.turnId,
-      createdAt:
-        existing && existing.createdAt <= activity.createdAt
-          ? existing.createdAt
-          : activity.createdAt,
-      updatedAt:
-        existing && existing.updatedAt >= activity.createdAt
-          ? existing.updatedAt
-          : activity.createdAt,
-      text: existing ? `${existing.text}${text}` : text,
-      status: status === "completed" ? "completed" : (existing?.status ?? "running"),
-    });
+    const baseKey = `${activity.turnId}:${itemId}`;
+
+    if (activity.kind === "reasoning.status" && !payload?.streamKind) {
+      const matchingKeys = [...segmentsByKey.keys()].filter((segmentKey) =>
+        segmentKey.startsWith(`${baseKey}:`),
+      );
+      if (matchingKeys.length > 0) {
+        for (const matchingKey of matchingKeys) {
+          const existing = segmentsByKey.get(matchingKey);
+          if (!existing) {
+            continue;
+          }
+          segmentsByKey.set(matchingKey, mergeReasoningSegment(existing, activity, "", status));
+        }
+        continue;
+      }
+    }
+
+    const privateLifecycleKey = `${baseKey}:reasoning`;
+    const existing =
+      segmentsByKey.get(key) ??
+      (activity.kind === "reasoning.delta" && key !== privateLifecycleKey
+        ? segmentsByKey.get(privateLifecycleKey)
+        : undefined);
+    if (
+      existing?.id === privateLifecycleKey &&
+      key !== privateLifecycleKey &&
+      existing.text === ""
+    ) {
+      segmentsByKey.delete(privateLifecycleKey);
+    }
+    segmentsByKey.set(
+      key,
+      mergeReasoningSegment(existing, activity, text, status, {
+        id: key,
+        replaceExistingId: existing?.id === privateLifecycleKey && key !== privateLifecycleKey,
+      }),
+    );
   }
 
   return [...segmentsByKey.values()].toSorted(
     (left, right) =>
       left.createdAt.localeCompare(right.createdAt) || left.id.localeCompare(right.id),
   );
+}
+
+function mergeReasoningSegment(
+  existing: ReasoningSegment | undefined,
+  activity: OrchestrationThreadActivity,
+  text: string,
+  status: "running" | "completed",
+  options: { id?: string; replaceExistingId?: boolean } = {},
+): ReasoningSegment {
+  return {
+    id: options.replaceExistingId
+      ? (options.id ?? existing?.id ?? "")
+      : (existing?.id ?? options.id ?? ""),
+    turnId: activity.turnId!,
+    createdAt:
+      existing && existing.createdAt <= activity.createdAt
+        ? existing.createdAt
+        : activity.createdAt,
+    updatedAt:
+      existing && existing.updatedAt >= activity.createdAt
+        ? existing.updatedAt
+        : activity.createdAt,
+    text: mergeReasoningText(existing?.text ?? "", text),
+    status: status === "completed" ? "completed" : (existing?.status ?? "running"),
+  };
+}
+
+function mergeReasoningText(existing: string, next: string): string {
+  if (!existing || !next) {
+    return existing || next;
+  }
+  return next.startsWith(existing) ? next : `${existing}${next}`;
 }
 
 function isPlanBoundaryToolActivity(activity: OrchestrationThreadActivity): boolean {

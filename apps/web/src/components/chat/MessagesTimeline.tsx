@@ -62,6 +62,7 @@ import {
   type MessagesTimelineRow,
 } from "./MessagesTimeline.logic";
 import { TerminalContextInlineChip } from "./TerminalContextInlineChip";
+import { buildCompactDiffRenderModel, CompactInlineDiff } from "./CompactInlineDiff";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import {
   deriveDisplayedUserMessageState,
@@ -1853,6 +1854,7 @@ const LiveFileChangePreview = memo(function LiveFileChangePreview(props: {
 
   if (selectedFileDiff) {
     const selectedFilePath = resolveFileDiffPath(selectedFileDiff);
+    const compactInlineDiffModel = buildCompactDiffRenderModel(selectedFileDiff);
     if (deletedFilePath !== null && normalizeDiffMatchPath(selectedFilePath) === deletedFilePath) {
       return (
         <DeletedFileBadge
@@ -1869,7 +1871,10 @@ const LiveFileChangePreview = memo(function LiveFileChangePreview(props: {
           <button
             type="button"
             aria-label={expanded ? "Collapse inline file diff" : "Expand inline file diff"}
-            className="absolute top-0.5 right-1 z-10 flex size-5 items-center justify-center rounded-md text-muted-foreground/60 transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring/45"
+            className={cn(
+              "absolute right-1 z-10 flex size-5 items-center justify-center rounded-md text-muted-foreground/60 transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring/45",
+              compactInlineDiffModel ? "top-1.5" : "top-0.5",
+            )}
             onClick={(event) => {
               event.stopPropagation();
               onToggleExpanded();
@@ -1916,19 +1921,26 @@ const LiveFileChangePreview = memo(function LiveFileChangePreview(props: {
             </div>
           )}
           <div data-testid="inline-file-change-patch">
-            <FileDiff
-              fileDiff={selectedFileDiff}
-              options={{
-                diffStyle: "unified",
-                lineDiffType: "word",
-                overflow: settings.diffWordWrap ? "wrap" : "scroll",
-                theme: resolveDiffThemeName(resolvedTheme),
-                themeType: resolvedTheme as InlineDiffThemeType,
-                unsafeCSS: running
-                  ? `${DIFF_RENDER_UNSAFE_CSS}\n${INLINE_DIFF_RENDER_UNSAFE_CSS}\n${INLINE_FILE_CHANGE_RUNNING_UNSAFE_CSS}`
-                  : `${DIFF_RENDER_UNSAFE_CSS}\n${INLINE_DIFF_RENDER_UNSAFE_CSS}`,
-              }}
-            />
+            {compactInlineDiffModel ? (
+              <CompactInlineDiff
+                model={compactInlineDiffModel}
+                onOpenFileDiff={onOpenSelectedFileDiff}
+              />
+            ) : (
+              <FileDiff
+                fileDiff={selectedFileDiff}
+                options={{
+                  diffStyle: "unified",
+                  lineDiffType: "word",
+                  overflow: settings.diffWordWrap ? "wrap" : "scroll",
+                  theme: resolveDiffThemeName(resolvedTheme),
+                  themeType: resolvedTheme as InlineDiffThemeType,
+                  unsafeCSS: running
+                    ? `${DIFF_RENDER_UNSAFE_CSS}\n${INLINE_DIFF_RENDER_UNSAFE_CSS}\n${INLINE_FILE_CHANGE_RUNNING_UNSAFE_CSS}`
+                    : `${DIFF_RENDER_UNSAFE_CSS}\n${INLINE_DIFF_RENDER_UNSAFE_CSS}`,
+                }}
+              />
+            )}
           </div>
         </div>
       </div>

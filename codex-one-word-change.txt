@@ -1,0 +1,20 @@
+The project begins with a practical idea and turns it into a working instrument.
+Every screen should respond promptly, even when the system is under pressure.
+Every message should arrive in order, even when a provider reconnects midstream.
+Every session should feel predictable, even after a restart or resume.
+
+The server coordinates provider instances, workspace access, terminal streams, and event delivery.
+The web app turns those events into clear state for the person using the product.
+The desktop shell provides the native edges: folders, environment discovery, and packaging.
+The shared contracts keep each boundary explicit when data moves between packages.
+
+Reliability is a primary concern in this codebase.
+It is the central condition for trust in a tool that brokers long-running work.
+When a process fails, the application should describe what happened and preserve useful context.
+When a connection drops, the application should recover without confusing the current session.
+When history is loaded, the application should avoid duplicate events, missing events, and misleading ordering.
+
+Performance matters because slow instruments interrupt thought and make feedback loops expensive.
+Maintenance matters because early shortcuts become future constraints.
+Small changes should still respect the shape of the system and the responsibilities of each package.
+Clear contracts should make the next change easier to review, test, and reason about.

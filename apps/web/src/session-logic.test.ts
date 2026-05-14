@@ -116,6 +116,89 @@ describe("deriveReasoningSegments", () => {
     ]);
     expect(deriveWorkLogEntries(activities, undefined)).toEqual([]);
   });
+
+  it("merges lifecycle-only status into summary text reasoning segments", () => {
+    const activities = [
+      makeActivity({
+        id: "reasoning-started",
+        kind: "reasoning.status",
+        summary: "Thinking",
+        tone: "info",
+        turnId: "turn-1",
+        payload: { itemId: "reasoning-item", status: "running" },
+        sequence: 1,
+      }),
+      makeActivity({
+        id: "reasoning-delta",
+        kind: "reasoning.delta",
+        summary: "Thinking",
+        tone: "info",
+        turnId: "turn-1",
+        payload: {
+          itemId: "reasoning-item",
+          streamKind: "reasoning_summary_text",
+          text: "Inspecting the repo.",
+        },
+        sequence: 2,
+      }),
+      makeActivity({
+        id: "reasoning-completed",
+        kind: "reasoning.status",
+        summary: "Thinking",
+        tone: "info",
+        turnId: "turn-1",
+        payload: { itemId: "reasoning-item", status: "completed" },
+        sequence: 3,
+      }),
+    ];
+
+    expect(deriveReasoningSegments(activities)).toMatchObject([
+      {
+        id: "turn-1:reasoning-item:reasoning_summary_text",
+        turnId: "turn-1",
+        text: "Inspecting the repo.",
+        status: "completed",
+      },
+    ]);
+  });
+
+  it("replaces cumulative reasoning snapshots instead of appending duplicates", () => {
+    const activities = [
+      makeActivity({
+        id: "reasoning-1",
+        kind: "reasoning.delta",
+        summary: "Thinking",
+        tone: "info",
+        turnId: "turn-1",
+        payload: {
+          itemId: "reasoning-item",
+          streamKind: "reasoning_summary_text",
+          text: "Inspecting ",
+        },
+        sequence: 1,
+      }),
+      makeActivity({
+        id: "reasoning-2",
+        kind: "reasoning.delta",
+        summary: "Thinking",
+        tone: "info",
+        turnId: "turn-1",
+        payload: {
+          itemId: "reasoning-item",
+          streamKind: "reasoning_summary_text",
+          text: "Inspecting the repo.",
+        },
+        sequence: 2,
+      }),
+    ];
+
+    expect(deriveReasoningSegments(activities)).toMatchObject([
+      {
+        text: "Inspecting the repo.",
+        status: "running",
+      },
+    ]);
+  });
 });
 
 function makeRunningSession(overrides: Partial<ThreadSession> = {}): ThreadSession {
