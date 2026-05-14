@@ -99,6 +99,8 @@ import {
 } from "../../liveCommandOutput";
 import { readEnvironmentApi } from "../../environmentApi";
 
+const OLDER_TIMELINE_INTERSECTION_ROOT_MARGIN_PX = 160;
+
 // ---------------------------------------------------------------------------
 // Context — shared state consumed by every row component via useContext.
 // Propagates through LegendList's memo boundaries for shared callbacks and
@@ -157,6 +159,8 @@ interface MessagesTimelineProps {
   onIsAtEndChange: (isAtEnd: boolean) => void;
   onScrollViewportChange?: ((scrollViewport: HTMLElement) => void) | undefined;
   onUserScrollAwayFromEnd?: (() => void) | undefined;
+  hasOlderTimelineContent?: boolean | undefined;
+  onLoadOlderTimelineContent?: (() => void) | undefined;
   onPreserveViewportRequest?: ((anchor: HTMLElement, mutate: () => void) => void) | undefined;
   suppressMaintainScrollAtEnd?: boolean | undefined;
 }
@@ -190,6 +194,8 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   onIsAtEndChange,
   onScrollViewportChange,
   onUserScrollAwayFromEnd,
+  hasOlderTimelineContent = false,
+  onLoadOlderTimelineContent,
   onPreserveViewportRequest,
   suppressMaintainScrollAtEnd = false,
 }: MessagesTimelineProps) {
@@ -213,6 +219,9 @@ export const MessagesTimeline = memo(function MessagesTimeline({
     ],
   );
   const rows = useStableRows(rawRows);
+  const [topSentinel, setTopSentinel] = useState<HTMLDivElement | null>(null);
+  const [scrollViewport, setScrollViewport] = useState<HTMLElement | null>(null);
+  const topSentinelVisibleRef = useRef(false);
 
   const handleScroll = useCallback(
     (event: unknown) => {
@@ -221,6 +230,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
           ? event.currentTarget
           : null;
       if (currentTarget instanceof HTMLElement) {
+        setScrollViewport(currentTarget);
         onScrollViewportChange?.(currentTarget);
       }
 
@@ -231,6 +241,44 @@ export const MessagesTimeline = memo(function MessagesTimeline({
     },
     [listRef, onIsAtEndChange, onScrollViewportChange],
   );
+
+  useEffect(() => {
+    if (
+      !topSentinel ||
+      !onLoadOlderTimelineContent ||
+      typeof IntersectionObserver === "undefined"
+    ) {
+      topSentinelVisibleRef.current = false;
+      return;
+    }
+
+    const root =
+      scrollViewport ??
+      topSentinel.closest<HTMLElement>("[data-chat-messages-scroll='true']") ??
+      null;
+    const observer = new IntersectionObserver(
+      ([entry]) => {
+        const isVisible = entry?.isIntersecting === true;
+        topSentinelVisibleRef.current = isVisible;
+        if (isVisible && hasOlderTimelineContent) {
+          onLoadOlderTimelineContent();
+        }
+      },
+      {
+        root,
+        rootMargin: `${OLDER_TIMELINE_INTERSECTION_ROOT_MARGIN_PX}px 0px 0px 0px`,
+        threshold: 0,
+      },
+    );
+    observer.observe(topSentinel);
+    return () => observer.disconnect();
+  }, [hasOlderTimelineContent, onLoadOlderTimelineContent, scrollViewport, topSentinel]);
+
+  useEffect(() => {
+    if (topSentinelVisibleRef.current && hasOlderTimelineContent) {
+      onLoadOlderTimelineContent?.();
+    }
+  }, [hasOlderTimelineContent, onLoadOlderTimelineContent, rows.length]);
 
   const releaseStickinessIfAwayFromEnd = useCallback(
     (scrollViewport: HTMLElement) => {
@@ -389,7 +437,9 @@ export const MessagesTimeline = memo(function MessagesTimeline({
         onPointerUp={handlePointerUp}
         data-chat-messages-scroll="true"
         className="h-full overflow-x-hidden overscroll-y-contain px-3 sm:px-5"
-        ListHeaderComponent={<div className="h-3 sm:h-4" />}
+        ListHeaderComponent={
+          <div ref={setTopSentinel} className="h-3 sm:h-4" data-timeline-top-sentinel="true" />
+        }
         ListFooterComponent={<div className="h-3 sm:h-4" />}
       />
     </TimelineRowCtx.Provider>
@@ -441,6 +491,19 @@ function TimelineRowContent({ row }: { row: TimelineRow }) {
       )}
 
       {row.kind === "subagent" && <SubagentInlineSection subagent={row.subagent} />}
+
+      {row.kind === "reasoning" && (
+        <ReasoningSegmentsBlock
+          segments={[row.segment]}
+          isLive={
+            ctx.activeTurnInProgress &&
+            ctx.activeTurnId !== null &&
+            ctx.activeTurnId !== undefined &&
+            row.segment.turnId === ctx.activeTurnId &&
+            row.segment.status !== "completed"
+          }
+        />
+      )}
 
       {row.kind === "message" &&
         row.message.role === "user" &&
@@ -519,15 +582,6 @@ function TimelineRowContent({ row }: { row: TimelineRow }) {
                   </div>
                 </div>
               </div>
-              <ReasoningSegmentsBlock
-                segments={row.reasoningSegments}
-                isLive={
-                  ctx.activeTurnInProgress &&
-                  ctx.activeTurnId !== null &&
-                  ctx.activeTurnId !== undefined &&
-                  row.message.turnId === ctx.activeTurnId
-                }
-              />
             </>
           );
         })()}
@@ -562,10 +616,6 @@ function TimelineRowContent({ row }: { row: TimelineRow }) {
                   text={messageText}
                   cwd={ctx.markdownCwd}
                   isStreaming={Boolean(row.message.streaming)}
-                />
-                <ReasoningSegmentsBlock
-                  segments={row.reasoningSegments}
-                  isLive={assistantTurnStillInProgress && row.message.text.trim().length === 0}
                 />
                 <div className="mt-1.5 flex items-center gap-2">
                   <p className="text-[10px] text-muted-foreground/30">

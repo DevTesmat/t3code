@@ -20,6 +20,7 @@ import {
   deleteQueuedComposerMessage,
   deriveThreadDetailBackfillRequest,
   deriveComposerSendState,
+  hasOlderThreadTimelineContent,
   hasServerAcknowledgedLocalDispatch,
   reconcileMountedTerminalThreadIds,
   resolveSendEnvMode,
@@ -142,6 +143,31 @@ describe("deriveThreadDetailBackfillRequest", () => {
   });
 });
 
+describe("hasOlderThreadTimelineContent", () => {
+  it("treats older resource pages as older timeline content even when messages are exhausted", () => {
+    expect(
+      hasOlderThreadTimelineContent(
+        threadDetailBackfillFixture({
+          oldestMessageAt: "2026-05-10T10:00:00.000Z",
+          oldestActivityAt: "2026-05-10T11:00:00.000Z",
+          activityHasMoreBefore: true,
+        }),
+      ),
+    ).toBe(true);
+  });
+
+  it("returns false only when every timeline resource reached its start", () => {
+    expect(
+      hasOlderThreadTimelineContent(
+        threadDetailBackfillFixture({
+          oldestMessageAt: "2026-05-10T10:00:00.000Z",
+          oldestActivityAt: "2026-05-10T09:59:59.000Z",
+        }),
+      ),
+    ).toBe(false);
+  });
+});
+
 describe("shouldAutoloadOlderMessages", () => {
   it("does not autoload older messages when the viewport is also at the bottom", () => {
     expect(
@@ -200,6 +226,7 @@ function threadDetailBackfillFixture(input: {
   | "activities"
   | "proposedPlans"
   | "turnDiffSummaries"
+  | "messagePageInfo"
   | "activityPageInfo"
   | "proposedPlanPageInfo"
   | "checkpointPageInfo"
@@ -251,6 +278,11 @@ function threadDetailBackfillFixture(input: {
           },
         ]
       : [],
+    messagePageInfo: {
+      limit: 500,
+      included: 1,
+      hasMoreBefore: false,
+    },
     activityPageInfo: {
       limit: 500,
       included: input.oldestActivityAt ? 1 : 0,

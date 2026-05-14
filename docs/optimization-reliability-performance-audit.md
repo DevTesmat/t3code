@@ -162,6 +162,26 @@ predictable under long streams, reconnects, restarts, and provider crashes.
   scenarios, web bundle budget checks, and desktop smoke coverage alongside
   format, lint, typecheck, Vitest, browser tests, desktop build, and preload
   verification. `bun run preflight:release` captures the same local gate.
+- In progress: large-thread ChatView follow-up for thread
+  `c8a1eaa4-8b56-4d57-94bc-b6217c451bf0`. Direct SQLite inspection showed
+  this thread is activity/payload dominated: `102,229` orchestration events
+  (`~116 MB` payload JSON), `30,008` projected activities (`~75 MB` payload
+  JSON), and only `654` projected messages (`~0.25 MB`). Initial thread
+  subscription snapshots now use a fast-tail budget so reload can paint the
+  latest chat content before warm backfill: `100` messages, `150` activities,
+  `150` plans, `150` checkpoints, and a `750` coherent resource cap instead of
+  the previous `500`/`10,000` critical-path activity window. ChatView also
+  force-pins the initial loaded batch to the bottom across several layout frames
+  so large variable-height timelines do not open at an arbitrary measured
+  offset. Follow-up work found the older-history boundary was still
+  message-centric: reaching the top of a rendered tool/activity section could
+  advance message pagination before the resource window had caught up. The
+  timeline now has an explicit top sentinel, and near-top loading first backfills
+  missing activity/plan/checkpoint pages for the loaded message window before it
+  requests an older message page. Remaining follow-up for this slice: keep full
+  command output out of projected activity payloads, page/warm history by byte
+  budget as well as row count, and add a browser perf fixture for a 100MB+
+  synthetic thread opening to latest messages.
 - Backlog status: cleared for this audit.
 - Remaining work should focus on residual-risk follow-up audits, not this
   completed hardening backlog.

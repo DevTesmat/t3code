@@ -223,12 +223,13 @@ const REQUIRED_SNAPSHOT_PROJECTORS = [
   ORCHESTRATION_PROJECTOR_NAMES.checkpoints,
 ] as const;
 
-export const THREAD_DETAIL_INITIAL_MESSAGE_LIMIT = 500;
-export const THREAD_DETAIL_INITIAL_ACTIVITY_LIMIT = 500;
-export const THREAD_DETAIL_INITIAL_PROPOSED_PLAN_LIMIT = 500;
-export const THREAD_DETAIL_INITIAL_CHECKPOINT_LIMIT = 500;
-// Extra cap for resources needed to render the initial message window without a repair repaint.
-export const THREAD_DETAIL_INITIAL_RESOURCE_WINDOW_LIMIT = 10_000;
+export const THREAD_DETAIL_INITIAL_MESSAGE_LIMIT = 100;
+export const THREAD_DETAIL_INITIAL_ACTIVITY_LIMIT = 150;
+export const THREAD_DETAIL_INITIAL_PROPOSED_PLAN_LIMIT = 150;
+export const THREAD_DETAIL_INITIAL_CHECKPOINT_LIMIT = 150;
+// Extra cap for resources needed to render the initial message window. Keep this
+// small so very large threads paint the latest chat tail before warm backfill.
+export const THREAD_DETAIL_INITIAL_RESOURCE_WINDOW_LIMIT = 750;
 
 function threadDetailResourceNeedsWindowBackfill(
   oldestResourceAt: string | null,

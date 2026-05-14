@@ -1399,7 +1399,7 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
         );
         assert.equal(
           subscriptionSnapshot.value.thread.messages.at(-1)?.id,
-          asMessageId("message-0509"),
+          asMessageId("message-0109"),
         );
         assert.deepEqual(subscriptionSnapshot.value.pageInfo.messages, {
           limit: THREAD_DETAIL_INITIAL_MESSAGE_LIMIT,
@@ -1416,7 +1416,7 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
         );
         assert.equal(
           subscriptionSnapshot.value.thread.activities.at(-1)?.id,
-          asEventId("activity-0509"),
+          asEventId("activity-0159"),
         );
         assert.deepEqual(subscriptionSnapshot.value.pageInfo.activities, {
           limit: THREAD_DETAIL_INITIAL_RESOURCE_WINDOW_LIMIT,
@@ -1428,7 +1428,7 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
           THREAD_DETAIL_INITIAL_PROPOSED_PLAN_LIMIT + 10,
         );
         assert.equal(subscriptionSnapshot.value.thread.proposedPlans[0]?.id, "plan-0000");
-        assert.equal(subscriptionSnapshot.value.thread.proposedPlans.at(-1)?.id, "plan-0509");
+        assert.equal(subscriptionSnapshot.value.thread.proposedPlans.at(-1)?.id, "plan-0159");
         assert.deepEqual(subscriptionSnapshot.value.pageInfo.proposedPlans, {
           limit: THREAD_DETAIL_INITIAL_RESOURCE_WINDOW_LIMIT,
           included: THREAD_DETAIL_INITIAL_PROPOSED_PLAN_LIMIT + 10,
@@ -1444,7 +1444,7 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
         );
         assert.equal(
           subscriptionSnapshot.value.thread.checkpoints.at(-1)?.checkpointRef,
-          asCheckpointRef("checkpoint-0509"),
+          asCheckpointRef("checkpoint-0159"),
         );
         assert.deepEqual(subscriptionSnapshot.value.pageInfo.checkpoints, {
           limit: THREAD_DETAIL_INITIAL_RESOURCE_WINDOW_LIMIT,

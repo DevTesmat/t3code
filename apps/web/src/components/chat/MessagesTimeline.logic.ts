@@ -38,7 +38,12 @@ export type MessagesTimelineRow =
       showAssistantCopyButton: boolean;
       assistantTurnDiffSummary?: TurnDiffSummary | undefined;
       revertTurnCount?: number | undefined;
-      reasoningSegments: ReasoningSegment[];
+    }
+  | {
+      kind: "reasoning";
+      id: string;
+      createdAt: string;
+      segment: ReasoningSegment;
     }
   | {
       kind: "proposed-plan";
@@ -142,9 +147,14 @@ export function deriveMessagesTimelineRows(input: {
     input.timelineEntries.flatMap((entry) => (entry.kind === "message" ? [entry.message] : [])),
   );
   const terminalAssistantMessageIds = deriveTerminalAssistantMessageIds(input.timelineEntries);
+  const reasoningRows: MessagesTimelineRow[] = (input.reasoningSegments ?? []).map((segment) => ({
+    kind: "reasoning",
+    id: `reasoning:${segment.id}`,
+    createdAt: segment.createdAt,
+    segment,
+  }));
   const workGroupIdOccurrences = new Map<string, number>();
   let pendingWorkEntries: Array<Extract<TimelineEntry, { kind: "work" }>> = [];
-  const messageRowIndices: number[] = [];
 
   for (let index = 0; index < input.timelineEntries.length; index += 1) {
     const timelineEntry = input.timelineEntries[index];
@@ -211,65 +221,14 @@ export function deriveMessagesTimelineRows(input: {
         timelineEntry.message.role === "user"
           ? input.revertTurnCountByUserMessageId.get(timelineEntry.message.id)
           : undefined,
-      reasoningSegments: [],
     };
     nextRows.push(row);
-    messageRowIndices.push(nextRows.length - 1);
   }
 
   appendWorkTimelineRows(pendingWorkEntries, nextRows, workGroupIdOccurrences);
-
-  const reasoningSegmentsByRowIndex = new Map<number, ReasoningSegment[]>();
-  for (const segment of input.reasoningSegments ?? []) {
-    const rowIndex = findReasoningAnchorMessageRowIndex(nextRows, messageRowIndices, segment);
-    if (rowIndex === undefined) {
-      continue;
-    }
-    const existing = reasoningSegmentsByRowIndex.get(rowIndex) ?? [];
-    existing.push(segment);
-    reasoningSegmentsByRowIndex.set(rowIndex, existing);
-  }
-  for (const [rowIndex, segments] of reasoningSegmentsByRowIndex) {
-    const row = nextRows[rowIndex];
-    if (row?.kind === "message") {
-      nextRows[rowIndex] = { ...row, reasoningSegments: segments };
-    }
-  }
-
-  return nextRows;
-}
-
-function findReasoningAnchorMessageRowIndex(
-  rows: ReadonlyArray<MessagesTimelineRow>,
-  messageRowIndices: ReadonlyArray<number>,
-  segment: ReasoningSegment,
-): number | undefined {
-  let fallbackPriorMessageRowIndex: number | undefined;
-  let fallbackPriorTurnMessageRowIndex: number | undefined;
-  let fallbackTurnMessageRowIndex: number | undefined;
-
-  for (const rowIndex of messageRowIndices) {
-    const row = rows[rowIndex];
-    if (row?.kind !== "message") {
-      continue;
-    }
-
-    const isPriorMessage = row.createdAt <= segment.createdAt;
-    if (isPriorMessage) {
-      fallbackPriorMessageRowIndex = rowIndex;
-    }
-
-    if (row.message.turnId === segment.turnId) {
-      if (isPriorMessage) {
-        fallbackPriorTurnMessageRowIndex = rowIndex;
-        continue;
-      }
-      fallbackTurnMessageRowIndex ??= rowIndex;
-    }
-  }
-
-  return (
-    fallbackPriorTurnMessageRowIndex ?? fallbackPriorMessageRowIndex ?? fallbackTurnMessageRowIndex
+  return [...nextRows, ...reasoningRows].toSorted(
+    (left, right) =>
+      left.createdAt.localeCompare(right.createdAt) || left.id.localeCompare(right.id),
   );
 }
 
@@ -409,6 +368,13 @@ function isRowUnchanged(a: MessagesTimelineRow, b: MessagesTimelineRow): boolean
         areWorkEntryGroupsUnchanged(a.groupedEntries, (b as typeof a).groupedEntries)
       );
 
+    case "reasoning": {
+      const br = b as typeof a;
+      return (
+        a.createdAt === br.createdAt && areReasoningSegmentsUnchanged([a.segment], [br.segment])
+      );
+    }
+
     case "message": {
       const bm = b as typeof a;
       return (
@@ -417,8 +383,7 @@ function isRowUnchanged(a: MessagesTimelineRow, b: MessagesTimelineRow): boolean
         a.showCompletionDivider === bm.showCompletionDivider &&
         a.showAssistantCopyButton === bm.showAssistantCopyButton &&
         a.assistantTurnDiffSummary === bm.assistantTurnDiffSummary &&
-        a.revertTurnCount === bm.revertTurnCount &&
-        areReasoningSegmentsUnchanged(a.reasoningSegments, bm.reasoningSegments)
+        a.revertTurnCount === bm.revertTurnCount
       );
     }
   }

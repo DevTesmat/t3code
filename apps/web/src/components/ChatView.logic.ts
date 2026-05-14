@@ -41,6 +41,20 @@ export function shouldAutoloadOlderMessages(input: {
   return !input.isThreadRunning && !input.isAtBottom && input.scrollTop <= input.thresholdPx;
 }
 
+export function hasOlderThreadTimelineContent(
+  thread: Pick<
+    Thread,
+    "messagePageInfo" | "activityPageInfo" | "proposedPlanPageInfo" | "checkpointPageInfo"
+  >,
+): boolean {
+  return (
+    thread.messagePageInfo?.hasMoreBefore === true ||
+    thread.activityPageInfo?.hasMoreBefore === true ||
+    thread.proposedPlanPageInfo?.hasMoreBefore === true ||
+    thread.checkpointPageInfo?.hasMoreBefore === true
+  );
+}
+
 const THREAD_DETAIL_BACKFILL_RESOURCES: readonly ThreadDetailBackfillResource[] = [
   "activities",
   "proposedPlans",

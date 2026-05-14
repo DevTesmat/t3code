@@ -170,6 +170,7 @@ import {
   deleteQueuedComposerMessage,
   deriveComposerSendState,
   deriveThreadDetailBackfillRequest,
+  hasOlderThreadTimelineContent,
   hasServerAcknowledgedLocalDispatch,
   LAST_INVOKED_SCRIPT_BY_PROJECT_KEY,
   LastInvokedScriptByProjectSchema,
@@ -231,6 +232,8 @@ interface ThreadDetailWindowPages {
   proposedPlans: OrchestrationThreadProposedPlansPage[];
   checkpoints: OrchestrationThreadCheckpointsPage[];
 }
+
+type ThreadDetailBackfillOutcome = "loaded" | "none" | "blocked";
 
 function resourceNeedsThreadDetailWindowBackfill(
   oldestResourceAt: string | null | undefined,
@@ -870,6 +873,7 @@ export default function ChatView(props: ChatViewProps) {
   const queuedFlushInFlightRef = useRef(false);
   const previousPhaseRef = useRef<SessionPhase | null>(null);
   const terminalOpenByThreadRef = useRef<Record<string, boolean>>({});
+  const initialBottomScrollThreadKeyRef = useRef<string | null>(null);
 
   useEffect(() => {
     queuedComposerMessagesRef.current = queuedComposerMessages;
@@ -1683,58 +1687,69 @@ export default function ChatView(props: ChatViewProps) {
     loadThreadDetailWindowPages,
     selectedSubagentTranscript,
   ]);
-  const backfillThreadDetailWindowForLoadedMessages = useCallback(async () => {
-    if (!activeThread || !activeThreadKey || selectedSubagentTranscript) {
-      return;
-    }
-    if (activeTurnRunning) {
-      return;
-    }
-    if (threadDetailBackfillInFlightRef.current) {
-      return;
-    }
-
-    const request = deriveThreadDetailBackfillRequest({
-      thread: activeThread,
-      resourceOffset: threadDetailBackfillResourceOffsetRef.current,
-    });
-    if (!request || threadDetailBackfillLastRequestedKeyRef.current === request.requestKey) {
-      return;
-    }
-
-    threadDetailBackfillInFlightRef.current = true;
-    threadDetailBackfillLastRequestedKeyRef.current = request.requestKey;
-    threadDetailBackfillResourceOffsetRef.current = request.nextResourceOffset;
-    try {
-      const targetStartAt = activeThread.messages[0]?.createdAt;
-      if (!targetStartAt) return;
-      const pages = await loadThreadDetailWindowPages(activeThread, targetStartAt);
-      if (
-        pages.activities.length === 0 &&
-        pages.proposedPlans.length === 0 &&
-        pages.checkpoints.length === 0
-      ) {
-        return;
+  const backfillThreadDetailWindowForLoadedMessages =
+    useCallback(async (): Promise<ThreadDetailBackfillOutcome> => {
+      if (!activeThread || !activeThreadKey || selectedSubagentTranscript) {
+        return "blocked";
       }
-      commitThreadDetailWindowPages(pages, activeThread.environmentId);
-    } catch (error) {
-      threadDetailBackfillLastRequestedKeyRef.current = null;
-      console.warn("Failed to backfill thread detail window.", error);
-    } finally {
-      threadDetailBackfillInFlightRef.current = false;
-    }
-  }, [
-    activeThread,
-    activeThreadKey,
-    activeTurnRunning,
-    commitThreadDetailWindowPages,
-    loadThreadDetailWindowPages,
-    selectedSubagentTranscript,
-  ]);
+      if (activeTurnRunning) {
+        return "blocked";
+      }
+      if (threadDetailBackfillInFlightRef.current) {
+        return "blocked";
+      }
+
+      const request = deriveThreadDetailBackfillRequest({
+        thread: activeThread,
+        resourceOffset: threadDetailBackfillResourceOffsetRef.current,
+      });
+      if (!request || threadDetailBackfillLastRequestedKeyRef.current === request.requestKey) {
+        return "none";
+      }
+
+      threadDetailBackfillInFlightRef.current = true;
+      threadDetailBackfillLastRequestedKeyRef.current = request.requestKey;
+      threadDetailBackfillResourceOffsetRef.current = request.nextResourceOffset;
+      try {
+        const targetStartAt = activeThread.messages[0]?.createdAt;
+        if (!targetStartAt) return "none";
+        const pages = await loadThreadDetailWindowPages(activeThread, targetStartAt);
+        if (
+          pages.activities.length === 0 &&
+          pages.proposedPlans.length === 0 &&
+          pages.checkpoints.length === 0
+        ) {
+          return "none";
+        }
+        commitThreadDetailWindowPages(pages, activeThread.environmentId);
+        return "loaded";
+      } catch (error) {
+        threadDetailBackfillLastRequestedKeyRef.current = null;
+        console.warn("Failed to backfill thread detail window.", error);
+        return "blocked";
+      } finally {
+        threadDetailBackfillInFlightRef.current = false;
+      }
+    }, [
+      activeThread,
+      activeThreadKey,
+      activeTurnRunning,
+      commitThreadDetailWindowPages,
+      loadThreadDetailWindowPages,
+      selectedSubagentTranscript,
+    ]);
 
   useEffect(() => {
     void backfillThreadDetailWindowForLoadedMessages();
   }, [backfillThreadDetailWindowForLoadedMessages]);
+
+  const loadOlderTimelineContent = useCallback(async () => {
+    const backfillOutcome = await backfillThreadDetailWindowForLoadedMessages();
+    if (backfillOutcome !== "none") {
+      return;
+    }
+    await loadOlderMessages();
+  }, [backfillThreadDetailWindowForLoadedMessages, loadOlderMessages]);
 
   useEffect(() => {
     if (typeof Image === "undefined" || !serverMessages || serverMessages.length === 0) {
@@ -2734,14 +2749,19 @@ export default function ChatView(props: ChatViewProps) {
           thresholdPx: OLDER_MESSAGES_AUTOLOAD_THRESHOLD_PX,
         })
       ) {
-        void loadOlderMessages();
+        void loadOlderTimelineContent();
       }
       if (!isAtBottom) {
         return isAtEndRef.current;
       }
       return setTimelineBottomStickiness(true);
     },
-    [activeTurnRunning, isMessagesViewportAtBottom, loadOlderMessages, setTimelineBottomStickiness],
+    [
+      activeTurnRunning,
+      isMessagesViewportAtBottom,
+      loadOlderTimelineContent,
+      setTimelineBottomStickiness,
+    ],
   );
 
   const scrollToEndFromPill = useCallback(() => {
@@ -2894,7 +2914,56 @@ export default function ChatView(props: ChatViewProps) {
     queuedComposerMessagesRef.current = [];
     queuedFlushInFlightRef.current = false;
     previousPhaseRef.current = null;
+    initialBottomScrollThreadKeyRef.current = null;
   }, [activeThread?.id]);
+
+  useEffect(() => {
+    if (!activeThreadKey || activeThread?.messages.length === 0 || selectedSubagentTranscript) {
+      return;
+    }
+    if (initialBottomScrollThreadKeyRef.current === activeThreadKey) {
+      return;
+    }
+
+    initialBottomScrollThreadKeyRef.current = activeThreadKey;
+    setTimelineBottomStickiness(true);
+
+    let frameId: number | null = null;
+    let timeoutId: number | null = null;
+    let remainingFrames = 4;
+    const scrollAfterLayout = () => {
+      scrollToEnd(false);
+      syncScrollToBottomVisibility(true);
+      remainingFrames -= 1;
+      if (remainingFrames > 0) {
+        frameId = window.requestAnimationFrame(scrollAfterLayout);
+        return;
+      }
+      frameId = null;
+    };
+
+    frameId = window.requestAnimationFrame(scrollAfterLayout);
+    timeoutId = window.setTimeout(() => {
+      scrollToEnd(false);
+      syncScrollToBottomVisibility(true);
+    }, 250);
+
+    return () => {
+      if (frameId !== null) {
+        window.cancelAnimationFrame(frameId);
+      }
+      if (timeoutId !== null) {
+        window.clearTimeout(timeoutId);
+      }
+    };
+  }, [
+    activeThread?.messages.length,
+    activeThreadKey,
+    scrollToEnd,
+    selectedSubagentTranscript,
+    setTimelineBottomStickiness,
+    syncScrollToBottomVisibility,
+  ]);
 
   // Auto-open the plan sidebar when plan/todo steps arrive for the current turn.
   // Don't auto-open for plans carried over from a previous turn (the user can open manually).
@@ -4670,6 +4739,12 @@ export default function ChatView(props: ChatViewProps) {
               onIsAtEndChange={onIsAtEndChange}
               onScrollViewportChange={syncTimelineScrollViewportStickiness}
               onUserScrollAwayFromEnd={releaseTimelineBottomStickiness}
+              hasOlderTimelineContent={
+                !selectedSubagentTranscript && hasOlderThreadTimelineContent(activeThread)
+              }
+              onLoadOlderTimelineContent={
+                selectedSubagentTranscript ? undefined : loadOlderTimelineContent
+              }
               onPreserveViewportRequest={preserveTimelineViewport}
               suppressMaintainScrollAtEnd={suppressTimelineMaintainScrollAtEnd}
             />
