@@ -4,7 +4,7 @@
 
 This file is the source of truth for the scalability work from the May 2026 audit. Keep it updated whenever scope, ordering, implementation details, or completion status changes.
 
-Current state: Stages 1, 2, 3, 4, 5, and 6 are complete. Replay RPC pagination and shell-stream gap recovery are implemented, including retry coverage for interrupted live paged replay. Provider ingestion now exposes enqueue/backpressure accounting through worker health and operational health, and rejected must-deliver runtime events now best-effort fail the affected session instead of leaving projection continuity ambiguous. Thread subscription snapshots now bound initial message, activity, proposed-plan, checkpoint, and persisted file-diff hydration and expose page metadata for paged resources; older messages, activities, proposed plans, and checkpoints can be loaded through explicit bounded page APIs, with the active-thread UI loading them together when older history is requested. Older persisted file diffs are fetched on demand for visible file-change rows by tool-call id instead of unconditionally hydrating all diffs on thread open. Thread shell summary refresh now uses targeted SQL aggregates instead of hydrating all thread messages, proposed plans, activities, and approvals; latest user-message timestamps, pending approval/user-input counts, latest pending user-input timestamp, and actionable proposed-plan state are now maintained incrementally on normal projection events. The orchestration engine now retains compact command-decision state instead of the full historical thread read model; full read models remain available as on-demand projection snapshots for compatibility. History sync no longer materializes full local history on the common autosave/startup push paths, uses indexed remote project/thread reads for mapping and latest-first imports, and compacts pushed receipts behind the synced cursor.
+Current state: Stages 1, 2, 3, 4, 5, 6, and 7 are complete. Stage 8 is in progress. Replay RPC pagination and shell-stream gap recovery are implemented, including retry coverage for interrupted live paged replay. Provider ingestion now exposes enqueue/backpressure accounting through worker health and operational health, and rejected must-deliver runtime events now best-effort fail the affected session instead of leaving projection continuity ambiguous. Thread subscription snapshots now bound initial message, activity, proposed-plan, checkpoint, and persisted file-diff hydration and expose page metadata for paged resources; older messages, activities, proposed plans, and checkpoints can be loaded through explicit bounded page APIs, with the active-thread UI loading them together when older history is requested. Older persisted file diffs are fetched on demand for visible file-change rows by tool-call id instead of unconditionally hydrating all diffs on thread open. Thread shell summary refresh now uses targeted SQL aggregates instead of hydrating all thread messages, proposed plans, activities, and approvals; latest user-message timestamps, pending approval/user-input counts, latest pending user-input timestamp, and actionable proposed-plan state are now maintained incrementally on normal projection events. The orchestration engine now retains compact command-decision state instead of the full historical thread read model; full read models remain available as on-demand projection snapshots for compatibility. History sync no longer materializes full local history on the common autosave/startup push paths, uses indexed remote project/thread reads for mapping and latest-first imports, and compacts pushed receipts behind the synced cursor.
 
 ## Goal
 
@@ -329,7 +329,7 @@ Progress notes:
 - [x] Cap command palette thread results before render.
 - [ ] Virtualize project rows or add a project search/collapse strategy that avoids rendering all projects.
 - [ ] Consider server/client paged thread search for command palette.
-- [ ] Reduce sidebar regroup/sort work on single-thread shell updates.
+- [x] Reduce sidebar regroup/sort work on single-thread shell updates.
 - [ ] Add regression tests for large sidebar datasets and command palette filtering.
 
 Expected outcome: many projects/threads do not make routine navigation or palette usage janky.
@@ -340,6 +340,7 @@ Progress notes:
 - Shared thread sorting now precomputes each thread's sort timestamp once before sorting, which reduces repeated message/timestamp scans in the sidebar, command palette, and latest-thread helpers.
 - Sidebar per-project thread preview pagination now uses one pass over the sorted project thread list to keep pinned threads, the active thread, and the visible unpinned page while collecting hidden threads.
 - Top-level command palette thread search now caps rendered thread matches to a fixed result window, keeping broad queries from mounting thousands of thread rows at once.
+- Sidebar project rows now use a shared project-thread layout derivation that sorts visible project threads once, caches scoped thread keys, computes per-thread statuses once, and derives rendered/hidden rows from that single result instead of duplicating status and pagination work on every project thread update.
 
 ### Stage 9: Logger Writer Lifecycle
 
@@ -351,12 +352,10 @@ Expected outcome: provider logging resource usage scales with active/recent thre
 
 ## Remaining Suggested Order
 
-1. Stage 6: History sync paging and indexing.
-2. Stage 7: Frontend active thread derivation.
-3. Stage 8: Frontend global list scaling.
-4. Stage 9: Logger writer lifecycle.
+1. Finish Stage 8: Frontend global list scaling.
+2. Stage 9: Logger writer lifecycle.
 
-Stages 1, 2, 3, 4, and 5 are complete. Stage 6 should come next because history sync still has whole-log materialization paths.
+Stages 1, 2, 3, 4, 5, 6, and 7 are complete. Stage 8 should continue with lower-risk sidebar derivation work first, then larger UI/search decisions, because routine shell updates should not force unnecessary global list work.
 
 ## Validation Requirements
 

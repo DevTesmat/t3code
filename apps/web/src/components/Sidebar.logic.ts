@@ -456,6 +456,118 @@ export function resolveProjectStatusIndicator(
   return highestPriorityStatus;
 }
 
+export function deriveSidebarProjectThreadLayout<T extends SidebarThreadSummary>(input: {
+  threads: readonly T[];
+  threadLastVisitedAts: readonly (string | null)[];
+  threadSortOrder: SidebarThreadSortOrder;
+  activeRouteThreadKey: string | null;
+  projectExpanded: boolean;
+  visibleUnpinnedLimit: number;
+  getThreadKey: (thread: T) => string;
+}): {
+  projectStatus: ThreadStatusPill | null;
+  visibleProjectThreads: T[];
+  orderedProjectThreadKeys: string[];
+  pinnedCollapsedThread: T | null;
+  hasOverflowingThreads: boolean;
+  hiddenThreadStatus: ThreadStatusPill | null;
+  renderedThreads: T[];
+  showEmptyThreadState: boolean;
+  shouldShowThreadPanel: boolean;
+} {
+  const {
+    activeRouteThreadKey,
+    getThreadKey,
+    projectExpanded,
+    threads,
+    threadLastVisitedAts,
+    threadSortOrder,
+    visibleUnpinnedLimit,
+  } = input;
+  const threadKeyByThread = new Map<T, string>();
+  const getCachedThreadKey = (thread: T) => {
+    const cached = threadKeyByThread.get(thread);
+    if (cached !== undefined) {
+      return cached;
+    }
+    const threadKey = getThreadKey(thread);
+    threadKeyByThread.set(thread, threadKey);
+    return threadKey;
+  };
+  const lastVisitedAtByThreadKey = new Map<string, string | null>();
+  threads.forEach((thread, index) => {
+    lastVisitedAtByThreadKey.set(getCachedThreadKey(thread), threadLastVisitedAts[index] ?? null);
+  });
+
+  const visibleProjectThreads = sortThreads(
+    threads.filter((thread) => thread.archivedAt === null),
+    threadSortOrder,
+  );
+  const orderedProjectThreadKeys = visibleProjectThreads.map((thread) =>
+    getCachedThreadKey(thread),
+  );
+  const statusByThreadKey = new Map<string, ThreadStatusPill | null>();
+  for (const thread of visibleProjectThreads) {
+    const threadKey = getCachedThreadKey(thread);
+    const lastVisitedAt = lastVisitedAtByThreadKey.get(threadKey);
+    statusByThreadKey.set(
+      threadKey,
+      resolveThreadStatusPill({
+        thread: {
+          ...thread,
+          ...(lastVisitedAt !== null && lastVisitedAt !== undefined ? { lastVisitedAt } : {}),
+        },
+      }),
+    );
+  }
+  const projectStatus = resolveProjectStatusIndicator([...statusByThreadKey.values()]);
+  const pinnedCollapsedThread =
+    activeRouteThreadKey && !projectExpanded
+      ? (visibleProjectThreads.find(
+          (thread) => getCachedThreadKey(thread) === activeRouteThreadKey,
+        ) ?? null)
+      : null;
+  const shouldShowThreadPanel = projectExpanded || pinnedCollapsedThread !== null;
+  const activeThreadId =
+    activeRouteThreadKey && projectExpanded
+      ? visibleProjectThreads.find((thread) => getCachedThreadKey(thread) === activeRouteThreadKey)
+          ?.id
+      : undefined;
+  const paginatedThreads = getVisibleThreadsForProject({
+    threads: visibleProjectThreads,
+    activeThreadId,
+    visibleUnpinnedLimit,
+  });
+  const visibleThreadKeys = new Set(
+    [
+      ...paginatedThreads.visibleThreads,
+      ...(pinnedCollapsedThread ? [pinnedCollapsedThread] : []),
+    ].map((thread) => getCachedThreadKey(thread)),
+  );
+  const renderedThreads = pinnedCollapsedThread
+    ? [pinnedCollapsedThread]
+    : visibleProjectThreads.filter((thread) => visibleThreadKeys.has(getCachedThreadKey(thread)));
+  const hiddenThreadStatuses: (ThreadStatusPill | null)[] = [];
+  for (const thread of visibleProjectThreads) {
+    const threadKey = getCachedThreadKey(thread);
+    if (!visibleThreadKeys.has(threadKey)) {
+      hiddenThreadStatuses.push(statusByThreadKey.get(threadKey) ?? null);
+    }
+  }
+
+  return {
+    hasOverflowingThreads: hiddenThreadStatuses.length > 0,
+    hiddenThreadStatus: resolveProjectStatusIndicator(hiddenThreadStatuses),
+    orderedProjectThreadKeys,
+    pinnedCollapsedThread,
+    projectStatus,
+    renderedThreads,
+    showEmptyThreadState: projectExpanded && visibleProjectThreads.length === 0,
+    shouldShowThreadPanel,
+    visibleProjectThreads,
+  };
+}
+
 export function getVisibleThreadsForProject<T extends Pick<Thread, "id" | "pinnedAt">>(input: {
   threads: readonly T[];
   activeThreadId: T["id"] | undefined;

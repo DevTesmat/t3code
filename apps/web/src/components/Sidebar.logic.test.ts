@@ -3,6 +3,7 @@ import { ProviderDriverKind } from "@t3tools/contracts";
 
 import {
   createThreadJumpHintVisibilityController,
+  deriveSidebarProjectThreadLayout,
   DONE_THREAD_STATUS_TTL_MS,
   getSidebarThreadIdsToPrewarm,
   getVisibleSidebarThreadIds,
@@ -35,6 +36,7 @@ import {
   DEFAULT_INTERACTION_MODE,
   DEFAULT_RUNTIME_MODE,
   type Project,
+  type SidebarThreadSummary,
   type Thread,
 } from "../types";
 
@@ -968,6 +970,77 @@ describe("getVisibleThreadsForProject", () => {
   });
 });
 
+describe("deriveSidebarProjectThreadLayout", () => {
+  it("sorts, paginates, and derives visible and hidden project status in one layout result", () => {
+    const threads = [
+      makeSidebarThreadSummary({
+        id: ThreadId.make("thread-old"),
+        createdAt: "2026-03-09T10:00:00.000Z",
+      }),
+      makeSidebarThreadSummary({
+        id: ThreadId.make("thread-hidden-action"),
+        createdAt: "2026-03-09T10:01:00.000Z",
+        hasPendingApprovals: true,
+      }),
+      makeSidebarThreadSummary({
+        id: ThreadId.make("thread-new"),
+        createdAt: "2026-03-09T10:02:00.000Z",
+      }),
+    ];
+
+    const result = deriveSidebarProjectThreadLayout({
+      activeRouteThreadKey: null,
+      getThreadKey: (thread) => thread.id,
+      projectExpanded: true,
+      threads,
+      threadLastVisitedAts: [],
+      threadSortOrder: "created_at",
+      visibleUnpinnedLimit: 1,
+    });
+
+    expect(result.orderedProjectThreadKeys).toEqual([
+      ThreadId.make("thread-new"),
+      ThreadId.make("thread-hidden-action"),
+      ThreadId.make("thread-old"),
+    ]);
+    expect(result.renderedThreads.map((thread) => thread.id)).toEqual([
+      ThreadId.make("thread-new"),
+    ]);
+    expect(result.hasOverflowingThreads).toBe(true);
+    expect(result.hiddenThreadStatus).toMatchObject({ label: "Pending Approval" });
+    expect(result.projectStatus).toMatchObject({ label: "Pending Approval" });
+  });
+
+  it("keeps the active thread renderable when its project is collapsed", () => {
+    const threads = [
+      makeSidebarThreadSummary({
+        id: ThreadId.make("thread-active"),
+        createdAt: "2026-03-09T10:00:00.000Z",
+      }),
+      makeSidebarThreadSummary({
+        id: ThreadId.make("thread-other"),
+        createdAt: "2026-03-09T10:01:00.000Z",
+      }),
+    ];
+
+    const result = deriveSidebarProjectThreadLayout({
+      activeRouteThreadKey: ThreadId.make("thread-active"),
+      getThreadKey: (thread) => thread.id,
+      projectExpanded: false,
+      threads,
+      threadLastVisitedAts: [],
+      threadSortOrder: "created_at",
+      visibleUnpinnedLimit: 1,
+    });
+
+    expect(result.shouldShowThreadPanel).toBe(true);
+    expect(result.pinnedCollapsedThread?.id).toBe(ThreadId.make("thread-active"));
+    expect(result.renderedThreads.map((thread) => thread.id)).toEqual([
+      ThreadId.make("thread-active"),
+    ]);
+  });
+});
+
 function makeProject(overrides: Partial<Project> = {}): Project {
   const { defaultModelSelection, ...rest } = overrides;
   return {
@@ -1013,6 +1086,31 @@ function makeThread(overrides: Partial<Thread> = {}): Thread {
     worktreePath: null,
     turnDiffSummaries: [],
     activities: [],
+    ...overrides,
+  };
+}
+
+function makeSidebarThreadSummary(
+  overrides: Partial<SidebarThreadSummary> = {},
+): SidebarThreadSummary {
+  return {
+    id: ThreadId.make("thread-1"),
+    environmentId: localEnvironmentId,
+    projectId: ProjectId.make("project-1"),
+    title: "Thread",
+    interactionMode: DEFAULT_INTERACTION_MODE,
+    session: null,
+    createdAt: "2026-03-09T10:00:00.000Z",
+    archivedAt: null,
+    updatedAt: "2026-03-09T10:00:00.000Z",
+    latestTurn: null,
+    branch: null,
+    worktreePath: null,
+    latestUserMessageAt: null,
+    hasPendingApprovals: false,
+    hasPendingUserInput: false,
+    latestPendingUserInputAt: null,
+    hasActionableProposedPlan: false,
     ...overrides,
   };
 }

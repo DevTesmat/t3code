@@ -151,6 +151,35 @@ function threadUnpinned(sequence: number, threadId: string) {
   });
 }
 
+function threadPinned(sequence: number, threadId: string) {
+  return event(sequence, threadId, "thread.pinned", {
+    threadId,
+  });
+}
+
+function threadArchived(sequence: number, threadId: string) {
+  return event(sequence, threadId, "thread.archived", {
+    threadId,
+    archivedAt: baseEvent.occurredAt,
+  });
+}
+
+function threadMetaUpdated(sequence: number, threadId: string) {
+  return event(sequence, threadId, "thread.meta-updated", {
+    threadId,
+    title: "Updated title",
+    updatedAt: baseEvent.occurredAt,
+  });
+}
+
+function threadInteractionModeSet(sequence: number, threadId: string) {
+  return event(sequence, threadId, "thread.interaction-mode-set", {
+    threadId,
+    interactionMode: "default",
+    updatedAt: baseEvent.occurredAt,
+  });
+}
+
 describe("history sync planner", () => {
   test("selects remote deltas and filters rows already imported at the same sequence", () => {
     const alreadyImported = messageSent(3, "thread-a", "remote");
@@ -627,6 +656,52 @@ describe("history sync planner", () => {
       action: "push-local",
       candidateEvents: [pendingUnpinned],
       pushableEvents: [pendingUnpinned],
+    });
+  });
+
+  test("autosave UI-only events do not block later eligible pending events", () => {
+    const uiEvents = [
+      threadUnpinned(1, "thread-empty"),
+      threadPinned(2, "thread-empty"),
+      threadArchived(3, "thread-empty"),
+      threadMetaUpdated(4, "thread-empty"),
+      threadInteractionModeSet(5, "thread-empty"),
+    ];
+    const completedThreadEvents = [
+      threadCreated(6, "thread-done"),
+      turnStartRequested(7, "thread-done", "turn-done"),
+      turnDiffCompleted(8, "thread-done", "turn-done"),
+    ];
+    const local = [...uiEvents, ...completedThreadEvents];
+
+    expect(
+      planAutosaveLocalPush({
+        localEvents: local,
+        unpushedLocalEvents: local,
+        remoteMaxSequence: 0,
+        projectionThreadRows: [
+          {
+            threadId: "thread-empty",
+            pendingUserInputCount: 0,
+            hasActionableProposedPlan: 0,
+            latestTurnId: null,
+            sessionStatus: "ready",
+            sessionActiveTurnId: null,
+          },
+          {
+            threadId: "thread-done",
+            pendingUserInputCount: 0,
+            hasActionableProposedPlan: 0,
+            latestTurnId: "turn-done",
+            sessionStatus: "ready",
+            sessionActiveTurnId: null,
+          },
+        ],
+      }),
+    ).toMatchObject({
+      action: "push-local",
+      candidateEvents: local,
+      pushableEvents: local,
     });
   });
 

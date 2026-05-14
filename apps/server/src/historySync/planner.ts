@@ -1028,6 +1028,16 @@ export function isAutosyncEligibleThread(state: HistorySyncAutosyncThreadState):
   );
 }
 
+function isNonBlockingAutosyncThreadEvent(event: HistorySyncEventRow): boolean {
+  return (
+    event.eventType === "thread.archived" ||
+    event.eventType === "thread.interaction-mode-set" ||
+    event.eventType === "thread.meta-updated" ||
+    event.eventType === "thread.pinned" ||
+    event.eventType === "thread.unpinned"
+  );
+}
+
 export function selectAutosaveCandidateLocalEvents(input: {
   readonly localEvents: readonly HistorySyncEventRow[];
   readonly unpushedLocalEvents: readonly HistorySyncEventRow[];
@@ -1065,6 +1075,10 @@ export function selectAutosaveContiguousPushableEvents(input: {
     (left, right) => left.sequence - right.sequence,
   )) {
     if (event.aggregateKind !== "thread") {
+      pushable.push(event);
+      continue;
+    }
+    if (isNonBlockingAutosyncThreadEvent(event)) {
       pushable.push(event);
       continue;
     }
