@@ -789,10 +789,19 @@ function deriveReasoningSegmentsFromOrdered(
     );
   }
 
-  return [...segmentsByKey.values()].toSorted(
-    (left, right) =>
-      left.createdAt.localeCompare(right.createdAt) || left.id.localeCompare(right.id),
+  const segments = [...segmentsByKey.values()];
+  const turnsWithVisibleReasoning = new Set(
+    segments.filter((segment) => segment.text.trim().length > 0).map((segment) => segment.turnId),
   );
+
+  return segments
+    .filter(
+      (segment) => segment.text.trim().length > 0 || !turnsWithVisibleReasoning.has(segment.turnId),
+    )
+    .toSorted(
+      (left, right) =>
+        left.createdAt.localeCompare(right.createdAt) || left.id.localeCompare(right.id),
+    );
 }
 
 function mergeReasoningSegment(

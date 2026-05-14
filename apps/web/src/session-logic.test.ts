@@ -199,6 +199,74 @@ describe("deriveReasoningSegments", () => {
       },
     ]);
   });
+
+  it("suppresses private-only reasoning rows when the same turn has visible reasoning text", () => {
+    const activities = [
+      makeActivity({
+        id: "private-started",
+        kind: "reasoning.status",
+        summary: "Thinking",
+        tone: "info",
+        turnId: "turn-1",
+        payload: { itemId: "private-reasoning", status: "running" },
+        sequence: 1,
+      }),
+      makeActivity({
+        id: "private-completed",
+        kind: "reasoning.status",
+        summary: "Thinking",
+        tone: "info",
+        turnId: "turn-1",
+        payload: { itemId: "private-reasoning", status: "completed" },
+        sequence: 2,
+      }),
+      makeActivity({
+        id: "visible-reasoning",
+        kind: "reasoning.delta",
+        summary: "Thinking",
+        tone: "info",
+        turnId: "turn-1",
+        payload: {
+          itemId: "visible-reasoning",
+          streamKind: "reasoning_summary_text",
+          text: "Checking the formatter.",
+        },
+        sequence: 3,
+      }),
+      makeActivity({
+        id: "other-turn-private-started",
+        kind: "reasoning.status",
+        summary: "Thinking",
+        tone: "info",
+        turnId: "turn-2",
+        payload: { itemId: "other-private-reasoning", status: "running" },
+        sequence: 4,
+      }),
+      makeActivity({
+        id: "other-turn-private-completed",
+        kind: "reasoning.status",
+        summary: "Thinking",
+        tone: "info",
+        turnId: "turn-2",
+        payload: { itemId: "other-private-reasoning", status: "completed" },
+        sequence: 5,
+      }),
+    ];
+
+    expect(deriveReasoningSegments(activities)).toMatchObject([
+      {
+        id: "turn-1:visible-reasoning:reasoning_summary_text",
+        turnId: "turn-1",
+        text: "Checking the formatter.",
+      },
+      {
+        id: "turn-2:other-private-reasoning:reasoning",
+        turnId: "turn-2",
+        text: "",
+        status: "completed",
+      },
+    ]);
+  });
 });
 
 function makeRunningSession(overrides: Partial<ThreadSession> = {}): ThreadSession {

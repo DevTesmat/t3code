@@ -36,8 +36,10 @@ export interface CompactDiffRenderModel {
 }
 
 const MAX_COMPACT_ROWS = 80;
+const MAX_COMPACT_BLOCK_LINES = 80;
 const MAX_LINE_LENGTH = 260;
 const MAX_LINE_TOKENS = 160;
+const MIN_CHANGED_LINE_EQUAL_RATIO = 0.25;
 
 export const CompactInlineDiff = memo(function CompactInlineDiff(props: {
   model: CompactDiffRenderModel;
@@ -50,7 +52,7 @@ export const CompactInlineDiff = memo(function CompactInlineDiff(props: {
     <div className={cn("min-w-max", className)} data-compact-inline-diff="true">
       <div
         data-diffs-header
-        className="flex min-h-8 min-w-0 items-center gap-2 border-b border-border/55 bg-card/35 pr-8 pl-2"
+        className="sticky top-0 z-10 flex min-h-8 min-w-0 items-center gap-2 border-b border-border/55 bg-card/95 pr-8 pl-2 backdrop-blur"
       >
         <span className="flex size-4 shrink-0 items-center justify-center rounded-[4px] border border-primary/80 bg-primary/10 text-primary">
           <FilePenLineIcon aria-hidden="true" className="size-3" strokeWidth={2.2} />
@@ -114,6 +116,8 @@ function CompactSeparatorRow({ lines }: { lines: number }) {
 }
 
 function CompactChangeRow({ row }: { row: CompactDiffRow }) {
+  const shouldCollapseLineNumbers = row.deletionLineNumber === row.additionLineNumber;
+
   return (
     <div className="grid grid-cols-[6.5ch_minmax(0,1fr)]">
       <div
@@ -121,9 +125,17 @@ function CompactChangeRow({ row }: { row: CompactDiffRow }) {
         data-line-type="change-addition"
         className="flex items-center justify-end gap-1 border-r border-border/35 text-[10px]"
       >
-        <span className="text-destructive/85">{row.deletionLineNumber}</span>
-        <ChevronRightIcon aria-hidden="true" className="size-2.5 text-muted-foreground/45" />
-        <span className="text-success/90">{row.additionLineNumber}</span>
+        {shouldCollapseLineNumbers ? (
+          <span data-collapsed-line-number className="text-amber-500/95 dark:text-amber-300/90">
+            {row.additionLineNumber}
+          </span>
+        ) : (
+          <>
+            <span className="text-destructive/85">{row.deletionLineNumber}</span>
+            <ChevronRightIcon aria-hidden="true" className="size-2.5 text-muted-foreground/45" />
+            <span className="text-success/90">{row.additionLineNumber}</span>
+          </>
+        )}
       </div>
       <div
         data-line
@@ -181,31 +193,44 @@ export function buildCompactDiffRenderModel(
         continue;
       }
 
-      if (content.deletions !== 1 || content.additions !== 1) {
+      if (
+        content.deletions !== content.additions ||
+        content.deletions === 0 ||
+        content.deletions > MAX_COMPACT_BLOCK_LINES
+      ) {
         return null;
       }
 
-      const deletionLine = fileDiff.deletionLines[content.deletionLineIndex];
-      const additionLine = fileDiff.additionLines[content.additionLineIndex];
-      if (deletionLine === undefined || additionLine === undefined) {
-        return null;
+      additions += content.additions;
+      deletions += content.deletions;
+
+      for (let lineOffset = 0; lineOffset < content.deletions; lineOffset += 1) {
+        const deletionLineIndex = content.deletionLineIndex + lineOffset;
+        const additionLineIndex = content.additionLineIndex + lineOffset;
+        const deletionLine = fileDiff.deletionLines[deletionLineIndex];
+        const additionLine = fileDiff.additionLines[additionLineIndex];
+        if (deletionLine === undefined || additionLine === undefined) {
+          return null;
+        }
+
+        if (deletionLine === additionLine) {
+          continue;
+        }
+
+        const tokens = diffCompactLine(deletionLine, additionLine);
+        if (!tokens || !hasEnoughSharedContent(tokens, deletionLine, additionLine)) return null;
+
+        compactChangeRows += 1;
+        if (compactChangeRows > MAX_COMPACT_ROWS) return null;
+
+        rows.push({
+          key: `change:${hunkIndex}:${contentIndex}:${lineOffset}`,
+          kind: "change",
+          deletionLineNumber: hunk.deletionStart + deletionLineIndex - hunk.deletionLineIndex,
+          additionLineNumber: hunk.additionStart + additionLineIndex - hunk.additionLineIndex,
+          tokens,
+        });
       }
-
-      const tokens = diffCompactLine(deletionLine, additionLine);
-      if (!tokens) return null;
-
-      compactChangeRows += 1;
-      if (compactChangeRows > MAX_COMPACT_ROWS) return null;
-
-      additions += 1;
-      deletions += 1;
-      rows.push({
-        key: `change:${hunkIndex}:${contentIndex}`,
-        kind: "change",
-        deletionLineNumber: hunk.deletionStart + content.deletionLineIndex - hunk.deletionLineIndex,
-        additionLineNumber: hunk.additionStart + content.additionLineIndex - hunk.additionLineIndex,
-        tokens,
-      });
     }
   }
 
@@ -234,6 +259,18 @@ function diffCompactLine(deletionLine: string, additionLine: string): CompactDif
   if (operations.length === 0) return null;
 
   return mergeAdjacentTokens(operations);
+}
+
+function hasEnoughSharedContent(
+  tokens: ReadonlyArray<CompactDiffToken>,
+  deletionLine: string,
+  additionLine: string,
+): boolean {
+  const equalLength = tokens
+    .filter((token) => token.kind === "equal")
+    .reduce((total, token) => total + token.text.trim().length, 0);
+  const comparableLength = Math.max(deletionLine.trim().length, additionLine.trim().length);
+  return comparableLength === 0 || equalLength / comparableLength >= MIN_CHANGED_LINE_EQUAL_RATIO;
 }
 
 function tokenizeDiffLine(line: string): string[] {

@@ -48,12 +48,13 @@ export const DIFF_RENDER_UNSAFE_CSS = `
 
 [data-diffs-header] {
   position: sticky !important;
-  top: 0;
-  z-index: 4;
+  top: 0 !important;
+  z-index: 10 !important;
   min-height: 1.75rem !important;
-  background-color: color-mix(in srgb, var(--card) 96%, var(--background)) !important;
+  background-color: color-mix(in srgb, var(--card) 98%, var(--background)) !important;
   border-bottom: 1px solid var(--border) !important;
-  box-shadow: none !important;
+  box-shadow: 0 1px 0 color-mix(in srgb, var(--border) 58%, transparent) !important;
+  backdrop-filter: blur(8px);
 }
 
 [data-title] {

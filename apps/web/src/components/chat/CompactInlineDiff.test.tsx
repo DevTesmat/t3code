@@ -68,6 +68,36 @@ describe("CompactInlineDiff", () => {
     expect(markup).toContain("line-through");
   });
 
+  it("collapses matching deletion and addition line numbers into one changed line number", () => {
+    const model = buildCompactDiffRenderModel(buildFileDiff());
+    expect(model).not.toBeNull();
+
+    const markup = renderToStaticMarkup(<CompactInlineDiff model={model!} />);
+
+    expect(markup).toContain("data-collapsed-line-number");
+    expect(markup).not.toContain("lucide-chevron-right");
+  });
+
+  it("keeps split line numbers when changed line numbers differ", () => {
+    const model = buildCompactDiffRenderModel(
+      buildFileDiff({
+        hunks: [
+          {
+            ...buildFileDiff().hunks[0]!,
+            deletionStart: 20,
+            additionStart: 24,
+          },
+        ],
+      }),
+    );
+    expect(model).not.toBeNull();
+
+    const markup = renderToStaticMarkup(<CompactInlineDiff model={model!} />);
+
+    expect(markup).not.toContain("data-collapsed-line-number");
+    expect(markup).toContain("lucide-chevron-right");
+  });
+
   it("keeps replacements at the changed word instead of marking the suffix", () => {
     const model = buildCompactDiffRenderModel(
       buildFileDiff({
@@ -87,6 +117,61 @@ describe("CompactInlineDiff", () => {
       ["added", "instrument"],
       ["equal", ".\n"],
     ]);
+  });
+
+  it("compacts line-aligned multi-line replacement blocks", () => {
+    const model = buildCompactDiffRenderModel(
+      buildFileDiff({
+        hunks: [
+          {
+            ...buildFileDiff().hunks[0]!,
+            deletionCount: 3,
+            deletionLines: 3,
+            additionCount: 3,
+            additionLines: 3,
+            hunkContent: [
+              {
+                type: "change",
+                deletions: 3,
+                deletionLineIndex: 0,
+                additions: 3,
+                additionLineIndex: 0,
+              },
+            ],
+            splitLineCount: 3,
+            unifiedLineCount: 6,
+          },
+        ],
+        splitLineCount: 3,
+        unifiedLineCount: 6,
+        deletionLines: [
+          "The project begins with a quiet idea.\n",
+          "\n",
+          "Performance matters because slow instruments interrupt thought.\n",
+        ],
+        additionLines: [
+          "The project begins with a practical idea.\n",
+          "\n",
+          "Performance matters because slow instruments interrupt thought and make feedback loops expensive.\n",
+        ],
+      }),
+    );
+
+    expect(model).not.toBeNull();
+    expect(model?.deletions).toBe(3);
+    expect(model?.additions).toBe(3);
+    expect(model?.rows.filter((row) => row.kind === "change")).toHaveLength(2);
+  });
+
+  it("declines line-aligned replacement blocks when paired lines are unrelated", () => {
+    const model = buildCompactDiffRenderModel(
+      buildFileDiff({
+        deletionLines: ["const value = alpha;\n"],
+        additionLines: ["completely unrelated prose\n"],
+      }),
+    );
+
+    expect(model).toBeNull();
   });
 
   it("declines multi-line change blocks so Pierre can render the fallback", () => {
