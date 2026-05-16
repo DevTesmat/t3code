@@ -15,6 +15,7 @@ release/
 release-mock/
 release-local/
 .t3
+.t3-bench
 .idea/
 apps/web/.playwright
 apps/web/playwright-report

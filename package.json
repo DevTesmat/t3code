@@ -31,6 +31,7 @@
     "dev:web": "bun scripts/dev-runner.ts dev:web",
     "dev:marketing": "turbo run dev --filter=@t3tools/marketing",
     "dev:desktop": "bun scripts/dev-runner.ts dev:desktop",
+    "dev:desktop:bench": "bun scripts/desktop-benchmark-mvp.ts",
     "dev:desktop:sync-history": "bun scripts/sync-desktop-history.ts && bun scripts/dev-runner.ts dev:desktop",
     "start": "turbo run start --filter=t3",
     "start:desktop": "turbo run start --filter=@t3tools/desktop",

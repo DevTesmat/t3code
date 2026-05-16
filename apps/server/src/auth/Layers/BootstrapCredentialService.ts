@@ -91,6 +91,17 @@ export const makeBootstrapCredentialService = Effect.gen(function* () {
       }),
       remainingUses: 1,
     });
+    for (const credential of config.extraDesktopBootstrapTokens ?? []) {
+      yield* seedGrant(credential, {
+        method: "desktop-bootstrap",
+        role: "owner",
+        subject: "desktop-bootstrap",
+        expiresAt: DateTime.add(now, {
+          milliseconds: Duration.toMillis(DEFAULT_ONE_TIME_TOKEN_TTL_MINUTES),
+        }),
+        remainingUses: 1,
+      });
+    }
   }
 
   const toBootstrapCredentialError = (message: string) => (cause: unknown) =>

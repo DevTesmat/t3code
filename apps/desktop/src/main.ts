@@ -126,6 +126,10 @@ const SAVED_ENVIRONMENT_REGISTRY_PATH = Path.join(STATE_DIR, "saved-environments
 const DESKTOP_SCHEME = "t3";
 const ROOT_DIR = Path.resolve(__dirname, "../../..");
 const isDevelopment = Boolean(process.env.VITE_DEV_SERVER_URL);
+const BENCHMARK_BOOTSTRAP_PATH =
+  isDevelopment && process.env.T3CODE_BENCHMARK_MODE === "1"
+    ? process.env.T3CODE_BENCHMARK_BOOTSTRAP_PATH?.trim()
+    : undefined;
 const desktopAppBranding: DesktopAppBranding = resolveDesktopAppBranding({
   isDevelopment,
   appVersion: app.getVersion(),
@@ -240,6 +244,7 @@ let backendProcess: ChildProcess.ChildProcess | null = null;
 let backendPort = 0;
 let backendBindHost = DESKTOP_LOOPBACK_HOST;
 let backendBootstrapToken = "";
+let benchmarkBootstrapToken = "";
 let backendHttpUrl = "";
 let backendWsUrl = "";
 let backendEndpointUrl: string | null = null;
@@ -1449,6 +1454,9 @@ function startBackend(): void {
         t3Home: BASE_DIR,
         host: backendBindHost,
         desktopBootstrapToken: backendBootstrapToken,
+        ...(benchmarkBootstrapToken
+          ? { extraDesktopBootstrapTokens: [benchmarkBootstrapToken] }
+          : {}),
         ...(backendObservabilitySettings.otlpTracesUrl
           ? { otlpTracesUrl: backendObservabilitySettings.otlpTracesUrl }
           : {}),
@@ -2183,6 +2191,18 @@ async function bootstrap(): Promise<void> {
       : `using configured backend port port=${backendPort}`,
   );
   backendBootstrapToken = Crypto.randomBytes(24).toString("hex");
+  benchmarkBootstrapToken = BENCHMARK_BOOTSTRAP_PATH ? Crypto.randomBytes(24).toString("hex") : "";
+  if (BENCHMARK_BOOTSTRAP_PATH) {
+    FS.mkdirSync(Path.dirname(BENCHMARK_BOOTSTRAP_PATH), { recursive: true });
+    FS.writeFileSync(
+      BENCHMARK_BOOTSTRAP_PATH,
+      `${JSON.stringify({
+        httpBaseUrl: `http://${DESKTOP_LOOPBACK_HOST}:${backendPort}`,
+        wsBaseUrl: `ws://${DESKTOP_LOOPBACK_HOST}:${backendPort}`,
+        bootstrapToken: benchmarkBootstrapToken,
+      })}\n`,
+    );
+  }
   if (desktopSettings.serverExposureMode !== DEFAULT_DESKTOP_SETTINGS.serverExposureMode) {
     writeDesktopLogHeader(
       `bootstrap restoring persisted server exposure mode mode=${desktopSettings.serverExposureMode}`,
