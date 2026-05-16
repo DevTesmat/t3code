@@ -401,6 +401,7 @@ function areReasoningSegmentsUnchanged(
       other !== undefined &&
       segment.id === other.id &&
       segment.text === other.text &&
+      segment.streamKind === other.streamKind &&
       segment.updatedAt === other.updatedAt
     );
   });

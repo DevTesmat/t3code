@@ -675,6 +675,23 @@ function normalizeRuntimeTurnState(
   }
 }
 
+function reasoningSummaryTextFromLifecycleData(data: unknown): string | undefined {
+  const dataRecord = data && typeof data === "object" ? (data as Record<string, unknown>) : null;
+  const item = dataRecord?.item;
+  const itemRecord = item && typeof item === "object" ? (item as Record<string, unknown>) : null;
+  const summary = itemRecord?.summary;
+  if (Array.isArray(summary)) {
+    const text = summary.filter((entry): entry is string => typeof entry === "string").join("\n\n");
+    const trimmed = text.trim();
+    return trimmed.length > 0 ? trimmed : undefined;
+  }
+  if (typeof summary === "string") {
+    const trimmed = summary.trim();
+    return trimmed.length > 0 ? trimmed : undefined;
+  }
+  return undefined;
+}
+
 function orchestrationSessionStatusFromRuntimeState(
   state: "starting" | "running" | "waiting" | "ready" | "interrupted" | "stopped" | "error",
 ): "starting" | "running" | "ready" | "interrupted" | "stopped" | "error" {
@@ -1100,21 +1117,38 @@ function runtimeEventToActivities(
         ];
       }
       if (event.payload.itemType === "reasoning") {
-        return [
-          {
-            id: event.eventId,
+        const activities: OrchestrationThreadActivity[] = [];
+        const summaryText = reasoningSummaryTextFromLifecycleData(event.payload.data);
+        if (summaryText && event.itemId) {
+          activities.push({
+            id: EventId.make(`${event.eventId}:summary`),
             createdAt: event.createdAt,
             tone: "info",
-            kind: "reasoning.status",
+            kind: "reasoning.delta",
             summary: "Thinking",
             payload: {
-              status: "completed",
-              ...(event.itemId ? { itemId: event.itemId } : {}),
+              text: summaryText,
+              streamKind: "reasoning_summary_text",
+              itemId: event.itemId,
             },
             turnId: toTurnId(event.turnId) ?? null,
             ...maybeSequence,
+          });
+        }
+        activities.push({
+          id: event.eventId,
+          createdAt: event.createdAt,
+          tone: "info",
+          kind: "reasoning.status",
+          summary: "Thinking",
+          payload: {
+            status: "completed",
+            ...(event.itemId ? { itemId: event.itemId } : {}),
           },
-        ];
+          turnId: toTurnId(event.turnId) ?? null,
+          ...maybeSequence,
+        });
+        return activities;
       }
       if (!isToolLifecycleItemType(event.payload.itemType)) {
         return [];

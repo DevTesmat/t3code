@@ -246,6 +246,7 @@ describe("deriveMessagesTimelineRows", () => {
           createdAt: "2026-01-01T00:00:01Z",
           updatedAt: "2026-01-01T00:00:02Z",
           text: "Inspecting the repo",
+          streamKind: "reasoning_text",
           status: "completed",
         },
       ],

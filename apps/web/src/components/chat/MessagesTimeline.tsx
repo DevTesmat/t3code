@@ -758,11 +758,13 @@ function ReasoningSegmentsBlock({
   );
   const hasVisibleText = text.length > 0;
   const allCompleted = segments.every((segment) => segment.status === "completed");
+  const isPrivateOnly = !hasVisibleText;
   const displayText = hasVisibleText
     ? text
     : allCompleted
       ? "Reasoned privately."
       : "Reasoning privately...";
+  const title = hasVisibleText ? reasoningTitleFromText(text) : undefined;
   const preview = useMemo(() => compactReasoningPreview(displayText), [displayText]);
 
   useEffect(() => {
@@ -791,6 +793,16 @@ function ReasoningSegmentsBlock({
     return null;
   }
 
+  if (isPrivateOnly) {
+    return (
+      <div ref={rootRef} className="mt-2 max-w-full">
+        <div className="inline-flex min-w-0 rounded-md border border-border/35 bg-muted/15 px-2.5 py-1 text-[11px] font-medium leading-5 text-muted-foreground">
+          {allCompleted ? "Reasoned" : "Reasoning"}
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div ref={rootRef} className="mt-2 max-w-full">
       <div
@@ -808,10 +820,10 @@ function ReasoningSegmentsBlock({
           <ChevronRightIcon
             className={cn("size-3 shrink-0 transition-transform", isExpanded ? "rotate-90" : null)}
           />
-          <span className="shrink-0 font-medium">
-            {isLive || !allCompleted ? "Thinking" : "Thought"}
+          <span className="min-w-0 shrink truncate font-medium">
+            {title ?? (isLive || !allCompleted ? "Thinking" : "Thought")}
           </span>
-          {!isExpanded ? (
+          {!isExpanded && !title ? (
             <>
               <span className="text-muted-foreground/45">·</span>
               <span className="min-w-0 flex-1 truncate text-muted-foreground/70">{preview}</span>
@@ -826,6 +838,21 @@ function ReasoningSegmentsBlock({
       </div>
     </div>
   );
+}
+
+function reasoningTitleFromText(text: string): string | undefined {
+  const firstLine = text.trim().split(/\r?\n/, 1)[0]?.trim();
+  if (!firstLine) {
+    return undefined;
+  }
+
+  const boldTitle = /^\*\*(?<title>[^*\n][^*\n]*?)\*\*$/.exec(firstLine)?.groups?.title?.trim();
+  if (boldTitle) {
+    return boldTitle;
+  }
+
+  const headingTitle = /^#{1,6}\s+(?<title>.+?)(?:\s+#+)?$/.exec(firstLine)?.groups?.title?.trim();
+  return headingTitle && headingTitle.length > 0 ? headingTitle : undefined;
 }
 
 function compactReasoningPreview(text: string): string {

@@ -106,6 +106,7 @@ export interface ReasoningSegment {
   createdAt: string;
   updatedAt: string;
   text: string;
+  streamKind: string;
   status: "running" | "completed";
 }
 
@@ -825,6 +826,11 @@ function mergeReasoningSegment(
         ? existing.updatedAt
         : activity.createdAt,
     text: mergeReasoningText(existing?.text ?? "", text),
+    streamKind:
+      typeof (activity.payload as { streamKind?: unknown } | null | undefined)?.streamKind ===
+      "string"
+        ? (activity.payload as { streamKind: string }).streamKind
+        : (existing?.streamKind ?? "reasoning"),
     status: status === "completed" ? "completed" : (existing?.status ?? "running"),
   };
 }

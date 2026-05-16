@@ -209,6 +209,61 @@ describe("MessagesTimeline", () => {
     }
   });
 
+  it("renders private completed reasoning as a plain reasoned marker", async () => {
+    const screen = await render(
+      <MessagesTimeline
+        {...buildProps()}
+        timelineEntries={[]}
+        reasoningSegments={[
+          {
+            id: "turn-1:reasoning-item:reasoning",
+            turnId: TurnId.make("turn-1"),
+            createdAt: "2026-04-13T12:00:00.000Z",
+            updatedAt: "2026-04-13T12:00:01.000Z",
+            text: "",
+            streamKind: "reasoning",
+            status: "completed",
+          },
+        ]}
+      />,
+    );
+
+    try {
+      await expect.element(page.getByText("Reasoned")).toBeVisible();
+      expect(document.body.querySelector(".lucide-chevron-right")).toBeNull();
+      expect(document.body.textContent).not.toContain("Reasoned privately");
+    } finally {
+      await screen.unmount();
+    }
+  });
+
+  it("uses the reasoning summary title instead of the body preview", async () => {
+    const screen = await render(
+      <MessagesTimeline
+        {...buildProps()}
+        timelineEntries={[]}
+        reasoningSegments={[
+          {
+            id: "turn-1:reasoning-item:reasoning_summary_text",
+            turnId: TurnId.make("turn-1"),
+            createdAt: "2026-04-13T12:00:00.000Z",
+            updatedAt: "2026-04-13T12:00:01.000Z",
+            text: "**Inspecting files**\n\nChecking the local implementation.",
+            streamKind: "reasoning_summary_text",
+            status: "completed",
+          },
+        ]}
+      />,
+    );
+
+    try {
+      await expect.element(page.getByText("Inspecting files")).toBeVisible();
+      expect(document.body.textContent).not.toContain("Checking the local implementation");
+    } finally {
+      await screen.unmount();
+    }
+  });
+
   it("snaps to the bottom when timeline rows appear after an initially empty render", async () => {
     const requestAnimationFrameSpy = vi
       .spyOn(window, "requestAnimationFrame")

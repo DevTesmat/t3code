@@ -787,6 +787,51 @@ describe("ProviderRuntimeIngestion", () => {
     expect(message?.streaming).toBe(false);
   });
 
+  it("projects completed Codex reasoning summaries as visible reasoning text", async () => {
+    const harness = await createHarness();
+    const now = new Date().toISOString();
+
+    harness.emit({
+      type: "item.completed",
+      eventId: asEventId("evt-reasoning-completed"),
+      provider: ProviderDriverKind.make("codex"),
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("turn-reasoning"),
+      itemId: asItemId("reasoning-item"),
+      payload: {
+        itemType: "reasoning",
+        status: "completed",
+        data: {
+          item: {
+            id: "reasoning-item",
+            type: "reasoning",
+            summary: ["**Inspecting files**\n\nChecking the local implementation."],
+            content: [],
+          },
+        },
+      },
+    });
+
+    const thread = await waitForThread(harness.engine, (entry) =>
+      entry.activities.some(
+        (activity: ProviderRuntimeTestActivity) =>
+          activity.id === "evt-reasoning-completed:summary",
+      ),
+    );
+    const summary = thread.activities.find(
+      (activity: ProviderRuntimeTestActivity) => activity.id === "evt-reasoning-completed:summary",
+    );
+    const payload =
+      summary?.payload && typeof summary.payload === "object"
+        ? (summary.payload as Record<string, unknown>)
+        : undefined;
+
+    expect(summary?.kind).toBe("reasoning.delta");
+    expect(payload?.streamKind).toBe("reasoning_summary_text");
+    expect(payload?.text).toBe("**Inspecting files**\n\nChecking the local implementation.");
+  });
+
   it("projects resumed parent thread output when no provider thread mapping has been seen", async () => {
     const harness = await createHarness();
     const now = new Date().toISOString();
