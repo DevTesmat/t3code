@@ -161,6 +161,8 @@ const APP_RUN_ID = Crypto.randomBytes(6).toString("hex");
 const SERVER_SETTINGS_PATH = Path.join(STATE_DIR, "settings.json");
 const AUTO_UPDATE_STARTUP_DELAY_MS = 15_000;
 const AUTO_UPDATE_POLL_INTERVAL_MS = 4 * 60 * 60 * 1000;
+const AUTO_UPDATE_CHECKING_ENABLED = false;
+const AUTO_UPDATE_CHECKING_DISABLED_REASON = "Automatic update checking is disabled in this build.";
 
 function resolvePickFolderDefaultPath(rawOptions: unknown): string | undefined {
   if (typeof rawOptions !== "object" || rawOptions === null) {
@@ -902,14 +904,16 @@ function dispatchMenuAction(action: string): void {
 function handleCheckForUpdatesMenuClick(): void {
   const hasUpdateFeedConfig =
     readAppUpdateYml() !== null || Boolean(process.env.T3CODE_DESKTOP_MOCK_UPDATES);
-  const disabledReason = getAutoUpdateDisabledReason({
-    isDevelopment,
-    isPackaged: app.isPackaged,
-    platform: process.platform,
-    appImage: process.env.APPIMAGE,
-    disabledByEnv: process.env.T3CODE_DISABLE_AUTO_UPDATE === "1",
-    hasUpdateFeedConfig,
-  });
+  const disabledReason = !AUTO_UPDATE_CHECKING_ENABLED
+    ? AUTO_UPDATE_CHECKING_DISABLED_REASON
+    : getAutoUpdateDisabledReason({
+        isDevelopment,
+        isPackaged: app.isPackaged,
+        platform: process.platform,
+        appImage: process.env.APPIMAGE,
+        disabledByEnv: process.env.T3CODE_DISABLE_AUTO_UPDATE === "1",
+        hasUpdateFeedConfig,
+      });
   if (disabledReason) {
     console.info("[desktop-updater] Manual update check requested, but updates are disabled.");
     void dialog.showMessageBox({
@@ -1177,6 +1181,10 @@ function applyAutoUpdaterChannel(channel: DesktopUpdateChannel): void {
 }
 
 function shouldEnableAutoUpdates(): boolean {
+  if (!AUTO_UPDATE_CHECKING_ENABLED) {
+    return false;
+  }
+
   const hasUpdateFeedConfig =
     readAppUpdateYml() !== null || Boolean(process.env.T3CODE_DESKTOP_MOCK_UPDATES);
   return (
