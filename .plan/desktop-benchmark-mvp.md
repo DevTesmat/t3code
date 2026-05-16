@@ -4,7 +4,7 @@
 
 This file is the source of truth for the desktop benchmark MVP. Keep it updated whenever scope, ordering, implementation details, or completion status changes.
 
-Current state: the first dev-only benchmark MVP is implemented and has passed one live run. `bun run dev:desktop:bench` starts an isolated desktop stack, creates a benchmark project and thread, sends `Reply exactly with: TEST`, verifies the final assistant reply, writes metrics, and shuts the stack down. Formatting, lint, and typecheck pass; the full repo test run currently fails in an existing web timeline assertion unrelated to the benchmark path.
+Current state: the first dev-only benchmark MVP is implemented and has passed live runs. `bun run dev:desktop:bench` starts an isolated desktop stack, creates a benchmark project and thread, sends `Reply exactly with: TEST`, verifies the final assistant reply, writes per-run metrics, writes a batch summary, and shuts the stack down. The runner now supports `--provider`, `--model`, and `--runs`. Formatting, lint, and typecheck pass; the full repo test run currently fails in an existing web timeline assertion unrelated to the benchmark path.
 
 ## Goal
 
@@ -74,8 +74,12 @@ Reply exactly with: TEST
 Capture at least:
 
 - `runId`
+- `batchId`
+- `runIndex`
+- `runCount`
 - `scenario`
 - `startedAt`
+- `turnStartedAt`
 - `completedAt`
 - `success`
 - `providerInstanceId`
@@ -87,10 +91,21 @@ Capture at least:
 - `turnWallClockMs`
 - `timeToFirstAssistantEventMs`
 - `timeToFinalAssistantEventMs`
+- `timeToFirstAssistantFromTurnMs`
+- `timeToFinalAssistantFromTurnMs`
+- `tokenUsage`
+- `inputTokens`
+- `cachedInputTokens`
+- `outputTokens`
+- `reasoningOutputTokens`
+- `totalTokens`
+- `outputTokensPerSecond`
 - `finalAssistantText`
 - `error`, when failed
 
-Nice-to-have if already available from provider/runtime events:
+For repeated runs, write a batch summary with min, median, p95, and max for startup, thread creation, turn timing, output token, reasoning token, and output TPS metrics.
+
+Captured when available from provider/runtime events:
 
 - input tokens
 - output tokens
@@ -188,8 +203,14 @@ Status: complete for MVP.
 
 - [x] Record timing boundaries with monotonic timers.
 - [x] Persist result JSON in the run directory.
+- [x] Persist batch summary JSON with aggregate stats.
 - [x] Print a concise terminal summary.
 - [x] Include enough metadata to compare model changes across runs.
+- [x] Add CLI overrides for provider instance and model.
+- [x] Add repeated clean-run execution with `--runs`.
+- [x] Add turn-relative assistant timing metrics.
+- [x] Add token usage and output TPS extraction from `context-window.updated` runtime activities when providers emit usage.
+- [x] Add `fixed-output` scenario for a longer throughput-oriented response.
 
 Expected outcome: repeated runs produce comparable local benchmark artifacts.
 
@@ -210,6 +231,8 @@ Progress notes:
 - `bun run lint` passed.
 - `bun run typecheck` passed.
 - `bun run dev:desktop:bench` passed on 2026-05-16 with `codex/gpt-5.4-mini`, result file `.t3-bench/runs/2026-05-16T09-20-55-257Z-814061/result.json`, and timing summary: turn `3579ms`, first assistant `10440ms`, final assistant `10486ms`.
+- `bun run dev:desktop:bench -- --provider codex --model gpt-5.4-mini --runs 1` passed on 2026-05-16, result file `.t3-bench/runs/2026-05-16T21-18-13-774Z-843fc3-run-001-394802/result.json`, summary file `.t3-bench/runs/2026-05-16T21-18-13-774Z-843fc3-summary.json`, and timing summary: turn `5227ms`, first assistant from turn `5152ms`, final assistant from turn `5181ms`.
+- `bun run dev:desktop:bench -- --scenario fixed-output --provider codex --model gpt-5.4-mini --runs 1` passed on 2026-05-16, result file `.t3-bench/runs/2026-05-16T21-24-57-551Z-307bd9-run-001-5d94ed/result.json`, summary file `.t3-bench/runs/2026-05-16T21-24-57-551Z-307bd9-summary.json`, and timing/token summary: turn `5821ms`, first assistant from turn `4324ms`, final assistant from turn `5813ms`, output tokens `384`, reasoning output tokens `37`, output TPS `66.06`.
 - `bun run test` currently fails in `apps/web/src/components/chat/MessagesTimeline.test.tsx` at `auto-renders running file-change output from the hydrated live buffer`: the rendered markup contains the inline file change patch but no longer contains the expected literal `diffs-container` string.
 
 Expected outcome: repo checks pass, and the MVP works against a live desktop dev session.
@@ -223,7 +246,7 @@ Expected outcome: repo checks pass, and the MVP works against a live desktop dev
 - Which model/provider should be the default benchmark target?
   - MVP recommendation: use the currently configured default provider/model unless a CLI flag overrides it.
 - Should the harness support a model matrix in MVP?
-  - MVP recommendation: no. Add one `--model` override first, then matrix support after the single-run path is reliable.
+  - Current status: single `--provider` / `--model` overrides and repeated runs are implemented. Matrix support remains out of scope until TPS extraction is stable.
 - How should exact output be normalized?
   - MVP recommendation: trim leading/trailing whitespace only. Any other text fails.
 
