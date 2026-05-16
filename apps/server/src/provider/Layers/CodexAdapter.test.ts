@@ -1050,6 +1050,102 @@ lifecycleLayer("CodexAdapterLive lifecycle", (it) => {
       }),
   );
 
+  it.effect(
+    "clears apply_patch recovery context after the failed turn completes successfully",
+    () =>
+      Effect.gen(function* () {
+        const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "t3-codex-patch-recovery-clear-"));
+        const targetPath = path.join(tempDir, "src/session-logic.ts");
+        fs.mkdirSync(path.dirname(targetPath), { recursive: true });
+        fs.writeFileSync(targetPath, "export const oldValue = false;\n");
+
+        const { adapter, runtime } = yield* startLifecycleRuntime({ cwd: tempDir });
+        const warningFiber = yield* Stream.runHead(adapter.streamEvents).pipe(Effect.forkChild);
+
+        yield* runtime.emit({
+          id: asEventId("evt-patch-failed-clear-start"),
+          kind: "notification",
+          provider: ProviderDriverKind.make("codex"),
+          threadId: asThreadId("thread-1"),
+          createdAt: new Date().toISOString(),
+          method: "process/stderr",
+          turnId: asTurnId("turn-1"),
+          message:
+            "2026-05-08T11:35:53.211779Z ERROR codex_core::tools::router: error=apply_patch verification failed: Failed to find expected lines in src/session-logic.ts:",
+        } satisfies ProviderEvent);
+        yield* runtime.emit({
+          id: asEventId("evt-patch-failed-clear-line"),
+          kind: "notification",
+          provider: ProviderDriverKind.make("codex"),
+          threadId: asThreadId("thread-1"),
+          createdAt: new Date().toISOString(),
+          method: "process/stderr",
+          turnId: asTurnId("turn-1"),
+          message: "export const oldValue = true;",
+        } satisfies ProviderEvent);
+        yield* runtime.emit({
+          id: asEventId("evt-flush-clear"),
+          kind: "notification",
+          provider: ProviderDriverKind.make("codex"),
+          threadId: asThreadId("thread-1"),
+          createdAt: new Date().toISOString(),
+          method: "thread/metadata/updated",
+          payload: {
+            threadId: "thread-1",
+            title: "flush",
+          },
+        } satisfies ProviderEvent);
+        yield* Effect.promise(
+          () =>
+            new Promise<void>((resolve) => {
+              setImmediate(resolve);
+            }),
+        );
+        assert.equal(runtime.steerTurnImpl.mock.calls.length, 1);
+        const warning = yield* Fiber.join(warningFiber);
+        assert.equal(Option.getOrUndefined(warning)?.type, "runtime.warning");
+
+        const completedFiber = yield* Stream.runHead(adapter.streamEvents).pipe(Effect.forkChild);
+        yield* runtime.emit({
+          id: asEventId("evt-turn-completed-clear"),
+          kind: "notification",
+          provider: ProviderDriverKind.make("codex"),
+          threadId: asThreadId("thread-1"),
+          createdAt: new Date().toISOString(),
+          method: "turn/completed",
+          turnId: asTurnId("turn-1"),
+          payload: {
+            threadId: "thread-1",
+            turn: {
+              id: "turn-1",
+              status: "completed",
+              startedAt: 1,
+              completedAt: 2,
+              durationMs: 1,
+              error: null,
+              items: [],
+            },
+          },
+        } satisfies ProviderEvent);
+        yield* Effect.promise(
+          () =>
+            new Promise<void>((resolve) => {
+              setImmediate(resolve);
+            }),
+        );
+        const completed = yield* Fiber.join(completedFiber);
+        assert.equal(Option.getOrUndefined(completed)?.type, "turn.completed");
+
+        yield* adapter.sendTurn({
+          threadId: asThreadId("thread-1"),
+          input: "Exactly!",
+        });
+
+        const sentInput = runtime.sendTurnImpl.mock.calls.at(-1)?.[0].input ?? "";
+        assert.equal(sentInput, "Exactly!");
+      }),
+  );
+
   it.effect("maps fatal websocket stderr notifications to runtime.error", () =>
     Effect.gen(function* () {
       const { adapter, runtime } = yield* startLifecycleRuntime();

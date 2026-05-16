@@ -190,6 +190,7 @@ interface ApplyPatchFailureRecoveryContext {
 interface PendingApplyPatchRecoveryModelFeedback {
   readonly sourceEventId: string;
   readonly modelFeedback: string;
+  readonly turnId?: TurnId | undefined;
 }
 
 function truncateContextSection(value: string, maxLength: number): string {
@@ -1962,9 +1963,28 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
       pendingApplyPatchRecoveryModelFeedbackByThread.set(threadId, {
         sourceEventId: recoveryContext.warning.eventId,
         modelFeedback: recoveryContext.modelFeedback,
+        ...(recoveryContext.turnId ? { turnId: recoveryContext.turnId } : {}),
       });
       return [recoveryContext.warning];
     });
+
+  const clearCompletedApplyPatchRecovery = (event: ProviderEvent): void => {
+    if (event.method !== "turn/completed") {
+      return;
+    }
+    const pendingRecovery = pendingApplyPatchRecoveryModelFeedbackByThread.get(event.threadId);
+    if (!pendingRecovery) {
+      return;
+    }
+    if (pendingRecovery.turnId && pendingRecovery.turnId !== event.turnId) {
+      return;
+    }
+    const payload = readPayload(EffectCodexSchema.V2TurnCompletedNotification, event.payload);
+    if (!payload || payload.turn.status !== "completed" || trimText(payload.turn.error?.message)) {
+      return;
+    }
+    pendingApplyPatchRecoveryModelFeedbackByThread.delete(event.threadId);
+  };
 
   const mapEventWithBufferedStderr = (
     event: ProviderEvent,
@@ -1973,7 +1993,9 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
       recordLatestFileChangePatch(event);
       if (event.method !== "process/stderr" || !event.message) {
         const flushed = yield* flushPendingPatchFailure(event.threadId);
-        return [...flushed, ...mapToRuntimeEvents(event, event.threadId)];
+        const mapped = mapToRuntimeEvents(event, event.threadId);
+        clearCompletedApplyPatchRecovery(event);
+        return [...flushed, ...mapped];
       }
 
       const start = parseApplyPatchVerificationFailureStart(event.message);
