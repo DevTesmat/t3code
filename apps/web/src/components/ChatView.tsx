@@ -1384,6 +1384,7 @@ export default function ChatView(props: ChatViewProps) {
     pendingUserInputCount: pendingUserInputs.length,
     latestTurnSettled,
     proposedPlan: activeProposedPlan,
+    hasActionableProposedPlanHint: sidebarThreadSummary?.hasActionableProposedPlan,
   });
   const activePendingApproval = pendingApprovals[0] ?? null;
   const {

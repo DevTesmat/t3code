@@ -759,14 +759,12 @@ function ReasoningSegmentsBlock({
   const hasVisibleText = text.length > 0;
   const allCompleted = segments.every((segment) => segment.status === "completed");
   const isPrivateOnly = !hasVisibleText;
+  const title = hasVisibleText ? reasoningTitleFromText(text) : undefined;
   const displayText = hasVisibleText
-    ? text
+    ? stripReasoningTitleFromText(text, title)
     : allCompleted
       ? "Reasoned privately."
       : "Reasoning privately...";
-  const title = hasVisibleText ? reasoningTitleFromText(text) : undefined;
-  const preview = useMemo(() => compactReasoningPreview(displayText), [displayText]);
-
   useEffect(() => {
     if (isLive) {
       wasLiveRef.current = true;
@@ -796,7 +794,7 @@ function ReasoningSegmentsBlock({
   if (isPrivateOnly) {
     return (
       <div ref={rootRef} className="mt-2 max-w-full">
-        <div className="inline-flex min-w-0 rounded-md border border-border/35 bg-muted/15 px-2.5 py-1 text-[11px] font-medium leading-5 text-muted-foreground">
+        <div className="inline-flex min-w-0 px-1 text-[11px] font-medium leading-5 text-muted-foreground">
           {allCompleted ? "Reasoned" : "Reasoning"}
         </div>
       </div>
@@ -806,32 +804,32 @@ function ReasoningSegmentsBlock({
   return (
     <div ref={rootRef} className="mt-2 max-w-full">
       <div
-        className={cn(
-          "min-w-0 rounded-md border border-border/45 bg-muted/25 text-muted-foreground",
-          isExpanded ? "px-3 py-2" : "px-2.5 py-1.5",
-        )}
+        className="group/reasoning min-w-0 px-1 text-muted-foreground"
+        data-reasoning-timeline-section="true"
       >
         <button
           type="button"
-          className="flex w-full min-w-0 items-center gap-1.5 text-left text-[11px] leading-5 hover:text-foreground"
+          className="flex max-w-full min-w-0 items-center gap-1.5 text-left text-[11px] leading-5 hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
           onClick={toggleExpanded}
           aria-expanded={isExpanded}
         >
-          <ChevronRightIcon
-            className={cn("size-3 shrink-0 transition-transform", isExpanded ? "rotate-90" : null)}
-          />
-          <span className="min-w-0 shrink truncate font-medium">
+          <span className="min-w-0 shrink truncate font-medium text-muted-foreground/95">
             {title ?? (isLive || !allCompleted ? "Thinking" : "Thought")}
           </span>
-          {!isExpanded && !title ? (
-            <>
-              <span className="text-muted-foreground/45">·</span>
-              <span className="min-w-0 flex-1 truncate text-muted-foreground/70">{preview}</span>
-            </>
-          ) : null}
+          <span className="shrink-0 text-muted-foreground/45">·</span>
+          <span className="shrink-0 text-muted-foreground/65">Reasoning</span>
+          <ChevronRightIcon
+            className={cn(
+              "size-3 shrink-0 text-muted-foreground/55 opacity-0 transition-[opacity,transform,color] group-hover/reasoning:opacity-100 group-focus-within/reasoning:opacity-100",
+              isExpanded ? "rotate-90" : null,
+            )}
+          />
         </button>
-        {isExpanded ? (
-          <div className="mt-1.5 max-h-[7.5rem] overflow-y-auto whitespace-pre-wrap pr-1 text-xs leading-5">
+        {isExpanded && displayText.length > 0 ? (
+          <div
+            className="mt-0.5 line-clamp-2 max-w-3xl whitespace-pre-wrap pl-5 pr-1 text-xs leading-5 text-muted-foreground/75"
+            data-reasoning-body="true"
+          >
             {displayText}
           </div>
         ) : null}
@@ -855,12 +853,21 @@ function reasoningTitleFromText(text: string): string | undefined {
   return headingTitle && headingTitle.length > 0 ? headingTitle : undefined;
 }
 
-function compactReasoningPreview(text: string): string {
-  const normalized = text.replace(/\s+/g, " ").trim();
-  if (normalized.length <= 120) {
-    return normalized;
+function stripReasoningTitleFromText(text: string, title: string | undefined): string {
+  if (!title) {
+    return text;
   }
-  return `${normalized.slice(0, 117).trimEnd()}...`;
+
+  const trimmed = text.trim();
+  const firstLine = trimmed.split(/\r?\n/, 1)[0]?.trim();
+  if (!firstLine || reasoningTitleFromText(firstLine) !== title) {
+    return text;
+  }
+
+  return trimmed
+    .slice(firstLine.length)
+    .replace(/^\r?\n+/, "")
+    .trim();
 }
 
 /** Live timestamp + elapsed duration for a streaming assistant message. */

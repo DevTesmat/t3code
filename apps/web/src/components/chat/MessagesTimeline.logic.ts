@@ -402,6 +402,7 @@ function areReasoningSegmentsUnchanged(
       segment.id === other.id &&
       segment.text === other.text &&
       segment.streamKind === other.streamKind &&
+      segment.status === other.status &&
       segment.updatedAt === other.updatedAt
     );
   });

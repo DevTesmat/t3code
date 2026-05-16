@@ -264,6 +264,101 @@ describe("MessagesTimeline", () => {
     }
   });
 
+  it("renders completed visible reasoning collapsed without the old boxed styling", async () => {
+    const screen = await render(
+      <MessagesTimeline
+        {...buildProps()}
+        timelineEntries={[]}
+        reasoningSegments={[
+          {
+            id: "turn-1:reasoning-item:reasoning_summary_text",
+            turnId: TurnId.make("turn-1"),
+            createdAt: "2026-04-13T12:00:00.000Z",
+            updatedAt: "2026-04-13T12:00:01.000Z",
+            text: "**Inspecting files**\n\nChecking the local implementation.",
+            streamKind: "reasoning_summary_text",
+            status: "completed",
+          },
+        ]}
+      />,
+    );
+
+    try {
+      await expect.element(page.getByRole("button", { name: /Inspecting files/ })).toBeVisible();
+      await expect.element(page.getByText("Reasoning")).toBeVisible();
+      await expect
+        .element(page.getByText("Checking the local implementation."))
+        .not.toBeInTheDocument();
+
+      const section = document.body.querySelector("[data-reasoning-timeline-section='true']");
+      expect(section?.className).not.toContain("border");
+      expect(section?.className).not.toContain("bg-muted");
+    } finally {
+      await screen.unmount();
+    }
+  });
+
+  it("keeps live reasoning expanded and collapses it when completion arrives", async () => {
+    const turnId = TurnId.make("turn-1");
+    const screen = await render(
+      <MessagesTimeline
+        {...buildProps()}
+        activeTurnInProgress={true}
+        activeTurnId={turnId}
+        timelineEntries={[]}
+        reasoningSegments={[
+          {
+            id: "turn-1:reasoning-item:reasoning_summary_text",
+            turnId,
+            createdAt: "2026-04-13T12:00:00.000Z",
+            updatedAt: "2026-04-13T12:00:01.000Z",
+            text: "**Inspecting files**\n\nChecking the local implementation.",
+            streamKind: "reasoning_summary_text",
+            status: "running",
+          },
+        ]}
+      />,
+    );
+
+    try {
+      await expect.element(page.getByText("Checking the local implementation.")).toBeVisible();
+      const reasoningBody = document.body.querySelector("[data-reasoning-body='true']");
+      expect(reasoningBody?.textContent).toBe("Checking the local implementation.");
+      await expect
+        .element(page.getByRole("button", { name: /Inspecting files/ }))
+        .toHaveAttribute("aria-expanded", "true");
+
+      await screen.rerender(
+        <MessagesTimeline
+          {...buildProps()}
+          activeTurnInProgress={false}
+          activeTurnId={turnId}
+          timelineEntries={[]}
+          reasoningSegments={[
+            {
+              id: "turn-1:reasoning-item:reasoning_summary_text",
+              turnId,
+              createdAt: "2026-04-13T12:00:00.000Z",
+              updatedAt: "2026-04-13T12:00:02.000Z",
+              text: "**Inspecting files**\n\nChecking the local implementation.",
+              streamKind: "reasoning_summary_text",
+              status: "completed",
+            },
+          ]}
+        />,
+      );
+
+      await expect
+        .element(page.getByRole("button", { name: /Inspecting files/ }))
+        .toHaveAttribute("aria-expanded", "false");
+      await expect
+        .element(page.getByText("Checking the local implementation."))
+        .not.toBeInTheDocument();
+    } finally {
+      await screen.unmount();
+    }
+  });
+
   it("snaps to the bottom when timeline rows appear after an initially empty render", async () => {
     const requestAnimationFrameSpy = vi
       .spyOn(window, "requestAnimationFrame")

@@ -168,6 +168,12 @@ describe("buildTurnStartParams", () => {
         },
       },
     });
+    assert.match(CODEX_DEFAULT_MODE_DEVELOPER_INSTRUCTIONS, /label Default mode as Build mode/);
+    assert.match(
+      CODEX_DEFAULT_MODE_DEVELOPER_INSTRUCTIONS,
+      /`request_user_input` tool is available in Default mode/,
+    );
+    assert.match(CODEX_DEFAULT_MODE_DEVELOPER_INSTRUCTIONS, /blocking question is important/);
     assert.match(CODEX_DEFAULT_MODE_DEVELOPER_INSTRUCTIONS, /bounded research helpers/);
     assert.match(CODEX_DEFAULT_MODE_DEVELOPER_INSTRUCTIONS, /repo explorers/);
     assert.match(CODEX_DEFAULT_MODE_DEVELOPER_INSTRUCTIONS, /online researchers/);

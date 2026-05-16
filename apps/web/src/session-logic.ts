@@ -683,11 +683,13 @@ export function shouldShowPlanFollowUpPrompt(input: {
   pendingUserInputCount: number;
   latestTurnSettled: boolean;
   proposedPlan: LatestProposedPlanState | Pick<ProposedPlan, "implementedAt"> | null;
+  hasActionableProposedPlanHint?: boolean | undefined;
 }): boolean {
   return (
     input.pendingApprovalCount === 0 &&
     input.pendingUserInputCount === 0 &&
     input.latestTurnSettled &&
+    input.hasActionableProposedPlanHint !== false &&
     hasActionableProposedPlan(input.proposedPlan)
   );
 }

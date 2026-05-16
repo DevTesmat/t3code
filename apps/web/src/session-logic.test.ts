@@ -1428,6 +1428,18 @@ describe("shouldShowPlanFollowUpPrompt", () => {
     ).toBe(true);
   });
 
+  it("stays hidden when the server shell says no actionable proposed plan remains", () => {
+    expect(
+      shouldShowPlanFollowUpPrompt({
+        pendingApprovalCount: 0,
+        pendingUserInputCount: 0,
+        latestTurnSettled: true,
+        proposedPlan,
+        hasActionableProposedPlanHint: false,
+      }),
+    ).toBe(false);
+  });
+
   it("stays hidden while the thread is blocked or running", () => {
     expect(
       shouldShowPlanFollowUpPrompt({
