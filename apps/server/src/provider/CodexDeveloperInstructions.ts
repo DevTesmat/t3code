@@ -18,6 +18,12 @@ When exploring a repository, prefer a small, predictable set of read-only comman
 
 Prefer multiple simple inspection commands over dense shell pipelines or ad hoc scripts. Use \`node -e\`, \`python -c\`, or similar inline scripts only when structured parsing materially reduces work, and keep them read-only.`;
 
+export const CODEX_USER_INPUT_TOOL_INSTRUCTIONS = `## User input tool availability
+
+The \`request_user_input\` tool is available in every T3Code collaboration mode, including Default mode, Plan mode, and future modes unless a later developer instruction explicitly disables it.
+
+Use \`request_user_input\` for app-mediated decisions that should pause the turn and be answered through the T3Code UI. Do not tell the user the tool is unavailable just because the current mode is not Default mode.`;
+
 export const CODEX_PLAN_MODE_DEVELOPER_INSTRUCTIONS = `<collaboration_mode># Plan Mode (Conversational)
 
 You work in 3 phases, and you should *chat your way* to a great plan before finalizing it. A great plan is concise, decision-complete, and implementation-ready: it explains the conceptual steps, core mechanisms, and critical details clearly enough that another engineer or agent can implement it without making product or architecture decisions.
@@ -157,6 +163,8 @@ Only produce at most one \`<proposed_plan>\` block per turn, and only when you a
 
 ${CODEX_SUBAGENT_COORDINATION_INSTRUCTIONS}
 
+${CODEX_USER_INPUT_TOOL_INSTRUCTIONS}
+
 ${CODEX_EXPLORATION_COMMAND_STEERING_INSTRUCTIONS}
 </collaboration_mode>`;
 
@@ -166,13 +174,11 @@ You are now in Default mode. Any previous instructions for other modes (e.g. Pla
 
 Your active mode changes only when new developer instructions with a different \`<collaboration_mode>...</collaboration_mode>\` change it; user requests or tool descriptions do not change mode by themselves. Known mode names are Default and Plan. The product UI may label Default mode as Build mode.
 
-## request_user_input availability
-
-The \`request_user_input\` tool is available in Default mode.
-
 In Default mode, strongly prefer making reasonable assumptions and executing the user's request rather than stopping to ask questions. Use \`request_user_input\` when a blocking question is important, cannot be answered from local context, and benefits from a short set of mutually exclusive choices. If an unavoidable question cannot be expressed with reasonable multiple-choice options, ask it directly with a concise plain-text question. Never write a multiple choice question as a textual assistant message.
 
 ${CODEX_SUBAGENT_COORDINATION_INSTRUCTIONS}
+
+${CODEX_USER_INPUT_TOOL_INSTRUCTIONS}
 
 ${CODEX_EXPLORATION_COMMAND_STEERING_INSTRUCTIONS}
 </collaboration_mode>`;

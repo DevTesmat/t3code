@@ -24,7 +24,7 @@ import type {
   ScopedProjectRef,
   ScopedThreadRef,
 } from "@t3tools/contracts";
-import { isProviderDriverKind, ProviderDriverKind } from "@t3tools/contracts";
+import { EventId, isProviderDriverKind, ProviderDriverKind } from "@t3tools/contracts";
 import type { ThreadId, TurnId } from "@t3tools/contracts";
 import { Schema } from "effect";
 import { resolveModelSlugForProvider } from "@t3tools/shared/model";
@@ -1042,6 +1042,26 @@ function activityPayloadRecord(
   return activity.payload && typeof activity.payload === "object"
     ? (activity.payload as Record<string, unknown>)
     : null;
+}
+
+function collabReceiverThreadIdsFromActivities(
+  activities: ReadonlyArray<OrchestrationThreadActivity>,
+): string[] {
+  const receiverThreadIds = new Set<string>();
+  for (const activity of activities) {
+    const payload = activityPayloadRecord(activity);
+    const data =
+      payload?.data && typeof payload.data === "object"
+        ? (payload.data as Record<string, unknown>)
+        : null;
+    const candidates = Array.isArray(data?.receiverThreadIds) ? data.receiverThreadIds : [];
+    for (const candidate of candidates) {
+      if (typeof candidate === "string" && candidate.length > 0) {
+        receiverThreadIds.add(candidate);
+      }
+    }
+  }
+  return [...receiverThreadIds];
 }
 
 function subagentDeltaCoalesceKey(activity: OrchestrationThreadActivity): string | null {
@@ -2223,21 +2243,51 @@ function applyEnvironmentOrchestrationEvent(
       });
 
     case "thread.session-stop-requested":
-      return updateThreadState(state, event.payload.threadId, (thread) =>
-        thread.session === null
-          ? thread
-          : {
-              ...thread,
-              session: {
-                ...thread.session,
-                status: "closed",
-                orchestrationStatus: "stopped",
-                activeTurnId: undefined,
-                updatedAt: event.payload.createdAt,
-              },
-              updatedAt: event.occurredAt,
-            },
-      );
+      return updateThreadState(state, event.payload.threadId, (thread) => {
+        if (thread.session === null) {
+          return thread;
+        }
+        const receiverThreadIds = collabReceiverThreadIdsFromActivities(thread.activities);
+        const stopSubagentsActivity: OrchestrationThreadActivity | null =
+          receiverThreadIds.length > 0
+            ? {
+                id: EventId.make(
+                  `session-stop:${event.payload.threadId}:${event.payload.createdAt}:subagents`,
+                ),
+                tone: "tool",
+                kind: "tool.completed",
+                summary: "Stopped subagents",
+                payload: {
+                  itemType: "collab_agent_tool_call",
+                  data: {
+                    collabTool: "closeAgent",
+                    receiverThreadIds,
+                    status: "closed",
+                  },
+                },
+                turnId: thread.session.activeTurnId ?? null,
+                createdAt: event.payload.createdAt,
+              }
+            : null;
+        return {
+          ...thread,
+          session: {
+            ...thread.session,
+            status: "closed",
+            orchestrationStatus: "stopped",
+            activeTurnId: undefined,
+            updatedAt: event.payload.createdAt,
+          },
+          ...(stopSubagentsActivity
+            ? {
+                activities: [...thread.activities, stopSubagentsActivity]
+                  .toSorted(compareActivities)
+                  .slice(-MAX_THREAD_ACTIVITIES),
+              }
+            : {}),
+          updatedAt: event.occurredAt,
+        };
+      });
 
     case "thread.proposed-plan-upserted":
       return updateThreadState(state, event.payload.threadId, (thread) => {

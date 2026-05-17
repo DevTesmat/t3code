@@ -472,6 +472,77 @@ describe("deriveThreadSubagents", () => {
       "completed",
     ]);
   });
+
+  it("keeps spawned subagents pending until child activity arrives", () => {
+    const spawnActivity = makeActivity({
+      id: "spawn-child",
+      createdAt: "2026-02-23T00:00:01.000Z",
+      kind: "tool.completed",
+      payload: {
+        itemType: "collab_agent_tool_call",
+        data: {
+          collabTool: "spawnAgent",
+          receiverThreadIds: ["child-1"],
+          agentsStates: { "child-1": { status: "pendingInit" } },
+        },
+      },
+    });
+    const childActivity = makeActivity({
+      id: "child-delta",
+      createdAt: "2026-02-23T00:00:02.000Z",
+      kind: "subagent.content.delta",
+      payload: {
+        providerThreadId: "child-1",
+        itemType: "assistant_message",
+        itemId: "assistant-1",
+        status: "inProgress",
+        text: "hello",
+      },
+    });
+
+    expect(deriveThreadSubagents([spawnActivity])).toMatchObject([
+      { threadId: "child-1", status: "pending", running: false },
+    ]);
+    expect(deriveThreadSubagents([spawnActivity, childActivity])).toMatchObject([
+      { threadId: "child-1", status: "running", running: true },
+    ]);
+  });
+
+  it("projects subagent startup user input as a pending subagent row", () => {
+    const activities: OrchestrationThreadActivity[] = [
+      makeActivity({
+        id: "subagent-startup-input",
+        createdAt: "2026-02-23T00:00:01.000Z",
+        kind: "user-input.requested",
+        payload: {
+          requestId: "req-subagent-startup",
+          questions: [
+            {
+              id: "subagent_model",
+              header: "Model",
+              question: "Choose subagent model",
+              options: [{ label: "gpt-5.4-mini", description: "Fast" }],
+            },
+            {
+              id: "subagent_reasoning_effort",
+              header: "Reasoning",
+              question: "Choose reasoning effort",
+              options: [{ label: "low", description: "Fast" }],
+            },
+          ],
+        },
+      }),
+    ];
+
+    expect(deriveThreadSubagents(activities)).toMatchObject([
+      {
+        threadId: "startup:req-subagent-startup",
+        status: "pending",
+        running: false,
+        startupUserInputRequestId: "req-subagent-startup",
+      },
+    ]);
+  });
 });
 
 describe("deriveThreadSubagentTranscripts", () => {

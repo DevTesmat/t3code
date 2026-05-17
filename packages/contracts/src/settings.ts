@@ -180,6 +180,10 @@ export const ServerSettings = Schema.Struct({
       }),
     ),
   ),
+  subagentDefaultModelSelection: Schema.NullOr(ModelSelection).pipe(
+    Schema.withDecodingDefault(Effect.succeed(null)),
+  ),
+  subagentNoPrompt: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
 
   // Legacy single-instance-per-driver settings. Continues to be the source
   // of truth until `providerInstances` (below) lands per-driver migration
@@ -274,6 +278,8 @@ export const ServerSettingsPatch = Schema.Struct({
   defaultThreadEnvMode: Schema.optionalKey(ThreadEnvMode),
   addProjectBaseDirectory: Schema.optionalKey(Schema.String),
   textGenerationModelSelection: Schema.optionalKey(ModelSelectionPatch),
+  subagentDefaultModelSelection: Schema.optionalKey(Schema.NullOr(ModelSelection)),
+  subagentNoPrompt: Schema.optionalKey(Schema.Boolean),
   observability: Schema.optionalKey(
     Schema.Struct({
       otlpTracesUrl: Schema.optionalKey(Schema.String),

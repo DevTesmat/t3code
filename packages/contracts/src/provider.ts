@@ -74,6 +74,8 @@ export const ProviderSendTurnInput = Schema.Struct({
   ),
   modelSelection: Schema.optional(ModelSelection),
   interactionMode: Schema.optional(ProviderInteractionMode),
+  subagentDefaultModelSelection: Schema.optional(Schema.NullOr(ModelSelection)),
+  subagentNoPrompt: Schema.optional(Schema.Boolean),
 });
 export type ProviderSendTurnInput = typeof ProviderSendTurnInput.Type;
 

@@ -110,7 +110,13 @@ export interface ReasoningSegment {
   status: "running" | "completed";
 }
 
-export type ThreadSubagentStatus = "running" | "completed" | "failed" | "closed" | "unknown";
+export type ThreadSubagentStatus =
+  | "pending"
+  | "running"
+  | "completed"
+  | "failed"
+  | "closed"
+  | "unknown";
 
 export interface ThreadSubagent {
   threadId: string;
@@ -118,6 +124,7 @@ export interface ThreadSubagent {
   updatedAt: string;
   status: ThreadSubagentStatus;
   running: boolean;
+  startupUserInputRequestId?: ApprovalRequestId;
   nickname?: string;
   role?: string;
   model?: string;
@@ -150,6 +157,9 @@ export interface PendingUserInput {
   createdAt: string;
   questions: ReadonlyArray<UserInputQuestion>;
 }
+
+export const SUBAGENT_STARTUP_MODEL_QUESTION_ID = "subagent_model";
+export const SUBAGENT_STARTUP_REASONING_QUESTION_ID = "subagent_reasoning_effort";
 
 export interface ActivePlanState {
   createdAt: string;
@@ -974,17 +984,49 @@ function toDerivedWorkLogEntry(activity: OrchestrationThreadActivity): DerivedWo
 export function deriveThreadSubagents(
   activities: ReadonlyArray<OrchestrationThreadActivity>,
 ): ThreadSubagent[] {
-  return deriveThreadSubagentsFromOrdered([...activities].toSorted(compareActivitiesByOrder));
+  const ordered = [...activities].toSorted(compareActivitiesByOrder);
+  return deriveThreadSubagentsFromOrdered(ordered, derivePendingUserInputsFromOrdered(ordered));
 }
 
 function deriveThreadSubagentsFromOrdered(
   ordered: ReadonlyArray<OrchestrationThreadActivity>,
+  pendingUserInputs: ReadonlyArray<PendingUserInput> = [],
 ): ThreadSubagent[] {
   const subagentsByThreadId = new Map<string, ThreadSubagent>();
   const receiverThreadIdsByToolCallId = new Map<string, string[]>();
 
+  for (const pendingUserInput of pendingUserInputs) {
+    if (!isSubagentStartupPendingUserInput(pendingUserInput)) {
+      continue;
+    }
+    const threadId = `startup:${pendingUserInput.requestId}`;
+    subagentsByThreadId.set(threadId, {
+      threadId,
+      createdAt: pendingUserInput.createdAt,
+      updatedAt: pendingUserInput.createdAt,
+      status: "pending",
+      running: false,
+      startupUserInputRequestId: pendingUserInput.requestId,
+      role: "Subagent",
+      promptPreview: "Waiting for subagent model selection.",
+    });
+  }
+
   for (const activity of ordered) {
     const payload = asRecord(activity.payload);
+    const providerThreadId = subagentProviderThreadIdFromActivity(activity, payload);
+    if (providerThreadId) {
+      const previous = subagentsByThreadId.get(providerThreadId);
+      if (previous && !isTerminalSubagentStatus(previous.status)) {
+        subagentsByThreadId.set(providerThreadId, {
+          ...previous,
+          updatedAt: activity.createdAt,
+          status: "running",
+          running: true,
+        });
+      }
+    }
+
     if (extractWorkLogItemType(payload) !== "collab_agent_tool_call") {
       continue;
     }
@@ -1137,9 +1179,10 @@ export function deriveThreadSubagentTranscripts(
   activities: ReadonlyArray<OrchestrationThreadActivity>,
 ): ThreadSubagentTranscript[] {
   const ordered = [...activities].toSorted(compareActivitiesByOrder);
+  const pendingUserInputs = derivePendingUserInputsFromOrdered(ordered);
   return deriveThreadSubagentTranscriptsFromOrdered(
     ordered,
-    deriveThreadSubagentsFromOrdered(ordered),
+    deriveThreadSubagentsFromOrdered(ordered, pendingUserInputs),
   );
 }
 
@@ -2037,6 +2080,16 @@ function isTerminalSubagentStatus(status: ThreadSubagentStatus): boolean {
   return status === "completed" || status === "failed" || status === "closed";
 }
 
+function subagentProviderThreadIdFromActivity(
+  activity: OrchestrationThreadActivity,
+  payload: Record<string, unknown> | null,
+): string | null {
+  if (!activity.kind.startsWith("subagent.")) {
+    return null;
+  }
+  return asTrimmedString(payload?.providerThreadId);
+}
+
 function formatCollabWorkLogLabel(
   payload: Record<string, unknown> | null,
   collabTool: string | null,
@@ -2060,10 +2113,14 @@ function normalizeSubagentStatus(value: string | null): ThreadSubagentStatus | n
     case "active":
     case "inprogress":
     case "in_progress":
+      return "running";
     case "pendinginit":
     case "pending_init":
     case "pending":
-      return "running";
+    case "initializing":
+    case "queued":
+    case "waiting":
+      return "pending";
     case "completed":
     case "complete":
     case "idle":
@@ -2102,7 +2159,7 @@ function resolveSubagentStatus({
     return "failed";
   }
   if (collabTool === "spawnAgent" && lifecycleStatus === "completed") {
-    return previousStatus ?? "running";
+    return previousStatus ?? "pending";
   }
   if (collabTool === "wait" && lifecycleStatus === "completed") {
     return "completed";
@@ -2395,17 +2452,26 @@ export function deriveThreadActivityProjection(
   latestTurnId: TurnId | undefined,
 ): ThreadActivityProjection {
   const ordered = [...activities].toSorted(compareActivitiesByOrder);
-  const threadSubagents = deriveThreadSubagentsFromOrdered(ordered);
+  const pendingUserInputs = derivePendingUserInputsFromOrdered(ordered);
+  const threadSubagents = deriveThreadSubagentsFromOrdered(ordered, pendingUserInputs);
   return {
     workLogEntries: deriveWorkLogEntriesFromOrdered(ordered, undefined),
     reasoningSegments: deriveReasoningSegmentsFromOrdered(ordered),
     threadSubagents,
     threadSubagentTranscripts: deriveThreadSubagentTranscriptsFromOrdered(ordered, threadSubagents),
     pendingApprovals: derivePendingApprovalsFromOrdered(ordered),
-    pendingUserInputs: derivePendingUserInputsFromOrdered(ordered),
+    pendingUserInputs,
     activePlan: deriveActivePlanStateFromOrdered(ordered, latestTurnId),
     latestTurnHasToolActivity: hasToolActivityForTurnInOrdered(ordered, latestTurnId),
   };
+}
+
+export function isSubagentStartupPendingUserInput(input: PendingUserInput): boolean {
+  const questionIds = new Set(input.questions.map((question) => question.id));
+  return (
+    questionIds.has(SUBAGENT_STARTUP_MODEL_QUESTION_ID) &&
+    questionIds.has(SUBAGENT_STARTUP_REASONING_QUESTION_ID)
+  );
 }
 
 export function hasToolActivityForTurn(

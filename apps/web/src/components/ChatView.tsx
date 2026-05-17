@@ -65,6 +65,7 @@ import {
   deriveThreadActivityProjection,
   deriveWorkLogEntries,
   hasActiveContextCompaction,
+  isSubagentStartupPendingUserInput,
   isLatestTurnSettled,
   shouldShowPlanFollowUpPrompt,
   formatElapsed,
@@ -1325,7 +1326,11 @@ export default function ChatView(props: ChatViewProps) {
   const latestTurnHasToolActivity = threadActivityProjection.latestTurnHasToolActivity;
   const pendingApprovals = threadActivityProjection.pendingApprovals;
   const pendingUserInputs = threadActivityProjection.pendingUserInputs;
-  const activePendingUserInput = pendingUserInputs[0] ?? null;
+  const composerPendingUserInputs = useMemo(
+    () => pendingUserInputs.filter((input) => !isSubagentStartupPendingUserInput(input)),
+    [pendingUserInputs],
+  );
+  const activePendingUserInput = composerPendingUserInputs[0] ?? null;
   const activePendingDraftAnswers = useMemo(
     () =>
       activePendingUserInput
@@ -1381,7 +1386,7 @@ export default function ChatView(props: ChatViewProps) {
   const planSidebarLabel = sidebarProposedPlan || interactionMode === "plan" ? "Plan" : "Tasks";
   const showPlanFollowUpPrompt = shouldShowPlanFollowUpPrompt({
     pendingApprovalCount: pendingApprovals.length,
-    pendingUserInputCount: pendingUserInputs.length,
+    pendingUserInputCount: composerPendingUserInputs.length,
     latestTurnSettled,
     proposedPlan: activeProposedPlan,
     hasActionableProposedPlanHint: sidebarThreadSummary?.hasActionableProposedPlan,
@@ -1410,7 +1415,7 @@ export default function ChatView(props: ChatViewProps) {
         activities: threadActivities,
         messages: activeThread?.messages ?? EMPTY_MESSAGES,
         pendingApprovals,
-        pendingUserInputs,
+        pendingUserInputs: composerPendingUserInputs,
         isSendBusy,
         isConnecting,
         isRevertingCheckpoint,
@@ -1423,7 +1428,7 @@ export default function ChatView(props: ChatViewProps) {
       isRevertingCheckpoint,
       isSendBusy,
       pendingApprovals,
-      pendingUserInputs,
+      composerPendingUserInputs,
       threadActivities,
     ],
   );
@@ -2790,6 +2795,13 @@ export default function ChatView(props: ChatViewProps) {
     },
     [scrollToEnd, setTimelineBottomStickiness, syncScrollToBottomVisibility],
   );
+
+  const scrollStickyTimelineContentToEndAfterLayout = useCallback(() => {
+    if (!isAtEndRef.current) {
+      return;
+    }
+    scrollToEndAfterLayout(false);
+  }, [scrollToEndAfterLayout]);
 
   const preserveTimelineViewport = useCallback(
     (anchor: HTMLElement, mutate: () => void) => {
@@ -4734,6 +4746,8 @@ export default function ChatView(props: ChatViewProps) {
               onImageExpand={onExpandTimelineImage}
               onOpenTurnDiff={selectedSubagentTranscript ? undefined : onOpenTurnDiff}
               onSelectSubagent={selectedSubagentTranscript ? undefined : selectSubagentThread}
+              onRespondToSubagentStartup={onRespondToUserInput}
+              respondingSubagentStartupRequestIds={respondingUserInputRequestIds}
               markdownCwd={gitCwd ?? undefined}
               timestampFormat={timestampFormat}
               workspaceRoot={activeWorkspaceRoot}
@@ -4747,6 +4761,7 @@ export default function ChatView(props: ChatViewProps) {
                 selectedSubagentTranscript ? undefined : loadOlderTimelineContent
               }
               onPreserveViewportRequest={preserveTimelineViewport}
+              onStickyContentResizeRequest={scrollStickyTimelineContentToEndAfterLayout}
               suppressMaintainScrollAtEnd={suppressTimelineMaintainScrollAtEnd}
             />
 
@@ -4828,7 +4843,7 @@ export default function ChatView(props: ChatViewProps) {
                   isPreparingWorktree={isPreparingWorktree}
                   activePendingApproval={activePendingApproval}
                   pendingApprovals={pendingApprovals}
-                  pendingUserInputs={pendingUserInputs}
+                  pendingUserInputs={composerPendingUserInputs}
                   activePendingProgress={activePendingProgress}
                   activePendingResolvedAnswers={activePendingResolvedAnswers}
                   activePendingIsResponding={activePendingIsResponding}

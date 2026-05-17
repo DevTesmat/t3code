@@ -1,10 +1,14 @@
 import {
   ProviderItemId,
+  type ApprovalRequestId,
   type EnvironmentId,
   type MessageId,
+  type ProviderOptionSelection,
+  type ProviderInstanceId,
   type ThreadId,
   type TurnId,
 } from "@t3tools/contracts";
+import { createModelSelection } from "@t3tools/shared/model";
 import { FileDiff } from "@pierre/diffs/react";
 import {
   createContext,
@@ -23,6 +27,8 @@ import {
 } from "react";
 import { LegendList, type LegendListRef } from "@legendapp/list/react";
 import {
+  SUBAGENT_STARTUP_MODEL_QUESTION_ID,
+  SUBAGENT_STARTUP_REASONING_QUESTION_ID,
   deriveTimelineEntries,
   formatElapsed,
   type ReasoningSegment,
@@ -63,7 +69,10 @@ import {
 } from "./MessagesTimeline.logic";
 import { TerminalContextInlineChip } from "./TerminalContextInlineChip";
 import { buildCompactDiffRenderModel, CompactInlineDiff } from "./CompactInlineDiff";
+import { ProviderModelPicker } from "./ProviderModelPicker";
+import { TraitsPicker } from "./TraitsPicker";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
+import { Switch } from "../ui/switch";
 import {
   deriveDisplayedUserMessageState,
   type ParsedTerminalContextEntry,
@@ -71,9 +80,16 @@ import {
 import { cn } from "~/lib/utils";
 import { type TimestampFormat } from "@t3tools/contracts/settings";
 import { formatTimestamp } from "../../timestampFormat";
-import { useSettings } from "../../hooks/useSettings";
+import { useSettings, useUpdateSettings } from "../../hooks/useSettings";
 import { useTheme } from "../../hooks/useTheme";
 import { resolveDiffThemeName } from "../../lib/diffRendering";
+import { getAppModelOptionsForInstance } from "../../modelSelection";
+import {
+  deriveProviderInstanceEntries,
+  sortProviderInstanceEntries,
+} from "../../providerInstances";
+import { useServerProviders } from "../../rpc/serverState";
+import { getComposerProviderState } from "./composerProviderState";
 import { isScrollViewportAtBottom } from "./scrollStickiness";
 import {
   DIFF_RENDER_UNSAFE_CSS,
@@ -124,8 +140,13 @@ interface TimelineRowSharedState {
   onRevertUserMessage: (messageId: MessageId) => void;
   onImageExpand: (preview: ExpandedImagePreview) => void;
   onPreserveViewportRequest?: ((anchor: HTMLElement, mutate: () => void) => void) | undefined;
+  onStickyContentResizeRequest?: (() => void) | undefined;
   onOpenTurnDiff?: ((turnId: TurnId, filePath?: string) => void) | undefined;
   onSelectSubagent?: ((threadId: string) => void) | undefined;
+  onRespondToSubagentStartup?:
+    | ((requestId: ApprovalRequestId, answers: Record<string, unknown>) => void)
+    | undefined;
+  respondingSubagentStartupRequestIds: ReadonlyArray<ApprovalRequestId>;
 }
 
 const TimelineRowCtx = createContext<TimelineRowSharedState>(null!);
@@ -152,6 +173,10 @@ interface MessagesTimelineProps {
   onImageExpand: (preview: ExpandedImagePreview) => void;
   onOpenTurnDiff?: ((turnId: TurnId, filePath?: string) => void) | undefined;
   onSelectSubagent?: ((threadId: string) => void) | undefined;
+  onRespondToSubagentStartup?:
+    | ((requestId: ApprovalRequestId, answers: Record<string, unknown>) => void)
+    | undefined;
+  respondingSubagentStartupRequestIds?: ReadonlyArray<ApprovalRequestId> | undefined;
   activeThreadId: ThreadId;
   activeThreadEnvironmentId: EnvironmentId;
   markdownCwd: string | undefined;
@@ -163,6 +188,7 @@ interface MessagesTimelineProps {
   hasOlderTimelineContent?: boolean | undefined;
   onLoadOlderTimelineContent?: (() => void) | undefined;
   onPreserveViewportRequest?: ((anchor: HTMLElement, mutate: () => void) => void) | undefined;
+  onStickyContentResizeRequest?: (() => void) | undefined;
   suppressMaintainScrollAtEnd?: boolean | undefined;
 }
 
@@ -187,6 +213,8 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   onImageExpand,
   onOpenTurnDiff,
   onSelectSubagent,
+  onRespondToSubagentStartup,
+  respondingSubagentStartupRequestIds = [],
   activeThreadId,
   activeThreadEnvironmentId,
   markdownCwd,
@@ -198,6 +226,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   hasOlderTimelineContent = false,
   onLoadOlderTimelineContent,
   onPreserveViewportRequest,
+  onStickyContentResizeRequest,
   suppressMaintainScrollAtEnd = false,
 }: MessagesTimelineProps) {
   const rawRows = useMemo(
@@ -375,7 +404,10 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       onImageExpand,
       onOpenTurnDiff,
       onSelectSubagent,
+      onRespondToSubagentStartup,
+      respondingSubagentStartupRequestIds,
       onPreserveViewportRequest,
+      onStickyContentResizeRequest,
     }),
     [
       activeTurnInProgress,
@@ -393,7 +425,10 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       onImageExpand,
       onOpenTurnDiff,
       onSelectSubagent,
+      onRespondToSubagentStartup,
+      respondingSubagentStartupRequestIds,
       onPreserveViewportRequest,
+      onStickyContentResizeRequest,
     ],
   );
 
@@ -676,6 +711,8 @@ function subagentStatusLabel(status: ThreadSubagent["status"]): string {
 
 function subagentStatusClassName(status: ThreadSubagent["status"]): string {
   switch (status) {
+    case "pending":
+      return "border-amber-500/20 bg-amber-500/8 text-amber-700 dark:text-amber-300";
     case "running":
       return "border-primary/20 bg-primary/8 text-primary/80";
     case "failed":
@@ -691,43 +728,272 @@ function subagentStatusClassName(status: ThreadSubagent["status"]): string {
 
 function SubagentInlineSection({ subagent }: { subagent: ThreadSubagent }) {
   const ctx = use(TimelineRowCtx);
+  const settings = useSettings();
+  const { updateSettings } = useUpdateSettings();
+  const serverProviders = useServerProviders();
   const title = subagent.nickname || subagent.role || shortThreadId(subagent.threadId);
   const meta = [subagent.role, subagent.model, subagent.reasoningEffort]
     .filter(Boolean)
     .join(" · ");
   const detail = subagent.promptPreview || meta || subagent.threadId;
+  const instanceEntries = useMemo(
+    () =>
+      sortProviderInstanceEntries(deriveProviderInstanceEntries(serverProviders)).filter(
+        (entry) => entry.enabled && entry.isAvailable,
+      ),
+    [serverProviders],
+  );
+  const modelOptionsByInstance = useMemo(() => {
+    const options = new Map<ProviderInstanceId, ReturnType<typeof getAppModelOptionsForInstance>>();
+    for (const entry of instanceEntries) {
+      options.set(entry.instanceId, getAppModelOptionsForInstance(settings, entry));
+    }
+    return options;
+  }, [instanceEntries, settings]);
+  const fallbackEntry = instanceEntries[0];
+  const configuredSelection = settings.subagentDefaultModelSelection;
+  const actualModel = subagent.model ?? configuredSelection?.model;
+  const initialEntry =
+    instanceEntries.find((entry) => entry.instanceId === configuredSelection?.instanceId) ??
+    fallbackEntry;
+  const initialOptions = initialEntry
+    ? (modelOptionsByInstance.get(initialEntry.instanceId) ?? [])
+    : [];
+  const initialModel =
+    actualModel && initialOptions.some((option) => option.slug === actualModel)
+      ? actualModel
+      : (actualModel ?? initialOptions[0]?.slug ?? "");
+  const initialOptionsForSelection = useMemo(
+    () =>
+      configuredSelection?.model === initialModel
+        ? configuredSelection.options
+        : subagent.reasoningEffort
+          ? [{ id: "reasoningEffort", value: subagent.reasoningEffort }]
+          : undefined,
+    [
+      configuredSelection?.model,
+      configuredSelection?.options,
+      initialModel,
+      subagent.reasoningEffort,
+    ],
+  );
+  const [localSelection, setLocalSelection] = useState<{
+    readonly instanceId: ProviderInstanceId;
+    readonly model: string;
+    readonly options?: ReadonlyArray<ProviderOptionSelection> | undefined;
+  } | null>(() =>
+    initialEntry && initialModel
+      ? {
+          instanceId: initialEntry.instanceId,
+          model: initialModel,
+          ...(initialOptionsForSelection ? { options: initialOptionsForSelection } : {}),
+        }
+      : null,
+  );
+
+  useEffect(() => {
+    setLocalSelection(
+      initialEntry && initialModel
+        ? {
+            instanceId: initialEntry.instanceId,
+            model: initialModel,
+            ...(initialOptionsForSelection ? { options: initialOptionsForSelection } : {}),
+          }
+        : null,
+    );
+  }, [initialEntry, initialModel, initialOptionsForSelection, subagent.threadId]);
+
+  const selectedEntry = localSelection
+    ? (instanceEntries.find((entry) => entry.instanceId === localSelection.instanceId) ??
+      fallbackEntry)
+    : fallbackEntry;
+  const selectedModel = localSelection?.model ?? "";
+  const hasDefaultSelection = configuredSelection !== null;
+  const isSelectionMissing = settings.subagentNoPrompt && !hasDefaultSelection;
+  const localSelectionDiffersFromDefault =
+    localSelection !== null &&
+    (configuredSelection?.instanceId !== localSelection.instanceId ||
+      configuredSelection?.model !== localSelection.model ||
+      JSON.stringify(configuredSelection?.options ?? []) !==
+        JSON.stringify(localSelection.options ?? []));
+  const hasPickerModel = Boolean(selectedEntry && selectedModel);
+  const startupRequestId = subagent.startupUserInputRequestId;
+  const startupReasoningEffort =
+    localSelection?.options?.find((option) => option.id === "reasoningEffort")?.value ??
+    subagent.reasoningEffort ??
+    "medium";
+  const startupIsResponding = startupRequestId
+    ? ctx.respondingSubagentStartupRequestIds.includes(startupRequestId)
+    : false;
+  const canStartPendingSubagent =
+    startupRequestId !== undefined &&
+    localSelection !== null &&
+    selectedModel.length > 0 &&
+    ctx.onRespondToSubagentStartup !== undefined;
 
   return (
-    <button
-      type="button"
-      className="group flex w-full min-w-0 items-start gap-3 rounded-md border border-border/70 bg-card/45 px-3.5 py-3 text-left transition-colors hover:border-border hover:bg-card/70"
-      onClick={() => ctx.onSelectSubagent?.(subagent.threadId)}
+    <div
+      className="w-full min-w-0 rounded-md border border-border/70 bg-card/45 px-3.5 py-3 transition-colors hover:border-border hover:bg-card/70"
       data-subagent-timeline-section="true"
     >
-      <span className="mt-0.5 flex size-8 shrink-0 items-center justify-center rounded-md border border-border/70 bg-background/70 text-muted-foreground">
-        <CpuIcon aria-hidden="true" className="size-4" />
-      </span>
-      <span className="min-w-0 flex-1">
-        <span className="flex min-w-0 items-center gap-2">
-          <span className="truncate font-medium text-sm text-foreground">{title}</span>
-          <span
-            className={cn(
-              "inline-flex shrink-0 items-center rounded-full border px-2 py-0.5 text-[10px]",
-              subagentStatusClassName(subagent.status),
-            )}
-          >
-            {subagentStatusLabel(subagent.status)}
+      <button
+        type="button"
+        className="group flex w-full min-w-0 items-start gap-3 text-left"
+        onClick={() => {
+          if (!subagent.startupUserInputRequestId) {
+            ctx.onSelectSubagent?.(subagent.threadId);
+          }
+        }}
+      >
+        <span className="mt-0.5 flex size-8 shrink-0 items-center justify-center rounded-md border border-border/70 bg-background/70 text-muted-foreground">
+          <CpuIcon aria-hidden="true" className="size-4" />
+        </span>
+        <span className="min-w-0 flex-1">
+          <span className="flex min-w-0 items-center gap-2">
+            <span className="truncate font-medium text-sm text-foreground">{title}</span>
+            <span
+              className={cn(
+                "inline-flex shrink-0 items-center rounded-full border px-2 py-0.5 text-[10px]",
+                subagentStatusClassName(subagent.status),
+              )}
+            >
+              {subagentStatusLabel(subagent.status)}
+            </span>
+          </span>
+          <span className="mt-1 line-clamp-2 block text-muted-foreground text-xs leading-5">
+            {detail}
           </span>
         </span>
-        <span className="mt-1 line-clamp-2 block text-muted-foreground text-xs leading-5">
-          {detail}
-        </span>
-      </span>
-      <ChevronRightIcon
-        aria-hidden="true"
-        className="mt-1 size-4 shrink-0 text-muted-foreground/55 transition-transform group-hover:translate-x-0.5 group-hover:text-foreground/70"
-      />
-    </button>
+        <ChevronRightIcon
+          aria-hidden="true"
+          className="mt-1 size-4 shrink-0 text-muted-foreground/55 transition-transform group-hover:translate-x-0.5 group-hover:text-foreground/70"
+        />
+      </button>
+      <div className="mt-3 flex flex-wrap items-center gap-2 border-border/60 border-t pt-2.5">
+        <span className="shrink-0 text-muted-foreground text-xs">Subagent model</span>
+        {hasPickerModel && selectedEntry ? (
+          <ProviderModelPicker
+            activeInstanceId={selectedEntry.instanceId}
+            model={selectedModel}
+            lockedProvider={null}
+            instanceEntries={instanceEntries}
+            modelOptionsByInstance={modelOptionsByInstance}
+            compact
+            triggerVariant="outline"
+            triggerClassName={cn(
+              "h-7 max-w-52 shrink-0 text-xs text-foreground/85 hover:text-foreground",
+              actualModel && selectedModel === actualModel && "text-primary/90 hover:text-primary",
+            )}
+            onInstanceModelChange={(instanceId, model) => {
+              const entry =
+                instanceEntries.find((candidate) => candidate.instanceId === instanceId) ??
+                selectedEntry;
+              const nextOptions = entry
+                ? getComposerProviderState({
+                    provider: entry.driverKind,
+                    model,
+                    models: entry.models,
+                    prompt: "",
+                    modelOptions:
+                      localSelection?.instanceId === instanceId
+                        ? localSelection.options
+                        : undefined,
+                  }).modelOptionsForDispatch
+                : undefined;
+              setLocalSelection({
+                instanceId,
+                model,
+                ...(nextOptions ? { options: nextOptions } : {}),
+              });
+            }}
+          />
+        ) : (
+          <span className="rounded-md border border-border/60 px-2 py-1 text-muted-foreground text-xs">
+            No models
+          </span>
+        )}
+        {isSelectionMissing ? (
+          <span className="rounded-md border border-amber-500/30 bg-amber-500/10 px-2 py-1 text-[11px] text-amber-700 dark:text-amber-300">
+            Default missing
+          </span>
+        ) : null}
+        {selectedEntry && localSelection ? (
+          <TraitsPicker
+            provider={selectedEntry.driverKind}
+            models={selectedEntry.models}
+            model={selectedModel}
+            prompt=""
+            onPromptChange={() => {}}
+            modelOptions={localSelection.options}
+            allowPromptInjectedEffort={false}
+            triggerVariant="outline"
+            triggerClassName="h-7 max-w-36 shrink-0 text-xs text-foreground/85 hover:text-foreground"
+            onModelOptionsChange={(nextOptions) => {
+              setLocalSelection({
+                ...localSelection,
+                ...(nextOptions ? { options: nextOptions } : { options: undefined }),
+              });
+            }}
+          />
+        ) : null}
+        {localSelectionDiffersFromDefault && localSelection ? (
+          <Button
+            type="button"
+            size="sm"
+            variant="secondary"
+            className="h-7 px-2 text-xs"
+            onClick={() =>
+              updateSettings({
+                subagentDefaultModelSelection: createModelSelection(
+                  localSelection.instanceId,
+                  localSelection.model,
+                  localSelection.options,
+                ),
+              })
+            }
+          >
+            Make default
+          </Button>
+        ) : null}
+        <Button
+          type="button"
+          size="sm"
+          variant={hasDefaultSelection ? "ghost" : "secondary"}
+          className="h-7 px-2 text-xs"
+          onClick={() => updateSettings({ subagentDefaultModelSelection: null })}
+        >
+          Clear default
+        </Button>
+        {startupRequestId ? (
+          <Button
+            type="button"
+            size="sm"
+            variant="default"
+            className="h-7 px-2 text-xs"
+            disabled={!canStartPendingSubagent || startupIsResponding}
+            onClick={() => {
+              if (!startupRequestId || !localSelection || !ctx.onRespondToSubagentStartup) {
+                return;
+              }
+              ctx.onRespondToSubagentStartup(startupRequestId, {
+                [SUBAGENT_STARTUP_MODEL_QUESTION_ID]: localSelection.model,
+                [SUBAGENT_STARTUP_REASONING_QUESTION_ID]: startupReasoningEffort,
+              });
+            }}
+          >
+            {startupIsResponding ? "Starting" : "Start subagent"}
+          </Button>
+        ) : null}
+        <label className="ml-auto flex min-w-fit items-center gap-2 text-muted-foreground text-xs">
+          <Switch
+            checked={settings.subagentNoPrompt}
+            onCheckedChange={(checked) => updateSettings({ subagentNoPrompt: checked })}
+            aria-label="Use the default subagent model without prompting"
+          />
+          No prompt
+        </label>
+      </div>
+    </div>
   );
 }
 
@@ -1350,10 +1616,10 @@ function commandOutputPreviewLabel(workEntry: TimelineWorkEntry): string | null 
     case "mixed":
       return "mixed";
     case "unknown":
-      return "last output";
+      return null;
     case "stdout":
     default:
-      return "last output";
+      return null;
   }
 }
 
@@ -2294,6 +2560,12 @@ const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
   const defaultOutputExpanded = isTerminal && shouldAutoShowTerminalOutput(workEntry, liveOutput);
   const showOutputPreview =
     isExpandable && (outputExpanded || (defaultOutputExpanded && !defaultOutputCollapsed));
+  useEffect(() => {
+    if (!showOutputPreview) {
+      return;
+    }
+    ctx.onStickyContentResizeRequest?.();
+  }, [ctx, liveOutput.version, showOutputPreview]);
   const openFileChangeTurnDiff = useCallback(
     (filePath: string) => {
       if (!workEntry.turnId) {

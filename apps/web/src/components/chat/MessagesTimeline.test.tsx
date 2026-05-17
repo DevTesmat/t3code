@@ -910,7 +910,7 @@ describe("MessagesTimeline", () => {
 
     expect(markup).toContain("Running");
     expect(markup).toContain("bun run dev");
-    expect(markup).toContain("last output");
+    expect(markup).not.toContain("last output");
     expect(markup).toContain("ready in 124ms");
     expect(markup).toContain("whitespace-pre");
     expect(countOccurrences(markup, 'aria-label="Copy link"')).toBe(1);

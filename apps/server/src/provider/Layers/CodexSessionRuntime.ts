@@ -2,6 +2,7 @@ import {
   ApprovalRequestId,
   DEFAULT_MODEL,
   EventId,
+  type ModelSelection,
   ProviderDriverKind,
   ProviderItemId,
   type ProviderInstanceId,
@@ -16,7 +17,7 @@ import {
   ThreadId,
   TurnId,
 } from "@t3tools/contracts";
-import { normalizeModelSlug } from "@t3tools/shared/model";
+import { getModelSelectionStringOptionValue, normalizeModelSlug } from "@t3tools/shared/model";
 import { Deferred, Effect, Exit, Layer, Queue, Ref, Scope, Random, Schema, Stream } from "effect";
 import * as SchemaIssue from "effect/SchemaIssue";
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
@@ -107,6 +108,8 @@ export interface CodexSessionRuntimeSendTurnInput {
   readonly serviceTier?: EffectCodexSchema.V2TurnStartParams__ServiceTier | undefined;
   readonly effort?: EffectCodexSchema.V2TurnStartParams__ReasoningEffort | undefined;
   readonly interactionMode?: ProviderInteractionMode;
+  readonly subagentDefaultModelSelection?: ModelSelection | null;
+  readonly subagentNoPrompt?: boolean;
 }
 
 export interface CodexThreadTurnSnapshot {
@@ -318,22 +321,83 @@ function buildCodexCollaborationMode(input: {
   readonly interactionMode?: ProviderInteractionMode;
   readonly model?: string;
   readonly effort?: EffectCodexSchema.V2TurnStartParams__ReasoningEffort;
+  readonly subagentDefaultModelSelection?: ModelSelection | null;
+  readonly subagentNoPrompt?: boolean;
 }): EffectCodexSchema.V2TurnStartParams__CollaborationMode | undefined {
   if (input.interactionMode === undefined) {
     return undefined;
   }
   const model = normalizeCodexModelSlug(input.model) ?? DEFAULT_MODEL;
+  const subagentModelPolicy = buildSubagentModelDeveloperInstructions({
+    ...(input.subagentDefaultModelSelection?.model
+      ? { defaultModel: input.subagentDefaultModelSelection.model }
+      : {}),
+    ...(input.subagentDefaultModelSelection
+      ? {
+          defaultReasoningEffort: getModelSelectionStringOptionValue(
+            input.subagentDefaultModelSelection,
+            "reasoningEffort",
+          ),
+        }
+      : {}),
+    noPrompt: input.subagentNoPrompt === true,
+  });
   return {
     mode: input.interactionMode,
     settings: {
       model,
       reasoning_effort: input.effort ?? "medium",
-      developer_instructions:
+      developer_instructions: [
         input.interactionMode === "plan"
           ? CODEX_PLAN_MODE_DEVELOPER_INSTRUCTIONS
           : CODEX_DEFAULT_MODE_DEVELOPER_INSTRUCTIONS,
+        subagentModelPolicy,
+      ]
+        .filter(Boolean)
+        .join("\n\n"),
     },
   };
+}
+
+function buildSubagentModelDeveloperInstructions(input: {
+  readonly defaultModel?: string;
+  readonly defaultReasoningEffort?: string | undefined;
+  readonly noPrompt: boolean;
+}): string | undefined {
+  const defaultModel = normalizeCodexModelSlug(input.defaultModel);
+  if (defaultModel && input.noPrompt) {
+    return [
+      "Subagent startup policy:",
+      "- T3Code owns subagent startup model selection state.",
+      `- When calling spawnAgent, pass model: "${defaultModel}" unless the user explicitly asked for a different subagent model.`,
+      ...(input.defaultReasoningEffort
+        ? [
+            `- When calling spawnAgent, pass reasoning_effort: "${input.defaultReasoningEffort}" unless the user explicitly asked for a different subagent reasoning effort.`,
+          ]
+        : []),
+      "- Do not ask the user to choose a subagent model before this spawn; T3Code has already provided the default and no-prompt is enabled.",
+    ].join("\n");
+  }
+
+  return [
+    "Subagent startup policy:",
+    "- T3Code owns subagent startup model selection state.",
+    "- The request_user_input tool is available for this startup gate in every T3Code collaboration mode.",
+    "- Before every spawnAgent call, call request_user_input to ask the user which subagent model and reasoning effort to use.",
+    "- Do not ask this as a normal chat question; use request_user_input so the app can show a pending user-input state before the subagent exists.",
+    "- The request_user_input call must contain exactly these question ids for startup selection: subagent_model and subagent_reasoning_effort.",
+    "- The subagent_model answer must be the raw model id to pass as spawnAgent.model.",
+    "- The subagent_reasoning_effort answer must be the raw reasoning effort to pass as spawnAgent.reasoning_effort.",
+    "- After request_user_input resolves, pass the selected model and reasoning_effort into spawnAgent.",
+    ...(defaultModel
+      ? [`- Suggested default model when presenting options: "${defaultModel}".`]
+      : []),
+    ...(input.defaultReasoningEffort
+      ? [
+          `- Suggested default reasoning effort when presenting options: "${input.defaultReasoningEffort}".`,
+        ]
+      : []),
+  ].join("\n");
 }
 
 export function buildTurnStartParams(input: {
@@ -348,6 +412,8 @@ export function buildTurnStartParams(input: {
   readonly serviceTier?: EffectCodexSchema.V2TurnStartParams__ServiceTier;
   readonly effort?: EffectCodexSchema.V2TurnStartParams__ReasoningEffort;
   readonly interactionMode?: ProviderInteractionMode;
+  readonly subagentDefaultModelSelection?: ModelSelection | null;
+  readonly subagentNoPrompt?: boolean;
 }): Effect.Effect<
   CodexTurnStartParamsWithCollaborationMode,
   CodexErrors.CodexAppServerProtocolParseError
@@ -368,6 +434,10 @@ export function buildTurnStartParams(input: {
     ...(input.interactionMode ? { interactionMode: input.interactionMode } : {}),
     ...(input.model ? { model: input.model } : {}),
     ...(input.effort ? { effort: input.effort } : {}),
+    ...(input.subagentDefaultModelSelection !== undefined
+      ? { subagentDefaultModelSelection: input.subagentDefaultModelSelection }
+      : {}),
+    ...(input.subagentNoPrompt !== undefined ? { subagentNoPrompt: input.subagentNoPrompt } : {}),
   });
 
   return Schema.decodeUnknownEffect(CodexTurnStartParamsWithCollaborationMode)({
@@ -1411,6 +1481,12 @@ export const makeCodexSessionRuntime = (
             ...(input.serviceTier ? { serviceTier: input.serviceTier } : {}),
             ...(input.effort ? { effort: input.effort } : {}),
             ...(input.interactionMode ? { interactionMode: input.interactionMode } : {}),
+            ...(input.subagentDefaultModelSelection !== undefined
+              ? { subagentDefaultModelSelection: input.subagentDefaultModelSelection }
+              : {}),
+            ...(input.subagentNoPrompt !== undefined
+              ? { subagentNoPrompt: input.subagentNoPrompt }
+              : {}),
           });
           const rawResponse = yield* client.raw.request("turn/start", params);
           const response = yield* Schema.decodeUnknownEffect(EffectCodexSchema.V2TurnStartResponse)(

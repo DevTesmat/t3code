@@ -806,6 +806,63 @@ describe("MessagesTimeline", () => {
     }
   });
 
+  it("requests a sticky bottom scroll when completed terminal output appears from the live buffer", async () => {
+    vi.spyOn(window, "requestAnimationFrame").mockImplementation(
+      (callback: FrameRequestCallback) => {
+        callback(0);
+        return 1;
+      },
+    );
+    vi.spyOn(window, "cancelAnimationFrame").mockImplementation(() => undefined);
+
+    const environmentId = EnvironmentId.make("environment-local");
+    const threadId = ThreadId.make("thread-1");
+    const onStickyContentResizeRequest = vi.fn();
+    const screen = await render(
+      <MessagesTimeline
+        {...buildProps()}
+        activeThreadId={threadId}
+        activeThreadEnvironmentId={environmentId}
+        onStickyContentResizeRequest={onStickyContentResizeRequest}
+        timelineEntries={[
+          {
+            id: "work-terminal",
+            kind: "work",
+            createdAt: "2026-04-13T12:00:00.000Z",
+            entry: {
+              id: "work-terminal",
+              createdAt: "2026-04-13T12:00:00.000Z",
+              label: "Ran command",
+              tone: "tool",
+              itemType: "command_execution",
+              command: "bun run build",
+              status: "completed",
+              toolCallId: "terminal-output-1",
+            },
+          },
+        ]}
+      />,
+    );
+
+    try {
+      expect(onStickyContentResizeRequest).not.toHaveBeenCalled();
+
+      hydrateLiveCommandOutputSnapshot(environmentId, {
+        threadId,
+        turnId: null,
+        toolCallId: ProviderItemId.make("terminal-output-1"),
+        updatedAt: "2026-04-13T12:00:01.000Z",
+        text: "build completed",
+        truncated: false,
+      });
+
+      await expect.element(page.getByText("build completed")).toBeVisible();
+      expect(onStickyContentResizeRequest).toHaveBeenCalled();
+    } finally {
+      await screen.unmount();
+    }
+  });
+
   it("does not fall back to a whole-turn checkpoint diff when per-call patches are unavailable", async () => {
     const environmentId = EnvironmentId.make("environment-local");
     const threadId = ThreadId.make("thread-1");

@@ -2,7 +2,8 @@ import assert from "node:assert/strict";
 
 import { Effect, Schema } from "effect";
 import { describe, it } from "vitest";
-import { ThreadId } from "@t3tools/contracts";
+import { ProviderInstanceId, ThreadId } from "@t3tools/contracts";
+import { createModelSelection } from "@t3tools/shared/model";
 import * as CodexErrors from "effect-codex-app-server/errors";
 import * as CodexRpc from "effect-codex-app-server/rpc";
 
@@ -11,12 +12,25 @@ import {
   CODEX_EXPLORATION_COMMAND_STEERING_INSTRUCTIONS,
   CODEX_PLAN_MODE_DEVELOPER_INSTRUCTIONS,
   CODEX_SUBAGENT_COORDINATION_INSTRUCTIONS,
+  CODEX_USER_INPUT_TOOL_INSTRUCTIONS,
 } from "../CodexDeveloperInstructions.ts";
 import {
   buildTurnStartParams,
   isRecoverableThreadResumeError,
   openCodexThread,
 } from "./CodexSessionRuntime.ts";
+
+const SUBAGENT_USER_INPUT_STARTUP_POLICY = [
+  "Subagent startup policy:",
+  "- T3Code owns subagent startup model selection state.",
+  "- The request_user_input tool is available for this startup gate in every T3Code collaboration mode.",
+  "- Before every spawnAgent call, call request_user_input to ask the user which subagent model and reasoning effort to use.",
+  "- Do not ask this as a normal chat question; use request_user_input so the app can show a pending user-input state before the subagent exists.",
+  "- The request_user_input call must contain exactly these question ids for startup selection: subagent_model and subagent_reasoning_effort.",
+  "- The subagent_model answer must be the raw model id to pass as spawnAgent.model.",
+  "- The subagent_reasoning_effort answer must be the raw reasoning effort to pass as spawnAgent.reasoning_effort.",
+  "- After request_user_input resolves, pass the selected model and reasoning_effort into spawnAgent.",
+].join("\n");
 
 function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -77,7 +91,7 @@ describe("buildTurnStartParams", () => {
         settings: {
           model: "gpt-5.3-codex",
           reasoning_effort: "medium",
-          developer_instructions: CODEX_PLAN_MODE_DEVELOPER_INSTRUCTIONS,
+          developer_instructions: `${CODEX_PLAN_MODE_DEVELOPER_INSTRUCTIONS}\n\n${SUBAGENT_USER_INPUT_STARTUP_POLICY}`,
         },
       },
     });
@@ -120,6 +134,8 @@ describe("buildTurnStartParams", () => {
       /main agent must run that final validation/,
     );
     assert.match(CODEX_PLAN_MODE_DEVELOPER_INSTRUCTIONS, /Exploration command guidance/);
+    assert.match(CODEX_PLAN_MODE_DEVELOPER_INSTRUCTIONS, /User input tool availability/);
+    assert.match(CODEX_PLAN_MODE_DEVELOPER_INSTRUCTIONS, /every T3Code collaboration mode/);
     assert.match(CODEX_PLAN_MODE_DEVELOPER_INSTRUCTIONS, /rg --files/);
     assert.match(CODEX_PLAN_MODE_DEVELOPER_INSTRUCTIONS, /git status --short/);
     assert.match(CODEX_PLAN_MODE_DEVELOPER_INSTRUCTIONS, /dense shell pipelines/);
@@ -164,15 +180,17 @@ describe("buildTurnStartParams", () => {
         settings: {
           model: "gpt-5.3-codex",
           reasoning_effort: "medium",
-          developer_instructions: CODEX_DEFAULT_MODE_DEVELOPER_INSTRUCTIONS,
+          developer_instructions: `${CODEX_DEFAULT_MODE_DEVELOPER_INSTRUCTIONS}\n\n${SUBAGENT_USER_INPUT_STARTUP_POLICY}`,
         },
       },
     });
     assert.match(CODEX_DEFAULT_MODE_DEVELOPER_INSTRUCTIONS, /label Default mode as Build mode/);
     assert.match(
       CODEX_DEFAULT_MODE_DEVELOPER_INSTRUCTIONS,
-      /`request_user_input` tool is available in Default mode/,
+      /request_user_input.*blocking question is important/,
     );
+    assert.match(CODEX_DEFAULT_MODE_DEVELOPER_INSTRUCTIONS, /User input tool availability/);
+    assert.match(CODEX_DEFAULT_MODE_DEVELOPER_INSTRUCTIONS, /future modes/);
     assert.match(CODEX_DEFAULT_MODE_DEVELOPER_INSTRUCTIONS, /blocking question is important/);
     assert.match(CODEX_DEFAULT_MODE_DEVELOPER_INSTRUCTIONS, /bounded research helpers/);
     assert.match(CODEX_DEFAULT_MODE_DEVELOPER_INSTRUCTIONS, /repo explorers/);
@@ -221,6 +239,17 @@ describe("buildTurnStartParams", () => {
     );
   });
 
+  it("uses the same user-input tool guidance in plan and default modes", () => {
+    assert.match(
+      CODEX_PLAN_MODE_DEVELOPER_INSTRUCTIONS,
+      new RegExp(escapeRegExp(CODEX_USER_INPUT_TOOL_INSTRUCTIONS)),
+    );
+    assert.match(
+      CODEX_DEFAULT_MODE_DEVELOPER_INSTRUCTIONS,
+      new RegExp(escapeRegExp(CODEX_USER_INPUT_TOOL_INSTRUCTIONS)),
+    );
+  });
+
   it("omits collaboration mode when interaction mode is absent", () => {
     const params = Effect.runSync(
       buildTurnStartParams({
@@ -243,6 +272,54 @@ describe("buildTurnStartParams", () => {
         },
       ],
     });
+  });
+
+  it("requires app-mediated user input before subagent startup without no-prompt default", () => {
+    const params = Effect.runSync(
+      buildTurnStartParams({
+        threadId: "provider-thread-1",
+        runtimeMode: "full-access",
+        prompt: "Explore this",
+        model: "gpt-5.5",
+        interactionMode: "default",
+      }),
+    );
+
+    const instructions = params.collaborationMode?.settings.developer_instructions ?? "";
+    assert.match(instructions, /Subagent startup policy/);
+    assert.match(instructions, /T3Code owns subagent startup model selection state/);
+    assert.match(
+      instructions,
+      /available for this startup gate in every T3Code collaboration mode/,
+    );
+    assert.match(instructions, /Before every spawnAgent call, call request_user_input/);
+    assert.match(instructions, /subagent_model and subagent_reasoning_effort/);
+    assert.match(instructions, /show a pending user-input state before the subagent exists/);
+    assert.match(instructions, /pass the selected model and reasoning_effort into spawnAgent/);
+  });
+
+  it("allows direct subagent startup with the persisted no-prompt default", () => {
+    const params = Effect.runSync(
+      buildTurnStartParams({
+        threadId: "provider-thread-1",
+        runtimeMode: "full-access",
+        prompt: "Explore this",
+        model: "gpt-5.5",
+        interactionMode: "default",
+        subagentNoPrompt: true,
+        subagentDefaultModelSelection: createModelSelection(
+          ProviderInstanceId.make("codex"),
+          "gpt-5.4-mini",
+          [{ id: "reasoningEffort", value: "low" }],
+        ),
+      }),
+    );
+
+    const instructions = params.collaborationMode?.settings.developer_instructions ?? "";
+    assert.match(instructions, /When calling spawnAgent, pass model: "gpt-5.4-mini"/);
+    assert.match(instructions, /pass reasoning_effort: "low"/);
+    assert.match(instructions, /no-prompt is enabled/);
+    assert.doesNotMatch(instructions, /Before every spawnAgent call, call request_user_input/);
   });
 });
 

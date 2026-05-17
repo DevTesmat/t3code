@@ -555,6 +555,7 @@ const make = Effect.gen(function* () {
             }
           : requestedModelSelection
         : input.modelSelection;
+    const settings = yield* serverSettingsService.getSettings;
 
     return {
       threadId: input.threadId,
@@ -562,6 +563,8 @@ const make = Effect.gen(function* () {
       ...(normalizedAttachments.length > 0 ? { attachments: normalizedAttachments } : {}),
       ...(modelForTurn !== undefined ? { modelSelection: modelForTurn } : {}),
       ...(input.interactionMode !== undefined ? { interactionMode: input.interactionMode } : {}),
+      subagentDefaultModelSelection: settings.subagentDefaultModelSelection,
+      subagentNoPrompt: settings.subagentNoPrompt,
     };
   });
 

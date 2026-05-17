@@ -26,6 +26,8 @@ const CODEX_APP_SERVER_ARGS = [
   "app-server",
   "--enable",
   "apply_patch_streaming_events",
+  "--enable",
+  "default_mode_request_user_input",
   "-c",
   'model_reasoning_summary="detailed"',
   "-c",
